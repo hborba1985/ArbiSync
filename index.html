@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Arbitragem Gate.io x MEXC — <span id="titleSymbol">WMTX_USDT</span></title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 16px; color: #111; }
+    h1 { margin: 0 0 16px 0; font-size: 22px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .card { border: 1px solid #ddd; border-radius: 6px; padding: 14px; background: #fff; }
+    .card h3 { margin: 0 0 10px 0; font-size: 18px; }
+    .w33 { flex: 1 1 360px; }
+    label.inline { display: inline-block; margin-right: 8px; }
+    input[type="text"], input[type="number"] { padding: 4px 6px; }
+    button { padding: 6px 10px; cursor: pointer; }
+    summary { cursor: pointer; font-weight: 600; }
+    pre { white-space: pre-wrap; background: #fafafa; border: 1px solid #eee; padding: 8px; border-radius: 4px; min-height: 38px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
+    th { background: #fafafa; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .muted { color: #666; }
+    .top { margin-bottom: 14px; }
+    .status { min-height: 60px; }
+    canvas { border: 1px solid #ddd; background: #fff; }
+  </style>
+</head>
+<body>
+  <h1>Arbitragem Gate.io x MEXC — <span id="titleSymbol">WMTX_USDT</span></h1>
+
+  <!-- Par & Configurações (no topo, como no layout original) -->
+  <div class="card top">
+    <h3>Par &amp; Configurações</h3>
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+      <label class="inline" for="symbolInput">Par (BASE_QUOTE):</label>
+      <input id="symbolInput" type="text" value="WMTX_USDT" class="mono" />
+      <button id="applySymbol">Usar</button>
+      <button id="autoCfg">Auto-configurar</button>
+      <span id="metaBadge" class="mono muted">meta: —</span>
+    </div>
+
+    <details style="margin-top:10px;">
+      <summary>Overrides manuais (opcional)</summary>
+      <div style="display:grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap:10px; margin-top:10px;">
+        <div>
+          <div class="muted" style="margin-bottom:6px;"><strong>Gate</strong></div>
+          <label>priceScale <input id="ov_gate_price" type="number" step="1" class="mono" /></label><br/>
+          <label>qtyScale <input id="ov_gate_qty" type="number" step="1" class="mono" /></label><br/>
+          <label>minQty <input id="ov_gate_minqty" type="number" step="any" class="mono" /></label>
+        </div>
+        <div>
+          <div class="muted" style="margin-bottom:6px;"><strong>MEXC</strong></div>
+          <label>priceScale <input id="ov_mexc_price" type="number" step="1" class="mono" /></label><br/>
+          <label>volPrecision <input id="ov_mexc_volp" type="number" step="1" class="mono" /></label><br/>
+          <label>contractSize <input id="ov_mexc_cs" type="number" step="any" class="mono" /></label><br/>
+          <label>minContracts <input id="ov_mexc_minc" type="number" step="1" class="mono" /></label>
+        </div>
+        <div>
+          <div class="muted" style="margin-bottom:6px;"><strong>Settings</strong></div>
+          <label>margem (%) <input id="ov_set_margin" type="number" step="any" class="mono" /></label><br/>
+          <label>leverage <input id="ov_set_lev" type="number" step="any" class="mono" /></label>
+        </div>
+      </div>
+      <div style="margin-top:10px;">
+        <button id="saveOverride">Salvar override</button>
+      </div>
+      <pre id="metaText" class="mono" style="margin-top:10px;">(meta não carregada)</pre>
+    </details>
+  </div>
+
+  <div class="row">
+    <!-- Cotações -->
+    <div class="card w33">
+      <h3>Cotações</h3>
+
+      <div><b id="gateLabel">Ask Gate.io:</b> <span id="gateAsk">-</span> (<span id="gateAskVol">-</span>)</div>
+      <div><b id="mexcLabel">Bid MEXC:</b> <span id="mexcBid">-</span> (<span id="mexcBidVol">-</span>)</div>
+      <div style="margin:6px 0 12px 0;">Diferença: <span id="diff">-%</span></div>
+
+      <label><input type="checkbox" id="modeClose" /> Fechar posições (inverter lógica)</label>
+      <div style="margin-top:10px;">
+        <button id="executeTrade">Executar Ordem Simultânea</button>
+      </div>
+      <pre id="status" class="mono status" style="margin-top:10px;"></pre>
+    </div>
+
+    <!-- Saldos -->
+    <div class="card w33">
+      <h3>Saldos</h3>
+
+      <div><b>Gate:</b></div>
+      <pre id="gateBalText" class="mono">—</pre>
+
+      <div style="margin-top:6px;"><b>MEXC:</b></div>
+      <pre id="mexcBalText" class="mono">—</pre>
+
+      <div style="margin-top:10px;">
+        <button id="refreshBalances">Atualizar saldos</button>
+      </div>
+    </div>
+
+    <!-- Meta & Progresso da Posição -->
+    <div class="card w33">
+      <h3>Meta &amp; Progresso da Posição</h3>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <label for="targetQty">Meta (qtd total WMTX):</label>
+        <input id="targetQty" type="number" step="1" min="0" class="mono" />
+        <button id="setTarget">Definir meta</button>
+      </div>
+
+      <div class="mono" style="margin-top:10px;">
+        <div>Alvo: <span id="ppTarget">0</span></div>
+        <div>Preenchido: <span id="ppFilled">0</span></div>
+        <div>Preço Médio: <span id="ppAvg">0</span></div>
+        <div>Arb. Média (%): <span id="ppArb">0</span></div>
+      </div>
+
+      <div style="margin-top:10px;">
+        <canvas id="progressChart" width="600" height="260"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Histórico -->
+  <div class="card" style="margin-top:16px;">
+    <h3>Histórico (ordens criadas pelo sistema)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Local ID</th>
+          <th>Hora</th>
+          <th>Gate Price</th>
+          <th>MEXC Price</th>
+          <th>Volume (WMTX)</th>
+          <th>Gate Order ID</th>
+          <th>MEXC Order ID</th>
+          <th>Status</th>
+          <th>Ações</th>
+        </tr>
+      </thead>
+      <tbody id="historyBody"></tbody>
+    </table>
+  </div>
+
+  <script src="scripts.js"></script>
+</body>
+</html>
