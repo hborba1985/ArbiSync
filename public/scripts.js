@@ -230,7 +230,9 @@ async function refreshHistory() {
       tr.appendChild(td(h.priceUsedMexc || '-'));
       tr.appendChild(td(h.volume || '-'));
       tr.appendChild(td(h.gateOrderId || '-'));
+      tr.appendChild(td(h.gateStatus || '-'));
       tr.appendChild(td(h.mexcOrderId || '-'));
+      tr.appendChild(td(h.mexcStatus || '-'));
       tr.appendChild(td(h.status || '-'));
       const act = document.createElement('td'); act.appendChild(cancelBtn); tr.appendChild(act);
 
