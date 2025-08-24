@@ -541,6 +541,7 @@ app.post('/api/execute-trade', async (req, res) => {
       volume: String(gateQty),
       mexcDisplayVolume: String(gateQty),
       gateOrderId: null, mexcOrderId: null,
+      gateStatus: 'creating', mexcStatus: 'creating',
       status: 'creating'
     };
     orderHistory.unshift(histItem);
@@ -550,22 +551,41 @@ app.post('/api/execute-trade', async (req, res) => {
     let gateOk = false;
     try {
       const side = (mode === 'open') ? 'buy' : 'sell';
-      const go = await placeGateOrderSdk(symbol, side, String(gatePx.toFixed(meta.gate.priceScale)), String(gateQty.toFixed(meta.gate.qtyScale)));
+      const go = await placeGateOrderSdk(
+        symbol,
+        side,
+        String(gatePx.toFixed(meta.gate.priceScale)),
+        String(gateQty.toFixed(meta.gate.qtyScale))
+      );
       histItem.gateOrderId = (go?.id != null) ? String(go.id) : null;
       gateOk = !!histItem.gateOrderId;
+      histItem.gateStatus = gateOk ? 'open' : 'error';
     } catch (e) {
       console.error('[ERRO AO ENVIAR GATE]:', e.response?.data || e.message);
+      histItem.gateStatus = 'error';
     }
 
     // MEXC: open=3 | close=4
     let mexcOk = false;
     try {
       const sideCode = (mode === 'open') ? 3 : 4;
-      const mres = await mexcSubmitOrder(symbol, Number(mexcPx.toFixed(meta.mexc.priceScale)), contracts, meta.settings.leverage, sideCode);
-      if (mres?.id) { histItem.mexcOrderId = bnToStringMaybe(mres.id); mexcOk = true; }
-      else { console.error('[MEXC SDK] falhou:', mres?.error || mres); }
+      const mres = await mexcSubmitOrder(
+        symbol,
+        Number(mexcPx.toFixed(meta.mexc.priceScale)),
+        contracts,
+        meta.settings.leverage,
+        sideCode
+      );
+      if (mres?.id) {
+        histItem.mexcOrderId = bnToStringMaybe(mres.id);
+        mexcOk = true;
+      } else {
+        console.error('[MEXC SDK] falhou:', mres?.error || mres);
+      }
+      histItem.mexcStatus = mexcOk ? 'open' : 'error';
     } catch (e) {
       console.error('[ERRO AO ENVIAR MEXC]:', e?.message || e);
+      histItem.mexcStatus = 'error';
     }
 
     histItem.status = gateOk && mexcOk ? 'open' : gateOk && !mexcOk ? 'mexc_error' : !gateOk && mexcOk ? 'gate_error' : 'error';
@@ -610,6 +630,8 @@ app.post('/api/cancel-order', async (req, res) => {
     }
 
     item.status = 'cancelled'; item.cancelledAt = nowBR();
+    if (item.gateOrderId) item.gateStatus = 'cancelled';
+    if (item.mexcOrderId) item.mexcStatus = 'cancelled';
     try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (cancel):', e?.message || e); }
 
     if (filled > 0) updatePositionFromOrder(item, filled, avg);
@@ -623,7 +645,7 @@ app.post('/api/cancel-order', async (req, res) => {
 async function pollOpenOrders() {
   const symbol = currentSymbol;
   for (const item of orderHistory) {
-    if (item.status !== 'open' && item.status !== 'creating') continue;
+    if (!['open', 'creating', 'gate_filled', 'mexc_filled', 'gate_error', 'mexc_error'].includes(item.status)) continue;
 
     // Gate
     let gFilled = 0, gAvg = Number(item.priceUsedGate || 0), gIsFilled = false;
@@ -658,6 +680,16 @@ async function pollOpenOrders() {
       }
     }
 
+    const prevStatus = item.status;
+    const prevGateStatus = item.gateStatus;
+    const prevMexcStatus = item.mexcStatus;
+
+    if (gIsFilled) item.gateStatus = 'filled';
+    else if (item.gateStatus === 'creating') item.gateStatus = 'open';
+
+    if (mIsFilled) item.mexcStatus = 'filled';
+    else if (item.mexcStatus === 'creating') item.mexcStatus = 'open';
+
     if (gIsFilled && mIsFilled) {
       item.status = 'filled';
       item.filledAt = nowBR();
@@ -665,7 +697,20 @@ async function pollOpenOrders() {
         updatePositionFromOrder(item, gFilled || Number(item.volume), gAvg || Number(item.priceUsedGate || 0));
         item._positionCounted = true;
       }
-      try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (filled):', e?.message || e); }
+    } else if (gIsFilled && !mIsFilled) {
+      item.status = 'gate_filled';
+    } else if (mIsFilled && !gIsFilled) {
+      item.status = 'mexc_filled';
+    } else {
+      item.status = 'open';
+    }
+
+    if (
+      item.status !== prevStatus ||
+      item.gateStatus !== prevGateStatus ||
+      item.mexcStatus !== prevMexcStatus
+    ) {
+      try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (poll):', e?.message || e); }
     }
   }
 }
