@@ -86,7 +86,22 @@ async function cancelGateOrderSdk(symbol, id) {
   return r.body || r;
 }
 async function getGateOrderDetail(symbol, id) {
-  try { const r = await gateSpotApi.getOrder(id, symbol); return r.body || r; } catch { return null; }
+  try {
+    const r = await gateSpotApi.getOrder(id, symbol);
+    const data = r?.body || r;
+    if (!data || typeof data !== 'object') {
+      console.warn(`[GATE] unexpected response for order ${id} ${symbol}:`, data);
+    }
+    return data;
+  } catch (err) {
+    const code = err?.response?.status;
+    if (code === 401 || code === 403) {
+      console.error(`[GATE] auth error for order ${id} ${symbol}:`, err.message || err);
+    } else {
+      console.warn(`[GATE] failed to get order ${id} ${symbol}:`, err.message || err);
+    }
+    return null;
+  }
 }
 async function getGateBalances(symbol) {
   try {
@@ -161,10 +176,23 @@ async function getMexcOrderDetail(symbol, orderId) {
     if (typeof f === 'function') {
       try {
         const r = await f.call(mexcClient, args);
-        return r?.data || r || null;
-      } catch (_) { /* tenta o próximo */ }
+        const data = r?.data || r;
+        if (!data || typeof data !== 'object') {
+          console.warn(`[MEXC] unexpected response for order ${orderId} ${symbol}:`, data);
+        }
+        return data || null;
+      } catch (err) {
+        const code = err?.response?.status;
+        if (code === 401 || code === 403) {
+          console.error(`[MEXC] auth error for order ${orderId} ${symbol}:`, err.message || err);
+          return null;
+        }
+        console.warn(`[MEXC] ${fn} failed for order ${orderId} ${symbol}:`, err.message || err);
+        // tenta o próximo
+      }
     }
   }
+  console.warn(`[MEXC] no detail for order ${orderId} ${symbol}`);
   return null;
 }
 function parseMexcOrderDetail(detail) {
@@ -669,7 +697,9 @@ async function pollOpenOrders() {
     }
   }
 }
-setInterval(() => { pollOpenOrders().catch(()=>{}); }, 4000);
+setInterval(() => {
+  pollOpenOrders().catch(err => console.error('[POLL]', err));
+}, 4000);
 
 app.get('/api/history', async (_req, res) => {
   try { await pollOpenOrders(); } catch {}
