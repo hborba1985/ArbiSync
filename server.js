@@ -741,7 +741,9 @@ async function pollOpenOrders() {
     if (item.mexcOrderId) {
       try {
         const md = await getMexcOrderDetail(symbol, String(item.mexcOrderId));
+        console.log('MEXC detail', md);
         const p = parseMexcOrderDetail(md);
+        console.log('parsed detail', p);
         mIsFilled = !!p.isFilled;
       } catch {
         // caso não consiga consultar, não marca como filled
