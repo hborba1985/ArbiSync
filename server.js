@@ -189,8 +189,10 @@ async function getMexcOrderDetail(symbol, orderId) {
   }
 
   const candidates = [
+    // SDK v1.5.1 expõe `getOrder(orderId)` como método principal.
+    // Outros nomes são mantidos apenas por compatibilidade com versões anteriores.
+    ['getOrder',       idStr],
     ['getOrderDetail', { orderId: idStr, symbol }],
-    ['getOrder',       { orderId: idStr, symbol }],
     ['orderQuery',     { orderId: idStr, symbol }],
     ['queryOrder',     { orderId: idStr, symbol }],
     ['getOrderById',   { orderId: idStr, symbol }],
