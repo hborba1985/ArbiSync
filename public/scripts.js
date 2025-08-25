@@ -247,8 +247,9 @@ async function refreshPosition() {
     const r = await fetch('/api/position-progress');
     const s = await r.json();
     document.getElementById('ppTarget').textContent = s.targetQty || 0;
-    document.getElementById('ppFilled').textContent = s.filledQty || 0;
-    document.getElementById('ppAvg').textContent = (s.avgPrice || 0).toFixed ? s.avgPrice.toFixed(11) : s.avgPrice;
+    document.getElementById('ppFilled').textContent = (s.gate && s.gate.filledQty) || 0;
+    const gAvg = s.gate && s.gate.avgPrice;
+    document.getElementById('ppAvg').textContent = (gAvg || 0).toFixed ? gAvg.toFixed(11) : gAvg;
     document.getElementById('ppArb').textContent = (s.arbPctAvg || 0).toFixed ? s.arbPctAvg.toFixed(6) : s.arbPctAvg;
     drawProgressChart(s.series || []);
   } catch {}
