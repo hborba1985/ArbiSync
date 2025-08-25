@@ -20,6 +20,9 @@ let currentSymbol = (config?.defaultSymbol || 'WMTX_USDT').toUpperCase();
 const autoMetaCache = new Map();
 const overridesBySymbol = new Map();
 
+// Lista simples de instrumentos permitidos para consultas MEXC
+const SUPPORTED_INSTRUMENTS = new Set(['BOXCAT_USDT', 'WMTX_USDT']);
+
 let orderHistory = [];
 let positionState = { targetQty: 0, filledQty: 0, avgPrice: 0, arbPctAvg: 0, series: [] };
 
@@ -163,13 +166,27 @@ async function mexcCancelOrder(symbol, orderId) {
 // Tenta vários nomes de método para obter detalhes da ordem MEXC
 async function getMexcOrderDetail(symbol, orderId) {
   if (!mexcClient || !orderId) return null;
+
+  const idStr = String(orderId);
+  if (!/^[0-9]+$/.test(idStr)) {
+    const msg = `[MEXC] getMexcOrderDetail: orderId não numérico: ${orderId}`;
+    console.warn(msg);
+    throw new Error(msg);
+  }
+
+  if (!SUPPORTED_INSTRUMENTS.has(symbol)) {
+    const msg = `[MEXC] getMexcOrderDetail: symbol não suportado: ${symbol}`;
+    console.warn(msg);
+    throw new Error(msg);
+  }
+
   const candidates = [
-    ['getOrderDetail', { orderId: String(orderId), symbol }],
-    ['getOrder',       { orderId: String(orderId), symbol }],
-    ['orderQuery',     { orderId: String(orderId), symbol }],
-    ['queryOrder',     { orderId: String(orderId), symbol }],
-    ['getOrderById',   { orderId: String(orderId), symbol }],
-    ['orderDetail',    { orderId: String(orderId), symbol }],
+    ['getOrderDetail', { orderId: idStr, symbol }],
+    ['getOrder',       { orderId: idStr, symbol }],
+    ['orderQuery',     { orderId: idStr, symbol }],
+    ['queryOrder',     { orderId: idStr, symbol }],
+    ['getOrderById',   { orderId: idStr, symbol }],
+    ['orderDetail',    { orderId: idStr, symbol }],
   ];
   for (const [fn, args] of candidates) {
     const f = mexcClient[fn];
