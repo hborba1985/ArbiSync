@@ -24,7 +24,13 @@ const overridesBySymbol = new Map();
 const SUPPORTED_INSTRUMENTS = new Set(['BOXCAT_USDT', 'WMTX_USDT', 'ACS_USDT']);
 
 let orderHistory = [];
-let positionState = { targetQty: 0, filledQty: 0, avgPrice: 0, arbPctAvg: 0, series: [] };
+let positionState = {
+  targetQty: 0,
+  gate: { filledQty: 0, avgPrice: 0 },
+  mexc: { filledQty: 0, avgPrice: 0 },
+  arbPctAvg: 0,
+  series: []
+};
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
@@ -453,18 +459,36 @@ app.post('/api/position-target', (req, res) => {
 });
 app.get('/api/position-progress', (_req, res) => res.json(positionState));
 
-function updatePositionFromOrder(item, filledQty, avgPrice) {
-  if (!filledQty || filledQty <= 0) return;
-  const prevQty = positionState.filledQty;
-  const prevAvg = positionState.avgPrice;
-  const newQty = prevQty + filledQty;
-  const newAvg = newQty > 0 ? ((prevAvg * prevQty) + (avgPrice * filledQty)) / newQty : 0;
-  const arbThis = ((parseFloat(item.priceUsedMexc) - parseFloat(item.priceUsedGate)) / parseFloat(item.priceUsedGate)) * 100;
-  const newArb = newQty > 0 ? (((positionState.arbPctAvg || 0) * prevQty) + (arbThis * filledQty)) / newQty : 0;
-  positionState.filledQty = newQty;
-  positionState.avgPrice = newAvg;
+function updatePositionFromOrder(item, gateFilled, gateAvg, mexcFilled, mexcAvg) {
+  gateFilled = Number(gateFilled || 0);
+  mexcFilled = Number(mexcFilled || 0);
+  if (gateFilled <= 0 && mexcFilled <= 0) return;
+
+  // Gate totals
+  const prevGateQty = positionState.gate.filledQty;
+  const prevGateAvg = positionState.gate.avgPrice;
+  const newGateQty = prevGateQty + gateFilled;
+  const newGateAvg = newGateQty > 0 ? ((prevGateAvg * prevGateQty) + (gateAvg * gateFilled)) / newGateQty : 0;
+  positionState.gate.filledQty = newGateQty;
+  positionState.gate.avgPrice = newGateAvg;
+
+  // MEXC totals
+  const prevMexcQty = positionState.mexc.filledQty;
+  const prevMexcAvg = positionState.mexc.avgPrice;
+  const newMexcQty = prevMexcQty + mexcFilled;
+  const newMexcAvg = newMexcQty > 0 ? ((prevMexcAvg * prevMexcQty) + (mexcAvg * mexcFilled)) / newMexcQty : 0;
+  positionState.mexc.filledQty = newMexcQty;
+  positionState.mexc.avgPrice = newMexcAvg;
+
+  // Arbitrage percentage average based on provided averages
+  const prevQty = prevGateQty;
+  const prevArb = positionState.arbPctAvg || 0;
+  const arbThis = gateAvg ? ((mexcAvg - gateAvg) / gateAvg) * 100 : 0;
+  const newQty = newGateQty;
+  const newArb = newQty > 0 ? ((prevArb * prevQty) + (arbThis * gateFilled)) / newQty : 0;
   positionState.arbPctAvg = newArb;
-  positionState.series.push({ t: Date.now(), filledQty: newQty, avgPrice: Number(newAvg.toFixed(11)), arbPctAvg: Number(newArb.toFixed(6)) });
+
+  positionState.series.push({ t: Date.now(), filledQty: newGateQty, avgPrice: Number(newGateAvg.toFixed(11)), arbPctAvg: Number(newArb.toFixed(6)) });
 }
 
 // ===== Precheck (respeita modo open/close do front)
@@ -506,7 +530,7 @@ app.post('/api/precheck', async (req, res) => {
 
     let finalWmtx = contractsToWmtx(contracts, meta);
     if (positionState.targetQty > 0) {
-      const remaining = Math.max(positionState.targetQty - positionState.filledQty, 0);
+      const remaining = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
       const remContracts = wmtxToContracts(remaining, meta);
       contracts = Math.min(contracts, remContracts);
       finalWmtx = contractsToWmtx(contracts, meta);
@@ -586,7 +610,7 @@ app.post('/api/execute-trade', async (req, res) => {
     if (contracts > mexcContractsAvail) contracts = mexcContractsAvail;
 
     if (positionState.targetQty > 0) {
-      const remaining = Math.max(positionState.targetQty - positionState.filledQty, 0);
+      const remaining = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
       const remContracts = wmtxToContracts(remaining, meta);
       if (contracts > remContracts) contracts = remContracts;
     }
@@ -684,19 +708,25 @@ app.post('/api/cancel-order', async (req, res) => {
     if (idx === -1) return res.status(404).json({ error: 'Ordem não encontrada' });
     const item = orderHistory[idx];
 
-    let filled = 0, avg = 0;
+    let gFilled = 0, gAvg = 0, mFilled = 0, mAvg = 0;
     if (item.gateOrderId) {
       try {
         await cancelGateOrderSdk(symbol, item.gateOrderId);
         const d = await getGateOrderDetail(symbol, item.gateOrderId);
         if (d) {
-          filled = Number(d.filledAmount ?? d.filled_amount ?? '0');
-          avg = Number(d.avgDealPrice ?? d.fill_price ?? d.avgFillPrice ?? item.priceUsedGate);
+          gFilled = Number(d.filledAmount ?? d.filled_amount ?? '0');
+          gAvg = Number(d.avgDealPrice ?? d.fill_price ?? d.avgFillPrice ?? item.priceUsedGate);
         }
       } catch (e) { return res.status(500).json({ error: 'Erro ao cancelar Gate', detail: e.response?.data || e.message }); }
     }
     if (item.mexcOrderId) {
-      try { await mexcCancelOrder(symbol, String(item.mexcOrderId)); }
+      try {
+        await mexcCancelOrder(symbol, String(item.mexcOrderId));
+        const md = await getMexcOrderDetail(symbol, String(item.mexcOrderId));
+        const p = parseMexcOrderDetail(md);
+        mFilled = Number(p.filled || 0);
+        mAvg = Number(p.avgPrice || item.priceUsedMexc);
+      }
       catch (e) { return res.status(500).json({ error: 'Erro ao cancelar MEXC', detail: e?.message || e }); }
     }
 
@@ -705,7 +735,7 @@ app.post('/api/cancel-order', async (req, res) => {
     if (item.mexcOrderId) item.mexcStatus = 'cancelled';
     try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (cancel):', e?.message || e); }
 
-    if (filled > 0) updatePositionFromOrder(item, filled, avg);
+    if (gFilled > 0 || mFilled > 0) updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg);
     res.json({ ok: true, localId, status: item.status });
   } catch (e) {
     res.status(500).json({ error: 'Erro ao cancelar ordem.' });
@@ -739,13 +769,15 @@ async function pollOpenOrders() {
     }
 
     // MEXC
-    let mIsFilled = false;
+    let mFilled = 0, mAvg = Number(item.priceUsedMexc || 0), mIsFilled = false;
     if (item.mexcOrderId) {
       try {
         const md = await getMexcOrderDetail(symbol, String(item.mexcOrderId));
         console.log('MEXC detail', md);
         const p = parseMexcOrderDetail(md);
         console.log('parsed detail', p);
+        mFilled = Number(p.filled || 0);
+        mAvg = Number(p.avgPrice || mAvg);
         mIsFilled = !!p.isFilled;
       } catch {
         // caso não consiga consultar, não marca como filled
@@ -767,7 +799,13 @@ async function pollOpenOrders() {
       item.status = 'filled';
       item.filledAt = nowBR();
       if (!item._positionCounted) {
-        updatePositionFromOrder(item, gFilled || Number(item.volume), gAvg || Number(item.priceUsedGate || 0));
+        updatePositionFromOrder(
+          item,
+          gFilled || Number(item.volume),
+          gAvg || Number(item.priceUsedGate || 0),
+          mFilled || Number(item.volume),
+          mAvg || Number(item.priceUsedMexc || 0)
+        );
         item._positionCounted = true;
       }
     } else if (gIsFilled && !mIsFilled) {
