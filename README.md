@@ -1,4 +1,4 @@
-# ArbiSync (TESTE)
+# ArbiSync
 
 ArbiSync é um painel simples de arbitragem entre as corretoras **Gate.io** e **MEXC**. O projeto foi escrito em Node.js/Express e expõe uma página estática que permite acompanhar cotações, enviar ordens simultâneas e acompanhar o progresso das posições.
 
