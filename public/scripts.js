@@ -250,6 +250,7 @@ async function refreshPosition() {
     document.getElementById('ppFilled').textContent = s.filledQty || 0;
     document.getElementById('ppAvg').textContent = (s.avgPrice || 0).toFixed ? s.avgPrice.toFixed(11) : s.avgPrice;
     document.getElementById('ppArb').textContent = (s.arbPctAvg || 0).toFixed ? s.arbPctAvg.toFixed(6) : s.arbPctAvg;
+    document.getElementById('ppUnrealized').textContent = (s.unrealizedPnl || 0).toFixed ? s.unrealizedPnl.toFixed(6) : s.unrealizedPnl;
     drawProgressChart(s.series || []);
   } catch {}
 }

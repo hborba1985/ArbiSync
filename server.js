@@ -24,7 +24,7 @@ const overridesBySymbol = new Map();
 const SUPPORTED_INSTRUMENTS = new Set(['BOXCAT_USDT', 'WMTX_USDT', 'ACS_USDT']);
 
 let orderHistory = [];
-let positionState = { targetQty: 0, filledQty: 0, avgPrice: 0, arbPctAvg: 0, series: [] };
+let positionState = { targetQty: 0, filledQty: 0, avgPrice: 0, arbPctAvg: 0, unrealizedPnl: 0, series: [] };
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
@@ -451,7 +451,18 @@ app.post('/api/position-target', (req, res) => {
   positionState.targetQty = t;
   res.json({ ok: true, targetQty: t });
 });
-app.get('/api/position-progress', (_req, res) => res.json(positionState));
+app.get('/api/position-progress', async (_req, res) => {
+  try {
+    const g = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${currentSymbol}`);
+    const bid = parseFloat(g?.data?.bids?.[0]?.[0] ?? 0);
+    const avg = Number(positionState.avgPrice || 0);
+    const qty = Number(positionState.filledQty || 0);
+    positionState.unrealizedPnl = qty * (bid - avg);
+  } catch {
+    positionState.unrealizedPnl = null;
+  }
+  res.json(positionState);
+});
 
 function updatePositionFromOrder(item, filledQty, avgPrice) {
   if (!filledQty || filledQty <= 0) return;
