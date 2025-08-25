@@ -541,7 +541,7 @@ app.post('/api/precheck', async (req, res) => {
 
     let finalWmtx = contractsToWmtx(contracts, meta);
     if (positionState.targetQty > 0) {
-      const remaining = Math.max(positionState.targetQty - positionState.filledQty, 0);
+      const remaining = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
       const remContracts = wmtxToContracts(remaining, meta);
       contracts = Math.min(contracts, remContracts);
       finalWmtx = contractsToWmtx(contracts, meta);
@@ -621,7 +621,7 @@ app.post('/api/execute-trade', async (req, res) => {
     if (contracts > mexcContractsAvail) contracts = mexcContractsAvail;
 
     if (positionState.targetQty > 0) {
-      const remaining = Math.max(positionState.targetQty - positionState.filledQty, 0);
+      const remaining = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
       const remContracts = wmtxToContracts(remaining, meta);
       if (contracts > remContracts) contracts = remContracts;
     }
@@ -719,19 +719,25 @@ app.post('/api/cancel-order', async (req, res) => {
     if (idx === -1) return res.status(404).json({ error: 'Ordem não encontrada' });
     const item = orderHistory[idx];
 
-    let filled = 0, avg = 0;
+    let gFilled = 0, gAvg = 0, mFilled = 0, mAvg = 0;
     if (item.gateOrderId) {
       try {
         await cancelGateOrderSdk(symbol, item.gateOrderId);
         const d = await getGateOrderDetail(symbol, item.gateOrderId);
         if (d) {
-          filled = Number(d.filledAmount ?? d.filled_amount ?? '0');
-          avg = Number(d.avgDealPrice ?? d.fill_price ?? d.avgFillPrice ?? item.priceUsedGate);
+          gFilled = Number(d.filledAmount ?? d.filled_amount ?? '0');
+          gAvg = Number(d.avgDealPrice ?? d.fill_price ?? d.avgFillPrice ?? item.priceUsedGate);
         }
       } catch (e) { return res.status(500).json({ error: 'Erro ao cancelar Gate', detail: e.response?.data || e.message }); }
     }
     if (item.mexcOrderId) {
-      try { await mexcCancelOrder(symbol, String(item.mexcOrderId)); }
+      try {
+        await mexcCancelOrder(symbol, String(item.mexcOrderId));
+        const md = await getMexcOrderDetail(symbol, String(item.mexcOrderId));
+        const p = parseMexcOrderDetail(md);
+        mFilled = Number(p.filled || 0);
+        mAvg = Number(p.avgPrice || item.priceUsedMexc);
+      }
       catch (e) { return res.status(500).json({ error: 'Erro ao cancelar MEXC', detail: e?.message || e }); }
     }
 
@@ -740,7 +746,7 @@ app.post('/api/cancel-order', async (req, res) => {
     if (item.mexcOrderId) item.mexcStatus = 'cancelled';
     try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (cancel):', e?.message || e); }
 
-    if (filled > 0) updatePositionFromOrder(item, filled, avg);
+    if (gFilled > 0 || mFilled > 0) updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg);
     res.json({ ok: true, localId, status: item.status });
   } catch (e) {
     res.status(500).json({ error: 'Erro ao cancelar ordem.' });
@@ -774,13 +780,15 @@ async function pollOpenOrders() {
     }
 
     // MEXC
-    let mIsFilled = false;
+    let mFilled = 0, mAvg = Number(item.priceUsedMexc || 0), mIsFilled = false;
     if (item.mexcOrderId) {
       try {
         const md = await getMexcOrderDetail(symbol, String(item.mexcOrderId));
         console.log('MEXC detail', md);
         const p = parseMexcOrderDetail(md);
         console.log('parsed detail', p);
+        mFilled = Number(p.filled || 0);
+        mAvg = Number(p.avgPrice || mAvg);
         mIsFilled = !!p.isFilled;
       } catch {
         // caso não consiga consultar, não marca como filled
@@ -802,7 +810,13 @@ async function pollOpenOrders() {
       item.status = 'filled';
       item.filledAt = nowBR();
       if (!item._positionCounted) {
-        updatePositionFromOrder(item, gFilled || Number(item.volume), gAvg || Number(item.priceUsedGate || 0));
+        updatePositionFromOrder(
+          item,
+          gFilled || Number(item.volume),
+          gAvg || Number(item.priceUsedGate || 0),
+          mFilled || Number(item.volume),
+          mAvg || Number(item.priceUsedMexc || 0)
+        );
         item._positionCounted = true;
       }
     } else if (gIsFilled && !mIsFilled) {
