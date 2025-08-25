@@ -712,8 +712,8 @@ app.post('/api/cancel-order', async (req, res) => {
 
 // ===== Poll: marcar "filled" somente quando Gate **e** MEXC estiverem preenchidas
 async function pollOpenOrders() {
-  const symbol = currentSymbol;
   for (const item of orderHistory) {
+    const symbol = item.symbol;
     if (!['open', 'creating', 'gate_filled', 'mexc_filled', 'gate_error', 'mexc_error'].includes(item.status)) continue;
 
     // Gate
