@@ -755,9 +755,10 @@ app.post('/api/cancel-order', async (req, res) => {
 
 // ===== Poll: marcar "filled" somente quando Gate **e** MEXC estiverem preenchidas
 async function pollOpenOrders() {
+  const ACTIVE_STATUSES = ['open', 'creating', 'gate_filled', 'mexc_filled', 'gate_error', 'mexc_error'];
   for (const item of orderHistory) {
     const symbol = item.symbol;
-    if (!['open', 'creating', 'gate_filled', 'mexc_filled', 'gate_error', 'mexc_error'].includes(item.status)) continue;
+    if (!ACTIVE_STATUSES.includes(item.status)) continue;
 
     // Gate
     let gFilled = 0, gAvg = Number(item.priceUsedGate || 0), gIsFilled = false;
@@ -795,6 +796,10 @@ async function pollOpenOrders() {
         mIsFilled = false;
       }
     }
+
+    // Se durante as chamadas assíncronas o status foi alterado (ex.: cancelado),
+    // não sobrescreve o valor definido pelo cancelamento.
+    if (!ACTIVE_STATUSES.includes(item.status)) continue;
 
     const prevStatus = item.status;
     const prevGateStatus = item.gateStatus;
