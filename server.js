@@ -21,7 +21,7 @@ const autoMetaCache = new Map();
 const overridesBySymbol = new Map();
 
 // Lista simples de instrumentos permitidos para consultas MEXC
-const SUPPORTED_INSTRUMENTS = new Set(['BOXCAT_USDT', 'WMTX_USDT']);
+const SUPPORTED_INSTRUMENTS = new Set(['BOXCAT_USDT', 'WMTX_USDT', 'ACS_USDT']);
 
 let orderHistory = [];
 let positionState = { targetQty: 0, filledQty: 0, avgPrice: 0, arbPctAvg: 0, series: [] };
