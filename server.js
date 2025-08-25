@@ -163,6 +163,14 @@ async function mexcCancelOrder(symbol, orderId) {
   throw new Error('mexcClient.cancelOrder não disponível no SDK.');
 }
 
+function normalizeMexcError(data) {
+  const msg = (data?.msg || data?.message || '').toLowerCase();
+  if (msg.includes('token') && msg.includes('expire')) return 'token expirado';
+  if (msg.includes('param') || msg.includes('invalid')) return 'parâmetros inválidos';
+  if (msg.includes('sign') && msg.includes('invalid')) return 'assinatura inválida';
+  return msg || null;
+}
+
 // Tenta vários nomes de método para obter detalhes da ordem MEXC
 async function getMexcOrderDetail(symbol, orderId) {
   if (!mexcClient || !orderId) return null;
@@ -200,11 +208,27 @@ async function getMexcOrderDetail(symbol, orderId) {
         return data || null;
       } catch (err) {
         const code = err?.response?.status;
-        if (code === 401 || code === 403) {
-          console.error(`[MEXC] auth error for order ${orderId} ${symbol}:`, err.message || err);
+        const contentType = err?.response?.headers?.['content-type'] || '';
+        const raw = err?.response?.data;
+        if (contentType && !contentType.includes('application/json')) {
+          console.warn(`[MEXC] ${fn} non-JSON error for order ${orderId} ${symbol}:`, raw);
           return null;
         }
-        console.warn(`[MEXC] ${fn} failed for order ${orderId} ${symbol}:`, err.message || err);
+        let msg = err.message || err;
+        if (contentType.includes('application/json') && raw) {
+          try {
+            const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            msg = normalizeMexcError(obj) || obj?.msg || obj?.message || msg;
+          } catch {
+            console.warn(`[MEXC] ${fn} invalid JSON error for order ${orderId} ${symbol}:`, raw);
+            return null;
+          }
+        }
+        if (code === 401 || code === 403) {
+          console.error(`[MEXC] auth error for order ${orderId} ${symbol}:`, msg);
+          return null;
+        }
+        console.warn(`[MEXC] ${fn} failed for order ${orderId} ${symbol}:`, msg);
         // tenta o próximo
       }
     }
