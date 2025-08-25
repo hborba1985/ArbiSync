@@ -26,9 +26,11 @@ const SUPPORTED_INSTRUMENTS = new Set(['BOXCAT_USDT', 'WMTX_USDT', 'ACS_USDT']);
 let orderHistory = [];
 let positionState = {
   targetQty: 0,
+  filledQty: 0,
+  avgPrice: 0,
+  arbPctAvg: 0,
   gate: { filledQty: 0, avgPrice: 0 },
   mexc: { filledQty: 0, avgPrice: 0 },
-  arbPctAvg: 0,
   series: []
 };
 
@@ -459,36 +461,45 @@ app.post('/api/position-target', (req, res) => {
 });
 app.get('/api/position-progress', (_req, res) => res.json(positionState));
 
-function updatePositionFromOrder(item, gateFilled, gateAvg, mexcFilled, mexcAvg) {
-  gateFilled = Number(gateFilled || 0);
-  mexcFilled = Number(mexcFilled || 0);
-  if (gateFilled <= 0 && mexcFilled <= 0) return;
+function updatePositionFromOrder(item, filledQty, gateAvg) {
+  if (!filledQty || filledQty <= 0) return;
 
-  // Gate totals
-  const prevGateQty = positionState.gate.filledQty;
-  const prevGateAvg = positionState.gate.avgPrice;
-  const newGateQty = prevGateQty + gateFilled;
-  const newGateAvg = newGateQty > 0 ? ((prevGateAvg * prevGateQty) + (gateAvg * gateFilled)) / newGateQty : 0;
-  positionState.gate.filledQty = newGateQty;
-  positionState.gate.avgPrice = newGateAvg;
+  // Gate stats
+  const gPrevQty = positionState.gate.filledQty;
+  const gPrevAvg = positionState.gate.avgPrice;
+  const gNewQty = gPrevQty + filledQty;
+  const gNewAvg = gNewQty > 0 ? ((gPrevAvg * gPrevQty) + (gateAvg * filledQty)) / gNewQty : 0;
+  positionState.gate.filledQty = gNewQty;
+  positionState.gate.avgPrice = gNewAvg;
 
-  // MEXC totals
-  const prevMexcQty = positionState.mexc.filledQty;
-  const prevMexcAvg = positionState.mexc.avgPrice;
-  const newMexcQty = prevMexcQty + mexcFilled;
-  const newMexcAvg = newMexcQty > 0 ? ((prevMexcAvg * prevMexcQty) + (mexcAvg * mexcFilled)) / newMexcQty : 0;
-  positionState.mexc.filledQty = newMexcQty;
-  positionState.mexc.avgPrice = newMexcAvg;
+  // MEXC stats (use original priceUsedMexc from item)
+  const mexcPrice = Number(item.priceUsedMexc || 0);
+  const mPrevQty = positionState.mexc.filledQty;
+  const mPrevAvg = positionState.mexc.avgPrice;
+  const mNewQty = mPrevQty + filledQty;
+  const mNewAvg = mNewQty > 0 ? ((mPrevAvg * mPrevQty) + (mexcPrice * filledQty)) / mNewQty : 0;
+  positionState.mexc.filledQty = mNewQty;
+  positionState.mexc.avgPrice = mNewAvg;
 
-  // Arbitrage percentage average based on provided averages
-  const prevQty = prevGateQty;
-  const prevArb = positionState.arbPctAvg || 0;
-  const arbThis = gateAvg ? ((mexcAvg - gateAvg) / gateAvg) * 100 : 0;
-  const newQty = newGateQty;
-  const newArb = newQty > 0 ? ((prevArb * prevQty) + (arbThis * gateFilled)) / newQty : 0;
+  // Aggregates
+  const prevQty = positionState.filledQty;
+  const prevAvg = positionState.avgPrice;
+  const newQty = prevQty + filledQty;
+  const newAvg = newQty > 0 ? ((prevAvg * prevQty) + (gateAvg * filledQty)) / newQty : 0;
+  const arbThis = ((mexcPrice - parseFloat(item.priceUsedGate)) / parseFloat(item.priceUsedGate)) * 100;
+  const newArb = newQty > 0 ? (((positionState.arbPctAvg || 0) * prevQty) + (arbThis * filledQty)) / newQty : 0;
+  positionState.filledQty = newQty;
+  positionState.avgPrice = newAvg;
   positionState.arbPctAvg = newArb;
 
-  positionState.series.push({ t: Date.now(), filledQty: newGateQty, avgPrice: Number(newGateAvg.toFixed(11)), arbPctAvg: Number(newArb.toFixed(6)) });
+  positionState.series.push({
+    t: Date.now(),
+    filledQty: newQty,
+    avgPrice: Number(newAvg.toFixed(11)),
+    arbPctAvg: Number(newArb.toFixed(6)),
+    gate: { filledQty: gNewQty, avgPrice: Number(gNewAvg.toFixed(11)) },
+    mexc: { filledQty: mNewQty, avgPrice: Number(mNewAvg.toFixed(11)) }
+  });
 }
 
 // ===== Precheck (respeita modo open/close do front)

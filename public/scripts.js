@@ -246,10 +246,13 @@ async function refreshPosition() {
   try {
     const r = await fetch('/api/position-progress');
     const s = await r.json();
+    const g = s.gate || {};
+    const m = s.mexc || {};
     document.getElementById('ppTarget').textContent = s.targetQty || 0;
-    document.getElementById('ppFilled').textContent = (s.gate && s.gate.filledQty) || 0;
-    const gAvg = s.gate && s.gate.avgPrice;
-    document.getElementById('ppAvg').textContent = (gAvg || 0).toFixed ? gAvg.toFixed(11) : gAvg;
+    document.getElementById('ppGateFilled').textContent = g.filledQty || 0;
+    document.getElementById('ppGateAvg').textContent = (g.avgPrice || 0).toFixed ? g.avgPrice.toFixed(11) : g.avgPrice;
+    document.getElementById('ppMexcFilled').textContent = m.filledQty || 0;
+    document.getElementById('ppMexcAvg').textContent = (m.avgPrice || 0).toFixed ? m.avgPrice.toFixed(11) : m.avgPrice;
     document.getElementById('ppArb').textContent = (s.arbPctAvg || 0).toFixed ? s.arbPctAvg.toFixed(6) : s.arbPctAvg;
     drawProgressChart(s.series || []);
   } catch {}
@@ -342,12 +345,18 @@ function drawProgressChart(series) {
   ctx.clearRect(0,0,W,H);
   ctx.beginPath(); ctx.moveTo(40,H-30); ctx.lineTo(W-10,H-30); ctx.moveTo(40,H-30); ctx.lineTo(40,10); ctx.stroke();
   if (!series.length) { ctx.fillText('Sem dados de preenchimento ainda', 60, H/2); return; }
-  const xs = series.map(p=>p.t), ys = series.map(p=>p.filledQty);
+  const filledOf = p => {
+    if (typeof p.filledQty === 'number') return p.filledQty;
+    if (p.gate && typeof p.gate.filledQty === 'number') return p.gate.filledQty;
+    if (p.mexc && typeof p.mexc.filledQty === 'number') return p.mexc.filledQty;
+    return 0;
+  };
+  const xs = series.map(p=>p.t), ys = series.map(p=>filledOf(p));
   const minX = Math.min(...xs), maxX = Math.max(...xs), maxY = Math.max(...ys)||1;
   const x = (t)=> 40 + (t-minX)*(W-60)/(maxX-minX || 1);
   const y = (v)=> (H-30) - v*(H-50)/(maxY || 1);
-  ctx.beginPath(); series.forEach((p,i)=>{ const X=x(p.t), Y=y(p.filledQty); if(!i) ctx.moveTo(X,Y); else ctx.lineTo(X,Y); }); ctx.stroke();
-  series.forEach(p=>{ const X=x(p.t), Y=y(p.filledQty); ctx.beginPath(); ctx.arc(X,Y,2,0,Math.PI*2); ctx.fill(); });
+  ctx.beginPath(); series.forEach((p,i)=>{ const X=x(p.t), Y=y(filledOf(p)); if(!i) ctx.moveTo(X,Y); else ctx.lineTo(X,Y); }); ctx.stroke();
+  series.forEach(p=>{ const X=x(p.t), Y=y(filledOf(p)); ctx.beginPath(); ctx.arc(X,Y,2,0,Math.PI*2); ctx.fill(); });
 }
 
 // ======== Init
