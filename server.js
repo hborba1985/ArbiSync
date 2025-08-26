@@ -383,13 +383,21 @@ app.post('/api/position-target', (req, res) => {
 app.get('/api/position-progress', (_req, res) => res.json(positionState));
 
 function updatePositionFromOrder(item, filledQty, avgPrice) {
-  if (!filledQty || filledQty <= 0) return;
+  if (!filledQty || filledQty === 0) return;
   const prevQty = positionState.filledQty;
   const prevAvg = positionState.avgPrice;
-  const newQty = prevQty + filledQty;
-  const newAvg = newQty > 0 ? ((prevAvg * prevQty) + (avgPrice * filledQty)) / newQty : 0;
+  const signedQty = filledQty;
+  const newQty = prevQty + signedQty;
   const arbThis = ((parseFloat(item.priceUsedMexc) - parseFloat(item.priceUsedGate)) / parseFloat(item.priceUsedGate)) * 100;
-  const newArb = newQty > 0 ? (((positionState.arbPctAvg || 0) * prevQty) + (arbThis * filledQty)) / newQty : 0;
+  let newAvg = prevAvg;
+  let newArb = positionState.arbPctAvg || 0;
+  if (signedQty > 0) {
+    newAvg = newQty > 0 ? ((prevAvg * prevQty) + (avgPrice * signedQty)) / newQty : 0;
+    newArb = newQty > 0 ? (((positionState.arbPctAvg || 0) * prevQty) + (arbThis * signedQty)) / newQty : 0;
+  } else if (newQty <= 0) {
+    newAvg = 0;
+    newArb = 0;
+  }
   positionState.filledQty = newQty;
   positionState.avgPrice = newAvg;
   positionState.arbPctAvg = newArb;
@@ -434,8 +442,11 @@ app.post('/api/precheck', async (req, res) => {
     contracts = Math.min(contracts, mexcContractsAvail);
 
     let finalWmtx = contractsToWmtx(contracts, meta);
-    if (positionState.targetQty > 0) {
-      const remaining = Math.max(positionState.targetQty - positionState.filledQty, 0);
+    if (positionState.targetQty != null) {
+      const current = positionState.filledQty || 0;
+      let remaining = 0;
+      if (mode === 'open') remaining = Math.max(positionState.targetQty - current, 0);
+      else remaining = Math.max(current - positionState.targetQty, 0);
       const remContracts = wmtxToContracts(remaining, meta);
       contracts = Math.min(contracts, remContracts);
       finalWmtx = contractsToWmtx(contracts, meta);
@@ -514,8 +525,11 @@ app.post('/api/execute-trade', async (req, res) => {
     }
     if (contracts > mexcContractsAvail) contracts = mexcContractsAvail;
 
-    if (positionState.targetQty > 0) {
-      const remaining = Math.max(positionState.targetQty - positionState.filledQty, 0);
+    if (positionState.targetQty != null) {
+      const current = positionState.filledQty || 0;
+      let remaining = 0;
+      if (mode === 'open') remaining = Math.max(positionState.targetQty - current, 0);
+      else remaining = Math.max(current - positionState.targetQty, 0);
       const remContracts = wmtxToContracts(remaining, meta);
       if (contracts > remContracts) contracts = remContracts;
     }
@@ -593,7 +607,7 @@ app.post('/api/cancel-order', async (req, res) => {
     if (idx === -1) return res.status(404).json({ error: 'Ordem não encontrada' });
     const item = orderHistory[idx];
 
-    let filled = 0, avg = 0;
+    let filled = 0, avg = 0, fee = 0, feeCur = '';
     if (item.gateOrderId) {
       try {
         await cancelGateOrderSdk(symbol, item.gateOrderId);
@@ -601,6 +615,8 @@ app.post('/api/cancel-order', async (req, res) => {
         if (d) {
           filled = Number(d.filledAmount ?? d.filled_amount ?? '0');
           avg = Number(d.avgDealPrice ?? d.fill_price ?? d.avgFillPrice ?? item.priceUsedGate);
+          fee = Number(d.fee ?? d.fee_amount ?? d.feeAmount ?? 0);
+          feeCur = (d.fee_currency || d.feeCurrency || '').toUpperCase();
         }
       } catch (e) { return res.status(500).json({ error: 'Erro ao cancelar Gate', detail: e.response?.data || e.message }); }
     }
@@ -612,7 +628,13 @@ app.post('/api/cancel-order', async (req, res) => {
     item.status = 'cancelled'; item.cancelledAt = nowBR();
     try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (cancel):', e?.message || e); }
 
-    if (filled > 0) updatePositionFromOrder(item, filled, avg);
+    if (filled > 0) {
+      let filledPos = filled;
+      const baseCur = symbol.split('_')[0].toUpperCase();
+      if (item.mode === 'open' && feeCur === baseCur) filledPos = Math.max(filled - fee, 0);
+      const delta = item.mode === 'close' ? -filledPos : filledPos;
+      updatePositionFromOrder(item, delta, avg);
+    }
     res.json({ ok: true, localId, status: item.status });
   } catch (e) {
     res.status(500).json({ error: 'Erro ao cancelar ordem.' });
@@ -626,12 +648,14 @@ async function pollOpenOrders() {
     if (item.status !== 'open' && item.status !== 'creating') continue;
 
     // Gate
-    let gFilled = 0, gAvg = Number(item.priceUsedGate || 0), gIsFilled = false;
+    let gFilled = 0, gAvg = Number(item.priceUsedGate || 0), gIsFilled = false, gFee = 0, gFeeCur = '';
     if (item.gateOrderId) {
       try {
         const d = await getGateOrderDetail(symbol, item.gateOrderId);
         if (d) {
           gFilled = Number(d.filledAmount ?? d.filled_amount ?? 0);
+          gFee = Number(d.fee ?? d.fee_amount ?? d.feeAmount ?? 0);
+          gFeeCur = (d.fee_currency || d.feeCurrency || '').toUpperCase();
           const left = Number(d.left ?? d.left_amount ?? (Number(d.amount ?? item.volume ?? 0) - gFilled));
           gAvg = Number(d.avgDealPrice ?? d.fill_price ?? d.avgFillPrice ?? gAvg);
           const st = (d.status || '').toString().toLowerCase();
@@ -662,7 +686,11 @@ async function pollOpenOrders() {
       item.status = 'filled';
       item.filledAt = nowBR();
       if (!item._positionCounted) {
-        updatePositionFromOrder(item, gFilled || Number(item.volume), gAvg || Number(item.priceUsedGate || 0));
+        let filledForPos = gFilled || Number(item.volume);
+        const baseCur = symbol.split('_')[0].toUpperCase();
+        if (item.mode === 'open' && gFeeCur === baseCur) filledForPos = Math.max(gFilled - gFee, 0);
+        const delta = item.mode === 'close' ? -filledForPos : filledForPos;
+        updatePositionFromOrder(item, delta, gAvg || Number(item.priceUsedGate || 0));
         item._positionCounted = true;
       }
       try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (filled):', e?.message || e); }
