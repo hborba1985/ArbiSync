@@ -30,7 +30,7 @@ let positionState = {
   avgPrice: 0,
   arbPctAvg: 0,
   gate: { filledQty: 0, avgPrice: 0 },
-  mexc: { filledQty: 0, avgPrice: 0 },
+  mexc: { filledQty: 0, avgPrice: 0, positionId: null },
   series: []
 };
 
@@ -142,7 +142,7 @@ if (config.mexc?.webAuthToken || (config.mexc?.apiKey && config.mexc?.apiSecret)
   console.warn('[WARN] mexc.webAuthToken ausente no config.js — recursos MEXC limitados.');
 }
 
-async function mexcSubmitOrder(symbol, price, contracts, leverage, sideCode) {
+async function mexcSubmitOrder(symbol, price, contracts, leverage, sideCode, positionId) {
   if (!mexcClient) throw new Error('mexcClient não inicializado.');
   const payload = {
     symbol,
@@ -153,6 +153,7 @@ async function mexcSubmitOrder(symbol, price, contracts, leverage, sideCode) {
     leverage: Number(leverage) || 1,
     type: 1                      // limit
   };
+  if (positionId != null) payload.positionId = Number(positionId);
   console.log('[MEXC SDK] submitOrder payload:', payload);
   if (typeof mexcClient.submitOrder === 'function') {
     const r = await mexcClient.submitOrder(payload);
@@ -254,11 +255,12 @@ function parseMexcOrderDetail(detail) {
   const remain = Number(d.remainVol ?? d.remaining_volume ?? (Number.isFinite(vol) ? Math.max(vol - filled, 0) : 0));
   const status = (d.state ?? d.status ?? d.orderStatus ?? d.orderState ?? '').toString().toLowerCase();
   const avg    = Number(d.priceAvg ?? d.avgPrice ?? d.avg_price ?? d.avgDealPrice ?? d.fill_price ?? 0);
+  const posId  = d.positionId ?? d.position_id ?? null;
   const statusFilled =
     status.includes('filled') || status === 'done' || status === 'closed' ||
     status === 'success' || status === 'finished' || status === '3' || status === '7';
   const isFilled = statusFilled || (vol > 0 && filled >= vol) || remain === 0;
-  return { isFilled, filled: Math.max(0, filled), avgPrice: avg || 0 };
+  return { isFilled, filled: Math.max(0, filled), avgPrice: avg || 0, positionId: posId };
 }
 
 // ===== MEXC saldo (via web token)
@@ -484,6 +486,7 @@ function updatePositionFromOrder(item, filledQty, gateAvg) {
   const mNewAvg = mNewQty > 0 ? ((mPrevAvg * mPrevQty) + (mexcPrice * adjQty)) / mNewQty : 0;
   positionState.mexc.filledQty = mNewQty;
   positionState.mexc.avgPrice = mNewAvg;
+  if (mNewQty <= 0) positionState.mexc.positionId = null;
 
   // Aggregates
   const prevQty = positionState.filledQty;
@@ -533,22 +536,25 @@ app.post('/api/precheck', async (req, res) => {
     const mexcContractsAvail = parseInt(String((mode === 'open') ? xBid[1] : xAsk[1]).split('.')[0] || '0', 10) || 0;
     const mexcWmtxAvail = mexcContractsAvail * Number(meta.mexc.contractSize);
 
+    let contracts;
     if (mode === 'close') {
       const balances = await getGateBalances(symbol);
       const base = symbol.split('_')[0];
       const baseAvail = parseInt(String(balances?.[base]?.available || '0').split('.')[0] || '0', 10) || 0;
-      gateWmtxAvail = Math.min(gateWmtxAvail, baseAvail);
+      const remQty = Math.min(baseAvail, positionState.gate.filledQty);
+      gateWmtxAvail = remQty;
+      contracts = wmtxToContracts(remQty, meta);
+    } else {
+      const minWmtxRaw = Math.min(gateWmtxAvail, mexcWmtxAvail);
+      contracts = wmtxToContracts(minWmtxRaw, meta);
     }
-
-    const minWmtxRaw = Math.min(gateWmtxAvail, mexcWmtxAvail);
-    let contracts = wmtxToContracts(minWmtxRaw, meta);
 
     const minQuote = Number(meta.gate.minQuote || 0);
     if (minQuote > 0) {
       const needContractsGate = Math.ceil(minQuote / (gatePrice * Number(meta.mexc.contractSize)));
       if (needContractsGate > contracts) contracts = needContractsGate;
     }
-    contracts = Math.min(contracts, mexcContractsAvail);
+    if (mode !== 'close') contracts = Math.min(contracts, mexcContractsAvail);
 
     if (mode === 'open' && positionState.targetQty > 0) {
       const remaining = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
@@ -625,21 +631,24 @@ app.post('/api/execute-trade', async (req, res) => {
     let gateWmtxAvail = parseInt(String((mode === 'open') ? gAsk[1] : gBid[1]).split('.')[0] || '0', 10) || 0;
     const mexcContractsAvail = parseInt(String((mode === 'open') ? xBid[1] : xAsk[1]).split('.')[0] || '0', 10) || 0;
 
+    let contracts;
     if (mode === 'close') {
       const balances = await getGateBalances(symbol);
       const base = symbol.split('_')[0];
       const baseAvail = parseInt(String(balances?.[base]?.available || '0').split('.')[0] || '0', 10) || 0;
-      gateWmtxAvail = Math.min(gateWmtxAvail, baseAvail);
+      const remQty = Math.min(baseAvail, positionState.gate.filledQty);
+      gateWmtxAvail = remQty;
+      contracts = wmtxToContracts(remQty, meta);
+    } else {
+      contracts = wmtxToContracts(Math.min(gateWmtxAvail, mexcContractsAvail * Number(meta.mexc.contractSize)), meta);
     }
-
-    let contracts = wmtxToContracts(Math.min(gateWmtxAvail, mexcContractsAvail * Number(meta.mexc.contractSize)), meta);
 
     const minQuote = Number(meta.gate.minQuote || 0);
     if (minQuote > 0) {
       const needContractsGate = Math.ceil(minQuote / (gatePrice * Number(meta.mexc.contractSize)));
       if (needContractsGate > contracts) contracts = needContractsGate;
     }
-    if (contracts > mexcContractsAvail) contracts = mexcContractsAvail;
+    if (mode !== 'close' && contracts > mexcContractsAvail) contracts = mexcContractsAvail;
 
     if (mode === 'open' && positionState.targetQty > 0) {
       const remaining = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
@@ -704,7 +713,8 @@ app.post('/api/execute-trade', async (req, res) => {
         Number(mexcPx.toFixed(meta.mexc.priceScale)),
         contracts,
         meta.settings.leverage,
-        sideCode
+        sideCode,
+        mode === 'close' ? positionState.mexc.positionId : undefined
       );
       if (mres?.id) {
         histItem.mexcOrderId = bnToStringMaybe(mres.id);
@@ -759,6 +769,7 @@ app.post('/api/cancel-order', async (req, res) => {
         await mexcCancelOrder(symbol, String(item.mexcOrderId));
         const md = await getMexcOrderDetail(symbol, String(item.mexcOrderId));
         const p = parseMexcOrderDetail(md);
+        if (p.positionId) positionState.mexc.positionId = p.positionId;
         mFilled = Number(p.filled || 0);
         mAvg = Number(p.avgPrice || item.priceUsedMexc);
       }
@@ -812,6 +823,7 @@ async function pollOpenOrders() {
         console.log('MEXC detail', md);
         const p = parseMexcOrderDetail(md);
         console.log('parsed detail', p);
+        if (p.positionId) positionState.mexc.positionId = p.positionId;
         mFilled = Number(p.filled || 0);
         mAvg = Number(p.avgPrice || mAvg);
         mIsFilled = !!p.isFilled;
