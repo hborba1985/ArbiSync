@@ -148,7 +148,7 @@ async function mexcSubmitOrder(symbol, price, contracts, leverage, sideCode, pos
     symbol,
     price: Number(price),
     vol: Number(contracts),
-    side: Number(sideCode ?? 3), // 3=open short, 4=close short
+    side: Number(sideCode ?? 3), // 3=open short, 2=close short
     openType: 1,                 // isolated
     leverage: Number(leverage) || 1,
     type: 1                      // limit
@@ -254,7 +254,7 @@ function parseMexcOrderDetail(detail) {
   const vol    = Number(d.vol ?? d.volume ?? d.quantity ?? d.origQty ?? 0);
   const remain = Number(d.remainVol ?? d.remaining_volume ?? (Number.isFinite(vol) ? Math.max(vol - filled, 0) : 0));
   const status = (d.state ?? d.status ?? d.orderStatus ?? d.orderState ?? '').toString().toLowerCase();
-  const avg    = Number(d.priceAvg ?? d.avgPrice ?? d.avg_price ?? d.avgDealPrice ?? d.fill_price ?? 0);
+  const avg    = Number(d.priceAvg ?? d.avgPrice ?? d.avg_price ?? d.avgDealPrice ?? d.dealAvgPrice ?? d.fill_price ?? 0);
   const posId  = d.positionId ?? d.position_id ?? null;
   const statusFilled =
     status.includes('filled') || status === 'done' || status === 'closed' ||
@@ -704,10 +704,10 @@ app.post('/api/execute-trade', async (req, res) => {
       histItem.gateStatus = 'error';
     }
 
-    // MEXC: open=3 | close=4
+    // MEXC: open=3 | close=2
     let mexcOk = false;
     try {
-      const sideCode = (mode === 'open') ? 3 : 4;
+      const sideCode = (mode === 'open') ? 3 : 2;
       const mres = await mexcSubmitOrder(
         symbol,
         Number(mexcPx.toFixed(meta.mexc.priceScale)),
