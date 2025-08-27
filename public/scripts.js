@@ -226,6 +226,7 @@ async function refreshHistory() {
 
       tr.appendChild(td(h.localId));
       tr.appendChild(td(h.createdAt || '-'));
+      tr.appendChild(td(h.sentido || '-'));
       tr.appendChild(td(h.priceUsedGate || '-'));
       tr.appendChild(td(h.priceUsedMexc || '-'));
       tr.appendChild(td(h.volume || '-'));

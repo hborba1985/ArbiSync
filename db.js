@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS history (
   status TEXT,
   gate_status TEXT,
   mexc_status TEXT,
+  sentido TEXT,
   raw_json TEXT NOT NULL
 );
 `);
@@ -35,6 +36,7 @@ CREATE TABLE IF NOT EXISTS history (
 // Migração simples: garante colunas gate_status e mexc_status
 try { db.exec('ALTER TABLE history ADD COLUMN gate_status TEXT'); } catch {}
 try { db.exec('ALTER TABLE history ADD COLUMN mexc_status TEXT'); } catch {}
+try { db.exec('ALTER TABLE history ADD COLUMN sentido TEXT'); } catch {}
 
 const upsertOverrideStmt = db.prepare(`
 INSERT INTO overrides(symbol, override_json, updated_at)
@@ -74,11 +76,11 @@ const insertHistoryStmt = db.prepare(`
 INSERT OR REPLACE INTO history (
   local_id, created_at, executed_at, cancelled_at, symbol,
   price_used_gate, price_used_mexc, volume,
-  gate_order_id, mexc_order_id, status, gate_status, mexc_status, raw_json
+  gate_order_id, mexc_order_id, status, gate_status, mexc_status, sentido, raw_json
 ) VALUES (
   @localId, @createdAt, @executedAt, @cancelledAt, @symbol,
   @priceUsedGate, @priceUsedMexc, @volume,
-  @gateOrderId, @mexcOrderId, @status, @gateStatus, @mexcStatus, @raw
+  @gateOrderId, @mexcOrderId, @status, @gateStatus, @mexcStatus, @sentido, @raw
 )`);
 
 function saveHistoryItem(item) {
@@ -97,6 +99,7 @@ function saveHistoryItem(item) {
     status: toBind(item.status),
     gateStatus: toBind(item.gateStatus),
     mexcStatus: toBind(item.mexcStatus),
+    sentido: toBind(item.sentido),
     raw: JSON.stringify(item || {})
   };
   insertHistoryStmt.run(payload);
