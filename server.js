@@ -789,6 +789,88 @@ app.post('/api/cancel-order', async (req, res) => {
   }
 });
 
+// ===== Reposicionamento de ordens
+app.post('/api/reposition-gate', async (req, res) => {
+  try {
+    const { localId } = req.body || {};
+    const idx = orderHistory.findIndex(o => o.localId === localId);
+    if (idx === -1) return res.status(404).json({ error: 'Ordem não encontrada' });
+    const item = orderHistory[idx];
+    if (!item.gateOrderId) return res.status(400).json({ error: 'Sem ordem Gate' });
+    if (item.gateStatus === 'filled' || item.gateStatus === 'cancelled') {
+      return res.status(400).json({ error: 'Ordem Gate já finalizada' });
+    }
+
+    const symbol = item.symbol;
+    const meta = item.metaUsed || await getMergedMeta(symbol);
+    const book = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
+    const gAsk = book.data.asks[0], gBid = book.data.bids[0];
+    const rawPrice = (item.mode === 'open') ? Number(gAsk[0]) : Number(gBid[0]);
+    const newPrice = Number(rawPrice.toFixed(meta.gate.priceScale));
+    const qty = Number(item.volume);
+    const side = (item.mode === 'open') ? 'buy' : 'sell';
+
+    try { await cancelGateOrderSdk(symbol, item.gateOrderId); } catch {}
+    const go = await placeGateOrderSdk(
+      symbol,
+      side,
+      String(newPrice.toFixed(meta.gate.priceScale)),
+      String(qty.toFixed(meta.gate.qtyScale))
+    );
+    item.gateOrderId = go?.id ? String(go.id) : null;
+    item.priceUsedGate = String(newPrice);
+    item.gateStatus = item.gateOrderId ? 'open' : 'error';
+    item.status = (item.mexcStatus === 'filled') ? 'mexc_filled' : 'open';
+    try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (reposition gate):', e?.message || e); }
+    if (!item.gateOrderId) return res.status(500).json({ error: 'Falha ao criar nova ordem Gate' });
+    res.json({ ok: true, gateOrderId: item.gateOrderId, price: item.priceUsedGate });
+  } catch (e) {
+    res.status(500).json({ error: 'Erro ao reposicionar Gate' });
+  }
+});
+
+app.post('/api/reposition-mexc', async (req, res) => {
+  try {
+    const { localId } = req.body || {};
+    const idx = orderHistory.findIndex(o => o.localId === localId);
+    if (idx === -1) return res.status(404).json({ error: 'Ordem não encontrada' });
+    const item = orderHistory[idx];
+    if (!item.mexcOrderId) return res.status(400).json({ error: 'Sem ordem MEXC' });
+    if (item.mexcStatus === 'filled' || item.mexcStatus === 'cancelled') {
+      return res.status(400).json({ error: 'Ordem MEXC já finalizada' });
+    }
+
+    const symbol = item.symbol;
+    const meta = item.metaUsed || await getMergedMeta(symbol);
+    const book = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
+    const xBid = book.data.data.bids[0], xAsk = book.data.data.asks[0];
+    const rawPrice = (item.mode === 'open') ? Number(xBid[0]) : Number(xAsk[0]);
+    const newPrice = Number(rawPrice.toFixed(meta.mexc.priceScale));
+    const contracts = wmtxToContracts(Number(item.volume), meta);
+    const sideCode = (item.mode === 'open') ? 3 : 2;
+
+    try { await mexcCancelOrder(symbol, String(item.mexcOrderId)); } catch {}
+    const mres = await mexcSubmitOrder(
+      symbol,
+      newPrice,
+      contracts,
+      meta.settings.leverage,
+      sideCode,
+      item.mode === 'close' ? positionState.mexc.positionId : undefined
+    );
+    const newId = mres?.id ? bnToStringMaybe(mres.id) : null;
+    item.mexcOrderId = newId;
+    item.priceUsedMexc = String(newPrice);
+    item.mexcStatus = newId ? 'open' : 'error';
+    item.status = (item.gateStatus === 'filled') ? 'gate_filled' : 'open';
+    try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (reposition mexc):', e?.message || e); }
+    if (!newId) return res.status(500).json({ error: 'Falha ao criar nova ordem MEXC' });
+    res.json({ ok: true, mexcOrderId: newId, price: item.priceUsedMexc });
+  } catch (e) {
+    res.status(500).json({ error: 'Erro ao reposicionar MEXC' });
+  }
+});
+
 // ===== Poll: marcar "filled" somente quando Gate **e** MEXC estiverem preenchidas
 async function pollOpenOrders() {
   const ACTIVE_STATUSES = ['open', 'creating', 'gate_filled', 'mexc_filled', 'gate_error', 'mexc_error'];

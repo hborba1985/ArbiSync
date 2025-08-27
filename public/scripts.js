@@ -224,6 +224,42 @@ async function refreshHistory() {
         }
       });
 
+      const groBtn = document.createElement('button');
+      groBtn.textContent = 'Reposicionar';
+      groBtn.disabled = !h.gateOrderId || h.gateStatus === 'filled' || h.gateStatus === 'cancelled';
+      groBtn.addEventListener('click', async () => {
+        groBtn.disabled = true;
+        try {
+          const resp = await fetch('/api/reposition-gate', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ localId: h.localId })
+          });
+          const out = await safeJson(resp);
+          if (!resp.ok || out.ok === false) alert('Erro ao reposicionar Gate: ' + JSON.stringify(out));
+          await refreshHistory();
+        } catch (e) {
+          alert('Erro ao reposicionar Gate: ' + (e.message || e)); groBtn.disabled = false;
+        }
+      });
+
+      const mroBtn = document.createElement('button');
+      mroBtn.textContent = 'Reposicionar';
+      mroBtn.disabled = !h.mexcOrderId || h.mexcStatus === 'filled' || h.mexcStatus === 'cancelled';
+      mroBtn.addEventListener('click', async () => {
+        mroBtn.disabled = true;
+        try {
+          const resp = await fetch('/api/reposition-mexc', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ localId: h.localId })
+          });
+          const out = await safeJson(resp);
+          if (!resp.ok || out.ok === false) alert('Erro ao reposicionar MEXC: ' + JSON.stringify(out));
+          await refreshHistory();
+        } catch (e) {
+          alert('Erro ao reposicionar MEXC: ' + (e.message || e)); mroBtn.disabled = false;
+        }
+      });
+
       tr.appendChild(td(h.localId));
       tr.appendChild(td(h.createdAt || '-'));
       tr.appendChild(td(h.sentido || '-'));
@@ -232,8 +268,10 @@ async function refreshHistory() {
       tr.appendChild(td(h.volume || '-'));
       tr.appendChild(td(h.gateOrderId || '-'));
       tr.appendChild(td(h.gateStatus || '-'));
+      const groTd = document.createElement('td'); groTd.appendChild(groBtn); tr.appendChild(groTd);
       tr.appendChild(td(h.mexcOrderId || '-'));
       tr.appendChild(td(h.mexcStatus || '-'));
+      const mroTd = document.createElement('td'); mroTd.appendChild(mroBtn); tr.appendChild(mroTd);
       tr.appendChild(td(h.status || '-'));
       const act = document.createElement('td'); act.appendChild(cancelBtn); tr.appendChild(act);
 
