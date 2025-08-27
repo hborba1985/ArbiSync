@@ -675,6 +675,7 @@ app.post('/api/execute-trade', async (req, res) => {
     const histItem = {
       localId, createdAt: nowBR(),
       mode, symbol, metaUsed: meta,
+      sentido: mode === 'open' ? 'Open' : 'Close',
       priceUsedGate: String(gatePx),
       priceUsedMexc: String(mexcPx),
       volume: String(gateQty),
