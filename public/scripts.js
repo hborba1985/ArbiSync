@@ -65,6 +65,7 @@ function fillOverridesUI(merged) {
   set('ov_gate_price', g.priceScale);
   set('ov_gate_qty', g.qtyScale);
   set('ov_gate_minqty', g.minQty);
+  set('ov_gate_minquote', g.minQuote);
   set('ov_mexc_price', m.priceScale);
   set('ov_mexc_volp', m.volPrecision);
   set('ov_mexc_cs', m.contractSize);
@@ -74,7 +75,7 @@ function fillOverridesUI(merged) {
 }
 function metaToText(label, meta) {
   return `${label}
-Gate: priceScale=${meta.gate.priceScale}, qtyScale=${meta.gate.qtyScale}, minQty=${meta.gate.minQty}
+Gate: priceScale=${meta.gate.priceScale}, qtyScale=${meta.gate.qtyScale}, minQty=${meta.gate.minQty}, minQuote=${meta.gate.minQuote}
 MEXC: priceScale=${meta.mexc.priceScale}, volPrecision=${meta.mexc.volPrecision}, contractSize=${meta.mexc.contractSize}, minContracts=${meta.mexc.minContracts}
 Settings: margem=${meta.settings.marginPct}%, lev=${meta.settings.leverage}, parity=${meta.settings.parityVolumes}`;
 }
@@ -111,7 +112,8 @@ document.getElementById('saveOverride').addEventListener('click', async () => {
     gate: {
       priceScale: numOrUndef('ov_gate_price'),
       qtyScale: numOrUndef('ov_gate_qty'),
-      minQty: numOrUndef('ov_gate_minqty')
+      minQty: numOrUndef('ov_gate_minqty'),
+      minQuote: numOrUndef('ov_gate_minquote')
     },
     mexc: {
       priceScale: numOrUndef('ov_mexc_price'),
