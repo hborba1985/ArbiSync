@@ -20,9 +20,6 @@ let currentSymbol = (config?.defaultSymbol || 'WMTX_USDT').toUpperCase();
 const autoMetaCache = new Map();
 const overridesBySymbol = new Map();
 
-// Lista simples de instrumentos permitidos para consultas MEXC
-const SUPPORTED_INSTRUMENTS = new Set(['BOXCAT_USDT', 'WMTX_USDT', 'ACS_USDT']);
-
 let orderHistory = [];
 let positionState = {
   targetQty: 0,
@@ -187,12 +184,6 @@ async function getMexcOrderDetail(symbol, orderId) {
   const idStr = String(orderId);
   if (!/^[0-9]+$/.test(idStr)) {
     const msg = `[MEXC] getMexcOrderDetail: orderId não numérico: ${orderId}`;
-    console.warn(msg);
-    throw new Error(msg);
-  }
-
-  if (!SUPPORTED_INSTRUMENTS.has(symbol)) {
-    const msg = `[MEXC] getMexcOrderDetail: symbol não suportado: ${symbol}`;
     console.warn(msg);
     throw new Error(msg);
   }
