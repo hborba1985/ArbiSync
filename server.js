@@ -405,8 +405,12 @@ app.get('/api/data', async (_req, res) => {
     const g = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
     const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
 
-    const gAsk = g.data.asks[0], gBid = g.data.bids[0];
-    const xBid = m.data.data.bids[0], xAsk = m.data.data.asks[0];
+    const gAsk = g.data?.asks?.[0], gBid = g.data?.bids?.[0];
+    const xBid = m.data?.data?.bids?.[0], xAsk = m.data?.data?.asks?.[0];
+
+    if (!gAsk || !gBid || !xBid || !xAsk) {
+      return res.status(500).json({ error: 'Livro de ofertas indisponível ou par inválido' });
+    }
 
     const gateAsk = fmt11(gAsk[0]);
     const gateBid = fmt11(gBid[0]);
