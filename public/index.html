@@ -79,6 +79,13 @@
       <div><b id="mexcLabel">Bid MEXC:</b> <span id="mexcBid">-</span> (<span id="mexcBidVol">-</span>)</div>
       <div style="margin:6px 0 12px 0;">Diferença: <span id="diff">-%</span></div>
 
+      <div style="margin:6px 0 12px 0;">
+        Alerta de dif. (%):
+        <input id="alertMin" type="number" step="any" class="mono" style="width:70px;" placeholder="min" />
+        <input id="alertMax" type="number" step="any" class="mono" style="width:70px;" placeholder="max" />
+        <label style="margin-left:4px;"><input type="checkbox" id="soundToggle" /> Som</label>
+      </div>
+
       <label><input type="checkbox" id="modeClose" /> Fechar posições (inverter lógica)</label>
       <div style="margin-top:10px;">
         <button id="executeTrade">Executar Ordem Simultânea</button>

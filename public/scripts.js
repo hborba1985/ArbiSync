@@ -160,12 +160,56 @@ document.getElementById('modeClose')?.addEventListener('change', () => {
 });
 
 let lastQuotes = null;
+let alertMin = parseFloat(localStorage.getItem('alertMin'));
+let alertMax = parseFloat(localStorage.getItem('alertMax'));
+let soundEnabled = localStorage.getItem('soundOn') === '1';
+let audioCtx = null, lastBeep = 0;
+
+function playBeep() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(1, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + 0.5);
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.5);
+  } catch {}
+}
+
+function checkAlert(diffStr) {
+  if (!soundEnabled) return;
+  const diff = parseFloat(diffStr);
+  if (!isFinite(diff)) return;
+  const min = isFinite(alertMin) ? alertMin : -Infinity;
+  const max = isFinite(alertMax) ? alertMax : Infinity;
+  if (diff < min || diff > max) {
+    const now = Date.now();
+    if (now - lastBeep > 1000) { playBeep(); lastBeep = now; }
+  }
+}
+
+document.getElementById('alertMin').addEventListener('change', e => {
+  alertMin = parseFloat(e.target.value);
+  localStorage.setItem('alertMin', e.target.value);
+});
+document.getElementById('alertMax').addEventListener('change', e => {
+  alertMax = parseFloat(e.target.value);
+  localStorage.setItem('alertMax', e.target.value);
+});
+document.getElementById('soundToggle').addEventListener('change', e => {
+  soundEnabled = e.target.checked;
+  localStorage.setItem('soundOn', soundEnabled ? '1' : '0');
+});
+
 function renderQuotes() {
   if (!lastQuotes) return;
   const mode = getMode();
   const gateLabel = document.getElementById('gateLabel');
   const mexcLabel = document.getElementById('mexcLabel');
-
+  let diffVal;
   if (mode === 'close') {
     gateLabel.textContent = 'Bid Gate.io:';
     mexcLabel.textContent = 'Ask MEXC:';
@@ -174,6 +218,7 @@ function renderQuotes() {
     document.getElementById('mexcBid').textContent = lastQuotes.mexc?.ask ?? '-';
     document.getElementById('mexcBidVol').textContent = lastQuotes.mexc?.askVol ?? '-';
     document.getElementById('diff').textContent = lastQuotes.diffClose ?? '-';
+    diffVal = lastQuotes.diffClose;
   } else {
     gateLabel.textContent = 'Ask Gate.io:';
     mexcLabel.textContent = 'Bid MEXC:';
@@ -182,7 +227,9 @@ function renderQuotes() {
     document.getElementById('mexcBid').textContent = lastQuotes.mexc?.bid ?? '-';
     document.getElementById('mexcBidVol').textContent = lastQuotes.mexc?.bidVol ?? '-';
     document.getElementById('diff').textContent = lastQuotes.diffOpen ?? '-';
+    diffVal = lastQuotes.diffOpen;
   }
+  checkAlert(diffVal);
 }
 
 async function fetchData() {
@@ -410,5 +457,8 @@ function drawProgressChart(series) {
   await setSymbol(sym);
   await refreshMetaUI(sym);
   setModeFromStorage();
+  if (isFinite(alertMin)) document.getElementById('alertMin').value = alertMin;
+  if (isFinite(alertMax)) document.getElementById('alertMax').value = alertMax;
+  document.getElementById('soundToggle').checked = soundEnabled;
   refreshBalances(); refreshHistory(); refreshPosition(); fetchData();
 })();
