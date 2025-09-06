@@ -315,6 +315,8 @@ async function refreshHistory() {
       tr.appendChild(td(h.priceUsedGate || '-'));
       tr.appendChild(td(h.priceUsedMexc || '-'));
       tr.appendChild(td(h.volume || '-'));
+      tr.appendChild(td(h.arbPct != null ? Number(h.arbPct).toFixed(6) : '-'));
+      tr.appendChild(td(h.pnlUsd != null ? Number(h.pnlUsd).toFixed(6) : '-'));
       tr.appendChild(td(h.gateOrderId || '-'));
       tr.appendChild(td(h.gateStatus || '-'));
       const groTd = document.createElement('td'); groTd.appendChild(groBtn); tr.appendChild(groTd);
@@ -342,6 +344,7 @@ async function refreshPosition() {
     document.getElementById('ppMexcFilled').textContent = m.filledQty || 0;
     document.getElementById('ppMexcAvg').textContent = (m.avgPrice || 0).toFixed ? m.avgPrice.toFixed(11) : m.avgPrice;
     document.getElementById('ppArb').textContent = (s.arbPctAvg || 0).toFixed ? s.arbPctAvg.toFixed(6) : s.arbPctAvg;
+    document.getElementById('ppPnl').textContent = (s.pnlUsd || 0).toFixed ? s.pnlUsd.toFixed(6) : s.pnlUsd;
     drawProgressChart(s.series || []);
   } catch {}
 }
