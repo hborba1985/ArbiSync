@@ -661,6 +661,45 @@ app.post('/api/execute-trade', async (req, res) => {
       return res.status(400).json({ error: `Mínimo da Gate não atendido (>= ${minQuote} USDT). Tente aumentar contratos.` });
     }
 
+    const [gateBalances, mexcBal] = await Promise.all([
+      getGateBalances(symbol),
+      getMexcAvailableUSDT()
+    ]);
+
+    const leverage = Number(meta.settings.leverage) || 1;
+    const contractValueUSDT = mexcPx * Number(meta.mexc.contractSize);
+    const requiredMexcUSDT = (contractValueUSDT * contracts) / leverage;
+
+    if (mexcBal.availableUSDT == null || mexcBal.availableUSDT < requiredMexcUSDT) {
+      return res.status(400).json({
+        error: 'Saldo MEXC insuficiente',
+        requiredUSDT: Number(requiredMexcUSDT.toFixed(6)),
+        availableUSDT: mexcBal.availableUSDT
+      });
+    }
+
+    if (mode === 'open') {
+      const neededGateUSDT = gatePx * gateQty;
+      const gateUSDTAvail = Number(gateBalances?.USDT?.available || 0);
+      if (gateUSDTAvail < neededGateUSDT) {
+        return res.status(400).json({
+          error: 'Saldo Gate USDT insuficiente',
+          requiredUSDT: Number(neededGateUSDT.toFixed(6)),
+          availableUSDT: gateUSDTAvail
+        });
+      }
+    } else {
+      const base = symbol.split('_')[0];
+      const gateBaseAvail = Number(gateBalances?.[base]?.available || 0);
+      if (gateBaseAvail < gateQty) {
+        return res.status(400).json({
+          error: `Saldo Gate ${base} insuficiente`,
+          requiredBase: Number(gateQty.toFixed(meta.gate.qtyScale)),
+          availableBase: gateBaseAvail
+        });
+      }
+    }
+
     console.log('[EXECUTAR] Modo:', mode);
     console.log('[EXECUTAR] Preço Gate:', gatePx);
     console.log('[EXECUTAR] Preço MEXC:', mexcPx);
