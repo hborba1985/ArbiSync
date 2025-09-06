@@ -26,6 +26,7 @@ let positionState = {
   filledQty: 0,
   avgPrice: 0,
   arbPctAvg: 0,
+  pnlUsd: 0,
   gate: { filledQty: 0, avgPrice: 0 },
   mexc: { filledQty: 0, avgPrice: 0, positionId: null },
   series: []
@@ -458,23 +459,32 @@ app.post('/api/position-target', (req, res) => {
 });
 app.get('/api/position-progress', (_req, res) => res.json(positionState));
 
-function updatePositionFromOrder(item, filledQty, gateAvg) {
-  if (!filledQty || filledQty <= 0) return;
+function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
+  const gateQty = Number(gFilled || 0);
+  const mexcQty = Number(mFilled || gateQty);
+  const qty = Math.min(gateQty, mexcQty);
+  if (!qty || qty <= 0) return;
 
-  // Close orders reduzem a posição
+  const gatePrice = Number(gAvg || item.priceUsedGate || 0);
+  const mexcPrice = Number(mAvg || item.priceUsedMexc || 0);
   const sign = item.mode === 'close' ? -1 : 1;
-  const adjQty = filledQty * sign;
+  const adjQty = qty * sign;
+
+  const diff = mexcPrice - gatePrice;
+  const arbRaw = (diff / gatePrice) * 100;
+  const pnlUsd = diff * qty * sign;
+  item.arbPct = roundTo(arbRaw * sign, 6);
+  item.pnlUsd = roundTo(pnlUsd, 6);
 
   // Gate stats
   const gPrevQty = positionState.gate.filledQty;
   const gPrevAvg = positionState.gate.avgPrice;
   const gNewQty = gPrevQty + adjQty;
-  const gNewAvg = gNewQty > 0 ? ((gPrevAvg * gPrevQty) + (gateAvg * adjQty)) / gNewQty : 0;
+  const gNewAvg = gNewQty > 0 ? ((gPrevAvg * gPrevQty) + (gatePrice * adjQty)) / gNewQty : 0;
   positionState.gate.filledQty = gNewQty;
   positionState.gate.avgPrice = gNewAvg;
 
-  // MEXC stats (use original priceUsedMexc from item)
-  const mexcPrice = Number(item.priceUsedMexc || 0);
+  // MEXC stats
   const mPrevQty = positionState.mexc.filledQty;
   const mPrevAvg = positionState.mexc.avgPrice;
   const mNewQty = mPrevQty + adjQty;
@@ -487,18 +497,19 @@ function updatePositionFromOrder(item, filledQty, gateAvg) {
   const prevQty = positionState.filledQty;
   const prevAvg = positionState.avgPrice;
   const newQty = prevQty + adjQty;
-  const newAvg = newQty > 0 ? ((prevAvg * prevQty) + (gateAvg * adjQty)) / newQty : 0;
-  const arbThis = ((mexcPrice - parseFloat(item.priceUsedGate)) / parseFloat(item.priceUsedGate)) * 100;
-  const newArb = newQty > 0 ? (((positionState.arbPctAvg || 0) * prevQty) + (arbThis * adjQty)) / newQty : 0;
+  const newAvg = newQty > 0 ? ((prevAvg * prevQty) + (gatePrice * adjQty)) / newQty : 0;
+  const newArb = newQty > 0 ? (((positionState.arbPctAvg || 0) * prevQty) + (arbRaw * adjQty)) / newQty : 0;
   positionState.filledQty = newQty;
   positionState.avgPrice = newAvg;
   positionState.arbPctAvg = newArb;
+  positionState.pnlUsd = (positionState.pnlUsd || 0) + item.pnlUsd;
 
   positionState.series.push({
     t: Date.now(),
     filledQty: newQty,
     avgPrice: Number(newAvg.toFixed(11)),
     arbPctAvg: Number(newArb.toFixed(6)),
+    pnlUsd: Number(positionState.pnlUsd.toFixed(6)),
     gate: { filledQty: gNewQty, avgPrice: Number(gNewAvg.toFixed(11)) },
     mexc: { filledQty: mNewQty, avgPrice: Number(mNewAvg.toFixed(11)) }
   });
@@ -816,7 +827,10 @@ app.post('/api/cancel-order', async (req, res) => {
     if (item.mexcOrderId) item.mexcStatus = 'cancelled';
     try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (cancel):', e?.message || e); }
 
-    if (gFilled > 0 || mFilled > 0) updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg);
+    if (gFilled > 0 || mFilled > 0) {
+      updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg);
+      try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (cancel post):', e?.message || e); }
+    }
     res.json({ ok: true, localId, status: item.status });
   } catch (e) {
     res.status(500).json({ error: 'Erro ao cancelar ordem.' });
