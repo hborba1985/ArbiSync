@@ -472,6 +472,24 @@ app.get('/api/balances', async (_req, res) => {
   res.json({ gate, mexc });
 });
 
+// ===== Notificação via Telegram
+app.post('/api/notify-telegram', async (req, res) => {
+  const diff = req.body?.diff;
+  if (!config.telegram?.botToken || !config.telegram?.chatId) {
+    return res.status(500).json({ error: 'Telegram não configurado' });
+  }
+  try {
+    await axios.post(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
+      chat_id: config.telegram.chatId,
+      text: `Alerta de arbitragem: ${diff}%`
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[Telegram] falha ao enviar:', e.response?.data || e.message || e);
+    res.status(500).json({ error: 'Falha ao enviar' });
+  }
+});
+
 // ===== Posição (meta e progresso)
 app.post('/api/position-target', (req, res) => {
   const t = Number(req.body?.targetQty);

@@ -34,6 +34,19 @@ module.exports = {
 };
 ```
 
+### Notificações por Telegram
+
+1. No Telegram, converse com [@BotFather](https://t.me/BotFather) e crie um bot com o comando `/newbot`. Anote o **token** informado.
+2. Crie um grupo e adicione o bot como participante. Envie qualquer mensagem nesse grupo.
+3. Obtenha o `chat_id` acessando `https://api.telegram.org/botTOKEN/getUpdates` (substitua `TOKEN` pelo valor recebido). O campo `chat.id` da última mensagem corresponde ao ID do grupo.
+4. Edite `config.js` e preencha:
+
+   ```javascript
+   telegram: { botToken: 'SEU_TOKEN', chatId: 'SEU_CHAT_ID' }
+   ```
+
+5. Reinicie o servidor. No painel web, marque a opção **Telegram** ao lado do alerta de diferença para ativar o envio das mensagens.
+
 ## Execução
 Inicie o servidor com:
 

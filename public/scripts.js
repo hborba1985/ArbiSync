@@ -163,7 +163,8 @@ let lastQuotes = null;
 let alertMin = parseFloat(localStorage.getItem('alertMin'));
 let alertMax = parseFloat(localStorage.getItem('alertMax'));
 let soundEnabled = localStorage.getItem('soundOn') === '1';
-let audioCtx = null, lastBeep = 0;
+let telegramEnabled = localStorage.getItem('tgOn') === '1';
+let audioCtx = null, lastBeep = 0, lastTgSent = 0;
 
 function playBeep() {
   try {
@@ -179,15 +180,29 @@ function playBeep() {
   } catch {}
 }
 
+async function notifyTelegram(diff) {
+  if (!telegramEnabled) return;
+  const now = Date.now();
+  if (now - lastTgSent < 10000) return; // evita spam
+  lastTgSent = now;
+  try {
+    await fetch('/api/notify-telegram', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ diff })
+    });
+  } catch {}
+}
+
 function checkAlert(diffStr) {
-  if (!soundEnabled) return;
   const diff = parseFloat(diffStr);
   if (!isFinite(diff)) return;
   const min = isFinite(alertMin) ? alertMin : -Infinity;
   const max = isFinite(alertMax) ? alertMax : Infinity;
   if (diff < min || diff > max) {
     const now = Date.now();
-    if (now - lastBeep > 1000) { playBeep(); lastBeep = now; }
+    if (soundEnabled && now - lastBeep > 1000) { playBeep(); lastBeep = now; }
+    notifyTelegram(diff);
   }
 }
 
@@ -202,6 +217,10 @@ document.getElementById('alertMax').addEventListener('change', e => {
 document.getElementById('soundToggle').addEventListener('change', e => {
   soundEnabled = e.target.checked;
   localStorage.setItem('soundOn', soundEnabled ? '1' : '0');
+});
+document.getElementById('telegramToggle').addEventListener('change', e => {
+  telegramEnabled = e.target.checked;
+  localStorage.setItem('tgOn', telegramEnabled ? '1' : '0');
 });
 
 function renderQuotes() {
@@ -471,5 +490,6 @@ function drawProgressChart(series) {
   if (isFinite(alertMin)) document.getElementById('alertMin').value = alertMin;
   if (isFinite(alertMax)) document.getElementById('alertMax').value = alertMax;
   document.getElementById('soundToggle').checked = soundEnabled;
+  document.getElementById('telegramToggle').checked = telegramEnabled;
   refreshBalances(); refreshHistory(); refreshPosition(); fetchData();
 })();
