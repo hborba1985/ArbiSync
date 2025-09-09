@@ -210,25 +210,33 @@ function renderQuotes() {
   const gateLabel = document.getElementById('gateLabel');
   const mexcLabel = document.getElementById('mexcLabel');
   let diffVal;
-  if (mode === 'close') {
-    gateLabel.textContent = 'Bid Gate.io:';
-    mexcLabel.textContent = 'Ask MEXC:';
-    document.getElementById('gateAsk').textContent = lastQuotes.gate?.bid ?? '-';
-    document.getElementById('gateAskVol').textContent = lastQuotes.gate?.bidVol ?? '-';
-    document.getElementById('mexcBid').textContent = lastQuotes.mexc?.ask ?? '-';
-    document.getElementById('mexcBidVol').textContent = lastQuotes.mexc?.askVol ?? '-';
-    document.getElementById('diff').textContent = lastQuotes.diffClose ?? '-';
-    diffVal = lastQuotes.diffClose;
-  } else {
-    gateLabel.textContent = 'Ask Gate.io:';
-    mexcLabel.textContent = 'Bid MEXC:';
-    document.getElementById('gateAsk').textContent = lastQuotes.gate?.ask ?? '-';
-    document.getElementById('gateAskVol').textContent = lastQuotes.gate?.askVol ?? '-';
-    document.getElementById('mexcBid').textContent = lastQuotes.mexc?.bid ?? '-';
-    document.getElementById('mexcBidVol').textContent = lastQuotes.mexc?.bidVol ?? '-';
-    document.getElementById('diff').textContent = lastQuotes.diffOpen ?? '-';
-    diffVal = lastQuotes.diffOpen;
-  }
+    if (mode === 'close') {
+      gateLabel.textContent = 'Bid Gate.io:';
+      mexcLabel.textContent = 'Ask MEXC:';
+      document.getElementById('gateAsk').textContent = lastQuotes.gate?.bid ?? '-';
+      document.getElementById('gateAskVol').textContent = lastQuotes.gate?.bidVolUsd
+        ? `${lastQuotes.gate.bidVol} / ${lastQuotes.gate.bidVolUsd}`
+        : lastQuotes.gate?.bidVol ?? '-';
+      document.getElementById('mexcBid').textContent = lastQuotes.mexc?.ask ?? '-';
+      document.getElementById('mexcBidVol').textContent = lastQuotes.mexc?.askVolUsd
+        ? `${lastQuotes.mexc.askVol} / ${lastQuotes.mexc.askVolUsd}`
+        : lastQuotes.mexc?.askVol ?? '-';
+      document.getElementById('diff').textContent = lastQuotes.diffClose ?? '-';
+      diffVal = lastQuotes.diffClose;
+    } else {
+      gateLabel.textContent = 'Ask Gate.io:';
+      mexcLabel.textContent = 'Bid MEXC:';
+      document.getElementById('gateAsk').textContent = lastQuotes.gate?.ask ?? '-';
+      document.getElementById('gateAskVol').textContent = lastQuotes.gate?.askVolUsd
+        ? `${lastQuotes.gate.askVol} / ${lastQuotes.gate.askVolUsd}`
+        : lastQuotes.gate?.askVol ?? '-';
+      document.getElementById('mexcBid').textContent = lastQuotes.mexc?.bid ?? '-';
+      document.getElementById('mexcBidVol').textContent = lastQuotes.mexc?.bidVolUsd
+        ? `${lastQuotes.mexc.bidVol} / ${lastQuotes.mexc.bidVolUsd}`
+        : lastQuotes.mexc?.bidVol ?? '-';
+      document.getElementById('diff').textContent = lastQuotes.diffOpen ?? '-';
+      diffVal = lastQuotes.diffOpen;
+    }
   checkAlert(diffVal);
 }
 
