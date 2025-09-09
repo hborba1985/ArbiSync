@@ -402,6 +402,7 @@ app.get('/api/data', async (_req, res) => {
   try {
     const symbol = currentSymbol;
     const meta = await getMergedMeta(symbol);
+    const [base] = symbol.split('_');
 
     const g = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
     const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
@@ -421,19 +422,40 @@ app.get('/api/data', async (_req, res) => {
     const gateAskVolW = compactVolIntStr(gAsk[1]);
     const gateBidVolW = compactVolIntStr(gBid[1]);
 
+    const gateAskUsd = (Number(gAsk[0]) * Number(gAsk[1])).toFixed(2);
+    const gateBidUsd = (Number(gBid[0]) * Number(gBid[1])).toFixed(2);
+
     const cs = Number(meta.mexc.contractSize || 1);
     const mexcContractsBid = parseInt(String(xBid[1]).split('.')[0] || '0', 10) || 0;
     const mexcContractsAsk = parseInt(String(xAsk[1]).split('.')[0] || '0', 10) || 0;
-    const mexcBidVolW = compactVolIntStr(mexcContractsBid * cs);
-    const mexcAskVolW = compactVolIntStr(mexcContractsAsk * cs);
+    const mexcBidVolRaw = mexcContractsBid * cs;
+    const mexcAskVolRaw = mexcContractsAsk * cs;
+    const mexcBidVolW = compactVolIntStr(mexcBidVolRaw);
+    const mexcAskVolW = compactVolIntStr(mexcAskVolRaw);
+    const mexcBidUsd = (Number(xBid[0]) * mexcBidVolRaw).toFixed(2);
+    const mexcAskUsd = (Number(xAsk[0]) * mexcAskVolRaw).toFixed(2);
 
     const diffOpen  = (((parseFloat(mexcBid) - parseFloat(gateAsk)) / parseFloat(gateAsk)) * 100).toFixed(6);
     const diffClose = (((parseFloat(mexcAsk) - parseFloat(gateBid)) / parseFloat(gateBid)) * 100).toFixed(6);
 
     res.json({
       symbol,
-      gate: { ask: gateAsk, askVol: `${gateAskVolW} ${symbol.split('_')[0]}`, bid: gateBid, bidVol: `${gateBidVolW} ${symbol.split('_')[0]}` },
-      mexc: { bid: mexcBid, bidVol: `${mexcBidVolW} ${symbol.split('_')[0]}`, ask: mexcAsk, askVol: `${mexcAskVolW} ${symbol.split('_')[0]}` },
+      gate: {
+        ask: gateAsk,
+        askVol: `${gateAskVolW} ${base}`,
+        askVolUsd: `${gateAskUsd} USDT`,
+        bid: gateBid,
+        bidVol: `${gateBidVolW} ${base}`,
+        bidVolUsd: `${gateBidUsd} USDT`
+      },
+      mexc: {
+        bid: mexcBid,
+        bidVol: `${mexcBidVolW} ${base}`,
+        bidVolUsd: `${mexcBidUsd} USDT`,
+        ask: mexcAsk,
+        askVol: `${mexcAskVolW} ${base}`,
+        askVolUsd: `${mexcAskUsd} USDT`
+      },
       diffOpen, diffClose
     });
   } catch (e) {
