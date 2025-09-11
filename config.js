@@ -26,6 +26,12 @@ module.exports = {
     leverage: 1
   },
 
+  // Dados do bot/grupo do Telegram para notificações (opcional)
+  telegram: {
+    botToken: '', // token obtido com o BotFather
+    chatId: ''    // ID do grupo ou chat que receberá os alertas
+  },
+
   // Políticas de execução (opcional). Você já usa a margem de 10%:
   execution: {
     marginPct: 10 // % de distância para evitar que a ordem seja consumida imediatamente
