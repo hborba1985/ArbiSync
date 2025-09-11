@@ -587,7 +587,9 @@ app.post('/api/precheck', async (req, res) => {
       const balances = await getGateBalances(symbol);
       const base = symbol.split('_')[0];
       const baseAvail = parseInt(String(balances?.[base]?.available || '0').split('.')[0] || '0', 10) || 0;
-      const remQty = Math.min(baseAvail, positionState.gate.filledQty);
+      const remQty = (positionState.gate.filledQty > 0)
+        ? Math.min(baseAvail, positionState.gate.filledQty)
+        : baseAvail;
       gateWmtxAvail = remQty;
       contracts = wmtxToContracts(remQty, meta);
     } else {
@@ -607,8 +609,10 @@ app.post('/api/precheck', async (req, res) => {
       const remContracts = wmtxToContracts(remaining, meta);
       if (contracts > remContracts) contracts = remContracts;
     } else if (mode === 'close') {
-      const remContracts = wmtxToContracts(positionState.gate.filledQty, meta);
-      if (contracts > remContracts) contracts = remContracts;
+      if (positionState.gate.filledQty > 0) {
+        const remContracts = wmtxToContracts(positionState.gate.filledQty, meta);
+        if (contracts > remContracts) contracts = remContracts;
+      }
     }
 
     let finalWmtx = contractsToWmtx(contracts, meta);
@@ -682,7 +686,9 @@ app.post('/api/execute-trade', async (req, res) => {
       const balances = await getGateBalances(symbol);
       const base = symbol.split('_')[0];
       const baseAvail = parseInt(String(balances?.[base]?.available || '0').split('.')[0] || '0', 10) || 0;
-      const remQty = Math.min(baseAvail, positionState.gate.filledQty);
+      const remQty = (positionState.gate.filledQty > 0)
+        ? Math.min(baseAvail, positionState.gate.filledQty)
+        : baseAvail;
       gateWmtxAvail = remQty;
       contracts = wmtxToContracts(remQty, meta);
     } else {
@@ -701,8 +707,10 @@ app.post('/api/execute-trade', async (req, res) => {
       const remContracts = wmtxToContracts(remaining, meta);
       if (contracts > remContracts) contracts = remContracts;
     } else if (mode === 'close') {
-      const remContracts = wmtxToContracts(positionState.gate.filledQty, meta);
-      if (contracts > remContracts) contracts = remContracts;
+      if (positionState.gate.filledQty > 0) {
+        const remContracts = wmtxToContracts(positionState.gate.filledQty, meta);
+        if (contracts > remContracts) contracts = remContracts;
+      }
     }
 
     const finalWmtxRaw = contractsToWmtx(contracts, meta);
