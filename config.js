@@ -7,20 +7,20 @@ module.exports = {
   defaultSymbol: 'BOXCAT_USDT',
 
   gate: {
-    apiKey: '',          // sua key real Gate (opcional, mas recomendado para saldo/ordens)
-    apiSecret: '',       // seu secret real Gate
+    apiKey: 'COLOQUE SUA CHAVE AQUI',          // sua key real Gate (opcional, mas recomendado para saldo/ordens)
+    apiSecret: 'COLOQUE SUA CHAVE AQUI',       // seu secret real Gate
     baseUrl: 'https://api.gateio.ws'
   },
 
   mexc: {
     // ✅ ORDENS MEXC continuam via Web Token NÃO-OFICIAL (repo oboshto)
     //    Cole aqui o token que começa com "WEB..." capturado logado na aba de Futuros.
-    webAuthToken: '',
+    webAuthToken: 'COLOQUE SUA CHAVE AQUI',
 
     // ⚠️ Opcional: se o SDK suportar leitura de saldo via chaves, você pode colocar aqui
     //    (NÃO mexe no envio/cancelamento de ordens, que continuam via webAuthToken)
-    apiKey: '',
-    apiSecret: '',
+    apiKey: 'COLOQUE SUA CHAVE AQUI',
+    apiSecret: 'COLOQUE SUA CHAVE AQUI',
 
     // Alavancagem padrão usada nas ordens (pode ajustar no frontend via overrides se quiser)
     leverage: 1
@@ -28,8 +28,8 @@ module.exports = {
 
   // Dados do bot/grupo do Telegram para notificações (opcional)
   telegram: {
-    botToken: '', // token obtido com o BotFather
-    chatId: ''    // ID do grupo ou chat que receberá os alertas
+    botToken: 'COLOQUE SUA CHAVE AQUI', // token obtido com o BotFather
+    chatId: 'COLOQUE SUA CHAVE AQUI'    // ID do grupo ou chat que receberá os alertas
   },
 
   // Políticas de execução (opcional). Você já usa a margem de 10%:
