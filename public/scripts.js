@@ -31,16 +31,70 @@ function renderGateBalance(b) {
 }
 function renderMexcBalance(b) {
   if (!b) return '—';
-  if (typeof b.availableUSDT === 'number') {
-    const src = b.source ? ` (${b.source})` : '';
-    return `Disponível (USDT): ${b.availableUSDT}${src}`;
-  }
   if (b.unknown) {
     return (b.reason === 'client_not_initialized' || b.reason === 'no_web_token')
       ? 'Token/chaves não configurados (config.mexc).'
       : 'Saldo indisponível via API.';
   }
   if (b.error) return `Erro: ${JSON.stringify(b.error)}`;
+
+  const assets = (b.assets && typeof b.assets === 'object') ? { ...b.assets } : {};
+  const fmt = (v) => {
+    if (v == null) return '—';
+    const n = Number(v);
+    return Number.isFinite(n) ? n : v;
+  };
+
+  const baseInfo = (b.base && b.base.currency)
+    ? {
+        currency: b.base.currency.toUpperCase(),
+        available: b.base.available,
+        locked: b.base.locked,
+        source: b.base.source
+      }
+    : null;
+
+  if (baseInfo) {
+    const curr = baseInfo.currency;
+    assets[curr] = Object.assign({}, assets[curr] || {});
+    if (baseInfo.available != null && assets[curr].available == null) assets[curr].available = baseInfo.available;
+    if (baseInfo.locked != null && assets[curr].locked == null) assets[curr].locked = baseInfo.locked;
+  }
+
+  if (typeof b.availableUSDT === 'number') {
+    assets.USDT = Object.assign({}, assets.USDT || {}, { available: b.availableUSDT });
+  }
+
+  const keys = Object.keys(assets);
+  if (keys.length) {
+    const lines = [];
+    const order = [];
+    const used = new Set();
+    const baseCurr = baseInfo?.currency;
+    if (baseCurr && assets[baseCurr] !== undefined) { order.push(baseCurr); used.add(baseCurr); }
+    if (assets.USDT !== undefined && !used.has('USDT')) { order.push('USDT'); used.add('USDT'); }
+    keys.sort((a, b) => a.localeCompare(b));
+    keys.forEach(k => { if (!used.has(k)) order.push(k); });
+
+    order.forEach(curr => {
+      const data = assets[curr] || {};
+      const available = fmt(data.available);
+      const locked = fmt(data.locked);
+      let line = `${curr}: disponível ${available}`;
+      if (locked !== '—') line += ` | em ordem ${locked}`;
+      if (curr === baseCurr && baseInfo && baseInfo.source && baseInfo.source !== 'api') {
+        line += ` (${baseInfo.source === 'estimado' ? 'estimado' : baseInfo.source})`;
+      }
+      lines.push(line);
+    });
+
+    return lines.join('\n');
+  }
+
+  if (typeof b.availableUSDT === 'number') {
+    const src = b.source ? ` (${b.source})` : '';
+    return `Disponível (USDT): ${fmt(b.availableUSDT)}${src}`;
+  }
   if (b.reason === 'unexpected_assets_shape') return 'Saldo indisponível (formato inesperado).';
   return '—';
 }
