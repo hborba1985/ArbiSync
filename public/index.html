@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
-  <title>Arbitragem Gate.io x MEXC — <span id="titleSymbol">WMTX_USDT</span></title>
+  <title>Arbitragem Gate.io x MEXC — <span id="titleSymbol">BASE_USDT</span></title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 16px; color: #111; }
@@ -27,14 +27,14 @@
   </style>
 </head>
 <body>
-  <h1>Arbitragem Gate.io x MEXC — <span id="titleSymbol">WMTX_USDT</span></h1>
+  <h1>Arbitragem Gate.io x MEXC — <span id="titleSymbol">BASE_USDT</span></h1>
 
   <!-- Par & Configurações (no topo, como no layout original) -->
   <div class="card top">
     <h3>Par &amp; Configurações</h3>
     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
       <label class="inline" for="symbolInput">Par (BASE_QUOTE):</label>
-      <input id="symbolInput" type="text" value="WMTX_USDT" class="mono" />
+      <input id="symbolInput" type="text" value="BASE_USDT" class="mono" />
       <button id="applySymbol">Usar</button>
       <button id="autoCfg">Auto-configurar</button>
       <span id="metaBadge" class="mono muted">meta: —</span>
@@ -113,7 +113,7 @@
     <div class="card w33">
       <h3>Meta &amp; Progresso da Posição</h3>
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-        <label for="targetQty">Meta (qtd total WMTX):</label>
+        <label for="targetQty">Meta (qtd total moeda base):</label>
         <input id="targetQty" type="number" step="1" min="0" class="mono" />
         <button id="setTarget">Definir meta</button>
       </div>
@@ -147,7 +147,7 @@
           <th>Sentido</th>
           <th>Gate Price</th>
           <th>MEXC Price</th>
-          <th>Volume (WMTX)</th>
+          <th>Volume (moeda base)</th>
           <th>%Arb</th>
           <th>$PnL</th>
           <th>Gate Order ID</th>
