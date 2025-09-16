@@ -15,7 +15,7 @@ const db = require('./db'); // SQLite util
 const app = express();
 const PORT = 3000;
 
-let currentSymbol = (config?.defaultSymbol || 'WMTX_USDT').toUpperCase();
+let currentSymbol = (config?.defaultSymbol || 'BASE_USDT').toUpperCase();
 
 const autoMetaCache = new Map();
 const overridesBySymbol = new Map();
@@ -343,16 +343,16 @@ async function getMergedMeta(symbol) {
 }
 
 // ===== Conversões e arredondamentos
-function wmtxToContracts(qtyWmtx, meta) {
+function baseToContracts(qtyBase, meta) {
   const cs = Number(meta?.mexc?.contractSize || 1);
   const vp = Number(meta?.mexc?.volPrecision || 0);
   const minC = Number(meta?.mexc?.minContracts || 1);
-  const raw = Number(qtyWmtx) / cs;
+  const raw = Number(qtyBase) / cs;
   let contracts = Math.floor(raw * Math.pow(10, vp)) / Math.pow(10, vp);
   if (vp === 0) contracts = Math.floor(raw);
   return Math.max(minC, contracts);
 }
-function contractsToWmtx(contracts, meta) {
+function contractsToBase(contracts, meta) {
   const cs = Number(meta?.mexc?.contractSize || 1);
   return Number(contracts) * cs;
 }
@@ -506,7 +506,7 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
 
   let mexcQty = gateQty;
   if (Number.isFinite(mexcContracts) && mexcContracts > 0) {
-    mexcQty = contractsToWmtx(mexcContracts, meta);
+    mexcQty = contractsToBase(mexcContracts, meta);
   } else if (item?.mexcDisplayVolume != null) {
     const displayQty = Number(item.mexcDisplayVolume);
     if (Number.isFinite(displayQty) && displayQty > 0) mexcQty = displayQty;
@@ -588,9 +588,9 @@ app.post('/api/precheck', async (req, res) => {
       ? baseMexc * (1 + (meta.settings.marginPct / 100))
       : baseMexc * (1 - (meta.settings.marginPct / 100));
 
-    let gateWmtxAvail = parseInt(String((mode === 'open') ? gAsk[1] : gBid[1]).split('.')[0] || '0', 10) || 0;
+    let gateBaseAvail = parseInt(String((mode === 'open') ? gAsk[1] : gBid[1]).split('.')[0] || '0', 10) || 0;
     const mexcContractsAvail = parseInt(String((mode === 'open') ? xBid[1] : xAsk[1]).split('.')[0] || '0', 10) || 0;
-    const mexcWmtxAvail = mexcContractsAvail * Number(meta.mexc.contractSize);
+    const mexcBaseAvail = mexcContractsAvail * Number(meta.mexc.contractSize);
 
     let contracts;
     if (mode === 'close') {
@@ -598,11 +598,11 @@ app.post('/api/precheck', async (req, res) => {
       const base = symbol.split('_')[0];
       const baseAvail = parseInt(String(balances?.[base]?.available || '0').split('.')[0] || '0', 10) || 0;
       const remQty = Math.min(baseAvail, positionState.gate.filledQty);
-      gateWmtxAvail = remQty;
-      contracts = wmtxToContracts(remQty, meta);
+      gateBaseAvail = remQty;
+      contracts = baseToContracts(remQty, meta);
     } else {
-      const minWmtxRaw = Math.min(gateWmtxAvail, mexcWmtxAvail);
-      contracts = wmtxToContracts(minWmtxRaw, meta);
+      const minBaseQtyRaw = Math.min(gateBaseAvail, mexcBaseAvail);
+      contracts = baseToContracts(minBaseQtyRaw, meta);
     }
 
     const minQuote = Number(meta.gate.minQuote || 0);
@@ -614,16 +614,16 @@ app.post('/api/precheck', async (req, res) => {
 
     if (mode === 'open' && positionState.targetQty > 0) {
       const remaining = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
-      const remContracts = wmtxToContracts(remaining, meta);
+      const remContracts = baseToContracts(remaining, meta);
       if (contracts > remContracts) contracts = remContracts;
     } else if (mode === 'close') {
-      const remContracts = wmtxToContracts(positionState.gate.filledQty, meta);
+      const remContracts = baseToContracts(positionState.gate.filledQty, meta);
       if (contracts > remContracts) contracts = remContracts;
     }
 
-    let finalWmtx = contractsToWmtx(contracts, meta);
+    const finalBaseQty = contractsToBase(contracts, meta);
 
-    const rounded = applyRoundingMeta(gatePrice, mexcPrice, finalWmtx, meta);
+    const rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQty, meta);
 
     if (minQuote > 0 && rounded.q * rounded.pg < minQuote) {
       return res.json({
@@ -639,7 +639,7 @@ app.post('/api/precheck', async (req, res) => {
       const details = {
         mode, symbol, gateRounded: rounded.pg, mexcRounded: rounded.pm,
         mexcContracts: contracts, contractSize: meta.mexc.contractSize,
-        finalWmtx: rounded.q, leverage: meta.settings.leverage,
+        finalBaseQty: rounded.q, leverage: meta.settings.leverage,
         marginPct: meta.settings.marginPct, requiredUSDT: Number(required.toFixed(6))
       };
       if (mexcBal.availableUSDT == null) return res.json({ ok: true, needConfirm: false, unknownBalance: true, details });
@@ -651,7 +651,7 @@ app.post('/api/precheck', async (req, res) => {
       const details = {
         mode, symbol, gateRounded: rounded.pg, mexcRounded: rounded.pm,
         mexcContracts: contracts, contractSize: meta.mexc.contractSize,
-        finalWmtx: rounded.q, leverage: meta.settings.leverage, marginPct: meta.settings.marginPct, requiredUSDT: 0
+        finalBaseQty: rounded.q, leverage: meta.settings.leverage, marginPct: meta.settings.marginPct, requiredUSDT: 0
       };
       return res.json({ ok: true, needConfirm: false, unknownBalance: false, details });
     }
@@ -684,7 +684,7 @@ app.post('/api/execute-trade', async (req, res) => {
       ? baseMexc * (1 + (meta.settings.marginPct / 100))
       : baseMexc * (1 - (meta.settings.marginPct / 100));
 
-    let gateWmtxAvail = parseInt(String((mode === 'open') ? gAsk[1] : gBid[1]).split('.')[0] || '0', 10) || 0;
+    let gateBaseAvail = parseInt(String((mode === 'open') ? gAsk[1] : gBid[1]).split('.')[0] || '0', 10) || 0;
     const mexcContractsAvail = parseInt(String((mode === 'open') ? xBid[1] : xAsk[1]).split('.')[0] || '0', 10) || 0;
 
     let contracts;
@@ -693,10 +693,10 @@ app.post('/api/execute-trade', async (req, res) => {
       const base = symbol.split('_')[0];
       const baseAvail = parseInt(String(balances?.[base]?.available || '0').split('.')[0] || '0', 10) || 0;
       const remQty = Math.min(baseAvail, positionState.gate.filledQty);
-      gateWmtxAvail = remQty;
-      contracts = wmtxToContracts(remQty, meta);
+      gateBaseAvail = remQty;
+      contracts = baseToContracts(remQty, meta);
     } else {
-      contracts = wmtxToContracts(Math.min(gateWmtxAvail, mexcContractsAvail * Number(meta.mexc.contractSize)), meta);
+      contracts = baseToContracts(Math.min(gateBaseAvail, mexcContractsAvail * Number(meta.mexc.contractSize)), meta);
     }
 
     const minQuote = Number(meta.gate.minQuote || 0);
@@ -708,15 +708,15 @@ app.post('/api/execute-trade', async (req, res) => {
 
     if (mode === 'open' && positionState.targetQty > 0) {
       const remaining = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
-      const remContracts = wmtxToContracts(remaining, meta);
+      const remContracts = baseToContracts(remaining, meta);
       if (contracts > remContracts) contracts = remContracts;
     } else if (mode === 'close') {
-      const remContracts = wmtxToContracts(positionState.gate.filledQty, meta);
+      const remContracts = baseToContracts(positionState.gate.filledQty, meta);
       if (contracts > remContracts) contracts = remContracts;
     }
 
-    const finalWmtxRaw = contractsToWmtx(contracts, meta);
-    const { pg: gatePx, pm: mexcPx, q: gateQty } = applyRoundingMeta(gatePrice, mexcPrice, finalWmtxRaw, meta);
+    const finalBaseQtyRaw = contractsToBase(contracts, meta);
+    const { pg: gatePx, pm: mexcPx, q: gateQty } = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
 
     if (minQuote > 0 && gateQty * gatePx < minQuote) {
       return res.status(400).json({ error: `Mínimo da Gate não atendido (>= ${minQuote} USDT). Tente aumentar contratos.` });
@@ -764,7 +764,7 @@ app.post('/api/execute-trade', async (req, res) => {
     console.log('[EXECUTAR] Modo:', mode);
     console.log('[EXECUTAR] Preço Gate:', gatePx);
     console.log('[EXECUTAR] Preço MEXC:', mexcPx);
-    console.log('[EXECUTAR] Volume (WMTX final):', gateQty, '| contratos MEXC:', contracts);
+    console.log('[EXECUTAR] Volume (moeda base final):', gateQty, '| contratos MEXC:', contracts);
 
     const localId = Date.now().toString();
     const histItem = {
@@ -831,7 +831,7 @@ app.post('/api/execute-trade', async (req, res) => {
     res.json({
       ok: true, localId, mode,
       gate: { id: histItem.gateOrderId, price: histItem.priceUsedGate },
-      mexc: { id: histItem.mexcOrderId, price: histItem.priceUsedMexc, displayWmtx: histItem.mexcDisplayVolume },
+      mexc: { id: histItem.mexcOrderId, price: histItem.priceUsedMexc, displayBaseQty: histItem.mexcDisplayVolume },
       status: histItem.status
     });
   } catch (e) {
@@ -944,7 +944,7 @@ app.post('/api/reposition-mexc', async (req, res) => {
     const xBid = book.data.data.bids[0], xAsk = book.data.data.asks[0];
     const rawPrice = (item.mode === 'open') ? Number(xBid[0]) : Number(xAsk[0]);
     const newPrice = Number(rawPrice.toFixed(meta.mexc.priceScale));
-    const contracts = wmtxToContracts(Number(item.volume), meta);
+    const contracts = baseToContracts(Number(item.volume), meta);
     const sideCode = (item.mode === 'open') ? 3 : 2;
 
     try { await mexcCancelOrder(symbol, String(item.mexcOrderId)); } catch {}

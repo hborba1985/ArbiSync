@@ -92,7 +92,7 @@ async function refreshMetaUI(symbol) {
 
 document.getElementById('applySymbol').addEventListener('click', async () => {
   const sym = document.getElementById('symbolInput').value.trim().toUpperCase();
-  if (!sym.includes('_')) return alert('Use BASE_QUOTE (ex.: WMTX_USDT)');
+  if (!sym.includes('_')) return alert('Use BASE_QUOTE (ex.: BASE_USDT)');
   await setSymbol(sym);
   localStorage.setItem('lastSymbol', sym);
   document.getElementById('titleSymbol').textContent = sym;
@@ -101,13 +101,13 @@ document.getElementById('applySymbol').addEventListener('click', async () => {
 
 document.getElementById('autoCfg').addEventListener('click', async () => {
   const sym = document.getElementById('symbolInput').value.trim().toUpperCase();
-  if (!sym.includes('_')) return alert('Use BASE_QUOTE (ex.: WMTX_USDT)');
+  if (!sym.includes('_')) return alert('Use BASE_QUOTE (ex.: BASE_USDT)');
   await refreshMetaUI(sym);
 });
 
 document.getElementById('saveOverride').addEventListener('click', async () => {
   const sym = document.getElementById('symbolInput').value.trim().toUpperCase();
-  if (!sym.includes('_')) return alert('Use BASE_QUOTE (ex.: WMTX_USDT)');
+  if (!sym.includes('_')) return alert('Use BASE_QUOTE (ex.: BASE_USDT)');
   const ov = {
     gate: {
       priceScale: numOrUndef('ov_gate_price'),
@@ -405,12 +405,12 @@ document.getElementById('executeTrade').addEventListener('click', async () => {
       const ok = confirm(
         `Saldo possivelmente insuficiente na MEXC.\n` +
         `Requerido: ${d.requiredUSDT} USDT | Disponível: ${d.availableUSDT}\n` +
-        `Alavancagem: ${d.leverage}x | Contratos: ${d.mexcContracts} (x${d.contractSize} WMTX) | WMTX final: ${d.finalWmtx}\n` +
+        `Alavancagem: ${d.leverage}x | Contratos: ${d.mexcContracts} (x${d.contractSize} moeda base) | Moeda base final: ${d.finalBaseQty}\n` +
         `Deseja prosseguir?`
       );
       if (!ok) { document.getElementById('status').textContent = 'Cancelado pelo usuário.'; btn.disabled = false; return; }
     } else if (preOut.unknownBalance) {
-      document.getElementById('status').textContent = `Saldo MEXC não estimado; prosseguindo... (WMTX final: ${d.finalWmtx})`;
+      document.getElementById('status').textContent = `Saldo MEXC não estimado; prosseguindo... (moeda base final: ${d.finalBaseQty})`;
     }
 
     document.getElementById('status').textContent = 'Executando...';
@@ -424,7 +424,7 @@ document.getElementById('executeTrade').addEventListener('click', async () => {
         `OK. localId=${out.localId}\n` +
         `Gate: ${out.gate.id || '-'} @ ${out.gate.price}\n` +
         `MEXC: ${out.mexc.id || '-'} @ ${out.mexc.price}\n` +
-        (out.mexc.displayWmtx ? `WMTX final: ${out.mexc.displayWmtx}\n` : '') +
+        (out.mexc.displayBaseQty ? `Moeda base final: ${out.mexc.displayBaseQty}\n` : '') +
         `Status: ${out.status}`;
       await refreshHistory(); await refreshPosition(); await refreshBalances();
     } else {
@@ -481,7 +481,7 @@ function drawProgressChart(series) {
 (async function init() {
   const last = localStorage.getItem('lastSymbol');
   const serverSym = await getSymbol();
-  const sym = last || serverSym || 'WMTX_USDT';
+  const sym = last || serverSym || 'BASE_USDT';
   document.getElementById('symbolInput').value = sym;
   document.getElementById('titleSymbol').textContent = sym;
   await setSymbol(sym);
