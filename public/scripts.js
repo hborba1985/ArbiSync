@@ -37,6 +37,7 @@ function renderMexcBalance(b) {
       : 'Saldo indisponível via API.';
   }
   if (b.error) return `Erro: ${JSON.stringify(b.error)}`;
+  if (b.reason === 'unexpected_assets_shape') return 'Saldo indisponível (formato inesperado).';
 
   const fmt = (v) => {
     if (v == null) return '—';
@@ -45,24 +46,35 @@ function renderMexcBalance(b) {
   };
 
   const assets = (b.assets && typeof b.assets === 'object') ? b.assets : {};
+  const lines = [];
+
+  const pushLine = (currency, availableRaw, lockedRaw, source) => {
+    if (!currency) return;
+    const available = fmt(availableRaw);
+    const locked = fmt(lockedRaw);
+    let line = `${currency}: disponível ${available} | em ordem ${locked}`;
+    if (source && source !== 'api') line += ` (${source === 'estimado' ? 'estimado' : source})`;
+    lines.push(line);
+  };
+
   const baseCurrency = (b.base?.currency || '').toString().toUpperCase();
-  if (!baseCurrency) {
-    if (b.reason === 'unexpected_assets_shape') return 'Saldo indisponível (formato inesperado).';
-    return 'Saldo da moeda base indisponível.';
+  if (baseCurrency) {
+    const assetEntry = assets[baseCurrency] || {};
+    const availableRaw = (b.base?.available != null) ? b.base.available : assetEntry.available;
+    const lockedRaw = (b.base?.locked != null) ? b.base.locked : assetEntry.locked;
+    const source = b.base?.source || ((assetEntry.available != null || assetEntry.locked != null) ? 'api' : null);
+    pushLine(baseCurrency, availableRaw, lockedRaw, source);
   }
 
-  const assetEntry = assets[baseCurrency] || {};
-  const availableRaw = (b.base?.available != null) ? b.base.available : assetEntry.available;
-  const lockedRaw = (b.base?.locked != null) ? b.base.locked : assetEntry.locked;
-  const source = b.base?.source || ((assetEntry.available != null || assetEntry.locked != null) ? 'api' : null);
+  const usdtAsset = assets.USDT || {};
+  const usdtAvailableRaw = (b.availableUSDT != null) ? b.availableUSDT : usdtAsset.available;
+  const usdtLockedRaw = usdtAsset.locked;
+  if (usdtAvailableRaw != null || usdtLockedRaw != null) {
+    pushLine('USDT', usdtAvailableRaw, usdtLockedRaw, null);
+  }
 
-  const available = fmt(availableRaw);
-  const locked = fmt(lockedRaw);
-
-  let line = `${baseCurrency}: disponível ${available}`;
-  if (locked !== '—') line += ` | em ordem ${locked}`;
-  if (source && source !== 'api') line += ` (${source === 'estimado' ? 'estimado' : source})`;
-  return line;
+  if (!lines.length) return 'Saldo da moeda base indisponível.';
+  return lines.join('\n');
 }
 
 async function refreshBalances() {
