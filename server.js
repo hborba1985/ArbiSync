@@ -500,8 +500,18 @@ app.post('/api/position-target', (req, res) => {
 app.get('/api/position-progress', (_req, res) => res.json(positionState));
 
 function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
+  const meta = item?.metaUsed || {};
   const gateQty = Number(gFilled || 0);
-  const mexcQty = Number(mFilled || gateQty);
+  const mexcContracts = Number(mFilled || 0);
+
+  let mexcQty = gateQty;
+  if (Number.isFinite(mexcContracts) && mexcContracts > 0) {
+    mexcQty = contractsToWmtx(mexcContracts, meta);
+  } else if (item?.mexcDisplayVolume != null) {
+    const displayQty = Number(item.mexcDisplayVolume);
+    if (Number.isFinite(displayQty) && displayQty > 0) mexcQty = displayQty;
+  }
+
   const qty = Math.min(gateQty, mexcQty);
   if (!qty || qty <= 0) return;
 
