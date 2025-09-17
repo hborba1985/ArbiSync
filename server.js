@@ -256,27 +256,111 @@ function parseMexcOrderDetail(detail) {
 }
 
 // ===== MEXC saldo (via web token)
-function pickUSDTFromAssets(assets) {
-  const arr = Array.isArray(assets?.data) ? assets.data : (Array.isArray(assets) ? assets : []);
-  for (const it of arr) {
-    const cc = (it.currency || '').toString().toUpperCase();
-    if (cc === 'USDT') {
-      const v = it.availableBalance ?? it.availableCash ?? it.availableOpen ?? it.balanceAvailable ?? it.available;
-      if (v != null) return Number(v);
-    }
-  }
-  return null;
+function parseMaybeNumber(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
-async function getMexcAvailableUSDT() {
+function extractMexcAssets(payload) {
+  const arr = Array.isArray(payload?.data) ? payload.data : (Array.isArray(payload) ? payload : []);
+  const out = {};
+  for (const it of arr) {
+    if (!it || typeof it !== 'object') continue;
+    const cc = (it.currency || it.asset || it.coin || '').toString().toUpperCase();
+    if (!cc) continue;
+    const available = parseMaybeNumber(
+      it.availableBalance ?? it.balanceAvailable ?? it.availableCash ?? it.availableOpen ??
+      it.availableMargin ?? it.marginAvailable ?? it.available ?? it.maxAvailable ?? it.equity ?? it.cashBalance
+    );
+    const locked = parseMaybeNumber(
+      it.frozenBalance ?? it.frozen ?? it.locked ?? it.positionMargin ??
+      it.marginFrozen ?? it.orderMargin ?? it.holdVol ?? it.frozenMargin
+    );
+    const entry = {};
+    if (available != null) entry.available = available;
+    if (locked != null) entry.locked = locked;
+    if (Object.keys(entry).length > 0) out[cc] = entry;
+  }
+  return out;
+}
+function collectMexcLocalBase(symbol) {
+  if (!symbol) return null;
+  const base = symbol.split('_')[0]?.toUpperCase();
+  if (!base) return null;
+
+  const filled = parseMaybeNumber(positionState?.mexc?.filledQty);
+  let locked = 0;
+  for (const item of orderHistory) {
+    if (item.symbol !== symbol) continue;
+    const st = item.mexcStatus;
+    if (st !== 'open' && st !== 'creating') continue;
+    const vol = parseMaybeNumber(item.mexcDisplayVolume ?? item.volume);
+    if (vol != null) locked += vol;
+  }
+  if (!Number.isFinite(locked) || locked <= 0) locked = null;
+
+  if (filled == null && locked == null) return null;
+  return {
+    currency: base,
+    available: filled ?? null,
+    locked: locked ?? null,
+    source: 'estimado'
+  };
+}
+async function getMexcAvailableUSDT(symbol) {
   const token = config.mexc?.webAuthToken;
   if (!token) return { unknown: true, reason: 'no_web_token' };
 
   const headers = { Authorization: token, 'Content-Type': 'application/json' };
   const url = 'https://futures.mexc.com/api/v1/private/account/assets';
+  const base = symbol ? symbol.split('_')[0]?.toUpperCase() : null;
   try {
     const { data } = await axios.get(url, { headers, timeout: 8000 });
-    const v = pickUSDTFromAssets(data);
-    return v == null ? { unknown: true, reason: 'not_found' } : { availableUSDT: v };
+    const assets = extractMexcAssets(data);
+    const result = { assets };
+
+    if (assets.USDT && assets.USDT.available != null) {
+      result.availableUSDT = parseMaybeNumber(assets.USDT.available);
+    }
+
+    if (base) {
+      const entry = assets[base];
+      if (entry && (entry.available != null || entry.locked != null)) {
+        result.base = {
+          currency: base,
+          available: entry.available != null ? parseMaybeNumber(entry.available) : null,
+          locked: entry.locked != null ? parseMaybeNumber(entry.locked) : null,
+          source: 'api'
+        };
+      }
+    }
+
+    if ((!result.base || result.base.available == null) && base) {
+      const fallback = collectMexcLocalBase(symbol);
+      if (fallback) {
+        result.base = fallback;
+        result.assets = result.assets || {};
+        result.assets[base] = Object.assign({}, result.assets[base] || {}, {
+          available: fallback.available != null ? fallback.available : (result.assets[base]?.available ?? null),
+          locked: fallback.locked != null ? fallback.locked : (result.assets[base]?.locked ?? null)
+        });
+      }
+    }
+
+    if (base && !result.base) {
+      result.base = { currency: base, available: null, locked: null, source: 'sem dados' };
+      result.assets = result.assets || {};
+      if (!result.assets[base]) result.assets[base] = {};
+    }
+
+    if (!Object.keys(result.assets || {}).length) {
+      if (result.base) {
+        result.assets = { [result.base.currency]: { available: result.base.available, locked: result.base.locked } };
+        return result;
+      }
+      return { unknown: true, reason: 'unexpected_assets_shape' };
+    }
+
+    return result;
   } catch (e) {
     const msg = e.response?.data || e.message;
     console.warn('[MEXC balance] erro:', msg);
@@ -468,7 +552,7 @@ app.get('/api/data', async (_req, res) => {
 app.get('/api/balances', async (_req, res) => {
   const symbol = currentSymbol;
   const gate = await getGateBalances(symbol);
-  const mexc = await getMexcAvailableUSDT();
+  const mexc = await getMexcAvailableUSDT(symbol);
   res.json({ gate, mexc });
 });
 
@@ -633,7 +717,7 @@ app.post('/api/precheck', async (req, res) => {
     }
 
     if (mode === 'open') {
-      const mexcBal = await getMexcAvailableUSDT();
+      const mexcBal = await getMexcAvailableUSDT(symbol);
       const contractValueUSDT = rounded.pm * Number(meta.mexc.contractSize);
       const required = (contractValueUSDT * contracts) / Number(meta.settings.leverage || 1);
       const details = {
@@ -724,7 +808,7 @@ app.post('/api/execute-trade', async (req, res) => {
 
     const [gateBalances, mexcBal] = await Promise.all([
       getGateBalances(symbol),
-      getMexcAvailableUSDT()
+      getMexcAvailableUSDT(symbol)
     ]);
 
     const leverage = Number(meta.settings.leverage) || 1;

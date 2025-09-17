@@ -31,10 +31,6 @@ function renderGateBalance(b) {
 }
 function renderMexcBalance(b) {
   if (!b) return '—';
-  if (typeof b.availableUSDT === 'number') {
-    const src = b.source ? ` (${b.source})` : '';
-    return `Disponível (USDT): ${b.availableUSDT}${src}`;
-  }
   if (b.unknown) {
     return (b.reason === 'client_not_initialized' || b.reason === 'no_web_token')
       ? 'Token/chaves não configurados (config.mexc).'
@@ -42,7 +38,43 @@ function renderMexcBalance(b) {
   }
   if (b.error) return `Erro: ${JSON.stringify(b.error)}`;
   if (b.reason === 'unexpected_assets_shape') return 'Saldo indisponível (formato inesperado).';
-  return '—';
+
+  const fmt = (v) => {
+    if (v == null) return '—';
+    const n = Number(v);
+    return Number.isFinite(n) ? n : v;
+  };
+
+  const assets = (b.assets && typeof b.assets === 'object') ? b.assets : {};
+  const lines = [];
+
+  const pushLine = (currency, availableRaw, lockedRaw, source) => {
+    if (!currency) return;
+    const available = fmt(availableRaw);
+    const locked = fmt(lockedRaw);
+    let line = `${currency}: disponível ${available} | em ordem ${locked}`;
+    if (source && source !== 'api') line += ` (${source === 'estimado' ? 'estimado' : source})`;
+    lines.push(line);
+  };
+
+  const baseCurrency = (b.base?.currency || '').toString().toUpperCase();
+  if (baseCurrency) {
+    const assetEntry = assets[baseCurrency] || {};
+    const availableRaw = (b.base?.available != null) ? b.base.available : assetEntry.available;
+    const lockedRaw = (b.base?.locked != null) ? b.base.locked : assetEntry.locked;
+    const source = b.base?.source || ((assetEntry.available != null || assetEntry.locked != null) ? 'api' : null);
+    pushLine(baseCurrency, availableRaw, lockedRaw, source);
+  }
+
+  const usdtAsset = assets.USDT || {};
+  const usdtAvailableRaw = (b.availableUSDT != null) ? b.availableUSDT : usdtAsset.available;
+  const usdtLockedRaw = usdtAsset.locked;
+  if (usdtAvailableRaw != null || usdtLockedRaw != null) {
+    pushLine('USDT', usdtAvailableRaw, usdtLockedRaw, null);
+  }
+
+  if (!lines.length) return 'Saldo da moeda base indisponível.';
+  return lines.join('\n');
 }
 
 async function refreshBalances() {
