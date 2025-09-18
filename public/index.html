@@ -24,6 +24,17 @@
     .top { margin-bottom: 14px; }
     .status { min-height: 60px; }
     canvas { border: 1px solid #ddd; background: #fff; }
+    .quotes-card input[type="number"] { width: 70px; }
+    .quotes-section h4 { margin: 12px 0 6px; font-size: 14px; }
+    .quotes-table { width: 100%; font-size: 12px; }
+    .quotes-table th, .quotes-table td { text-align: right; }
+    .quotes-table th:nth-child(2), .quotes-table td:nth-child(2) { text-align: center; }
+    .quotes-table th.col-check { text-align: center; width: 52px; }
+    .quotes-table td.col-check { text-align: center; }
+    .quote-summary { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; margin-bottom: 4px; }
+    .quote-controls { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+    .quote-control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+    .quote-actions { display: flex; justify-content: flex-end; }
   </style>
 </head>
 <body>
@@ -72,24 +83,72 @@
 
   <div class="row">
     <!-- Cotações -->
-    <div class="card w33">
+    <div class="card w33 quotes-card">
       <h3>Cotações</h3>
 
-      <div><b id="gateLabel">Ask Gate.io:</b> <span id="gateAsk">-</span> (<span id="gateAskVol">-</span>)</div>
-      <div><b id="mexcLabel">Bid MEXC:</b> <span id="mexcBid">-</span> (<span id="mexcBidVol">-</span>)</div>
-      <div style="margin:6px 0 12px 0;">Diferença: <span id="diff">-%</span></div>
-
-      <div style="margin:6px 0 12px 0;">
-        Alerta de dif. (%):
-        <input id="alertMin" type="number" step="any" class="mono" style="width:70px;" placeholder="min" />
-        <input id="alertMax" type="number" step="any" class="mono" style="width:70px;" placeholder="max" />
-        <label style="margin-left:4px;"><input type="checkbox" id="soundToggle" /> Som</label>
-        <label style="margin-left:4px;"><input type="checkbox" id="telegramToggle" /> Telegram</label>
+      <div class="quote-summary">
+        <div><strong>Modo atual:</strong> <span id="quoteModeLabel">Abrir</span></div>
+        <div><strong>Diferença selecionada:</strong> <span id="diff">-%</span></div>
+      </div>
+      <div class="quote-summary">
+        <div>Open selecionado: <span id="openSummary">-</span></div>
+        <div>Close selecionado: <span id="closeSummary">-</span></div>
       </div>
 
-      <label><input type="checkbox" id="modeClose" /> Fechar posições (inverter lógica)</label>
-      <div style="margin-top:10px;">
-        <button id="executeTrade">Executar Ordem Simultânea</button>
+      <div class="quotes-section">
+        <h4>Open — Gate (asks) vs MEXC (bids)</h4>
+        <table class="quotes-table">
+          <thead>
+            <tr>
+              <th class="col-check">Usar</th>
+              <th>Nível</th>
+              <th>Gate preço</th>
+              <th>Gate base</th>
+              <th>Gate USDT</th>
+              <th>MEXC preço</th>
+              <th>MEXC base</th>
+              <th>MEXC USDT</th>
+              <th>Dif.%</th>
+            </tr>
+          </thead>
+          <tbody id="openQuotesBody"></tbody>
+        </table>
+      </div>
+
+      <div class="quotes-section">
+        <h4>Close — Gate (bids) vs MEXC (asks)</h4>
+        <table class="quotes-table">
+          <thead>
+            <tr>
+              <th class="col-check">Usar</th>
+              <th>Nível</th>
+              <th>Gate preço</th>
+              <th>Gate base</th>
+              <th>Gate USDT</th>
+              <th>MEXC preço</th>
+              <th>MEXC base</th>
+              <th>MEXC USDT</th>
+              <th>Dif.%</th>
+            </tr>
+          </thead>
+          <tbody id="closeQuotesBody"></tbody>
+        </table>
+      </div>
+
+      <div class="quote-controls">
+        <div class="quote-control-row">
+          <label><input type="checkbox" id="modeClose" /> Fechar posições (inverter lógica)</label>
+        </div>
+        <div class="quote-control-row">
+          <span>Alerta de dif. (%):</span>
+          <input id="alertMin" type="number" step="any" class="mono" placeholder="min" />
+          <input id="alertMax" type="number" step="any" class="mono" placeholder="max" />
+          <label><input type="checkbox" id="soundToggle" /> Som</label>
+          <label><input type="checkbox" id="telegramToggle" /> Telegram</label>
+        </div>
+        <div class="quote-actions">
+          <button id="executeTrade">Executar Ordem Simultânea</button>
+        </div>
       </div>
       <pre id="status" class="mono status" style="margin-top:10px;"></pre>
     </div>
