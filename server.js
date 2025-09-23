@@ -1068,14 +1068,18 @@ app.post('/api/execute-trade', async (req, res) => {
 
     const leverage = Number(meta.settings.leverage) || 1;
     const contractValueUSDT = rounded.pm * cs;
-    const requiredMexcUSDT = (contractValueUSDT * contracts) / leverage;
+    const requiredMexcUSDT = (mode === 'open')
+      ? (contractValueUSDT * contracts) / leverage
+      : 0;
 
-    if (mexcBal.availableUSDT == null || mexcBal.availableUSDT < requiredMexcUSDT) {
-      return res.status(400).json({
-        error: 'Saldo MEXC insuficiente',
-        requiredUSDT: Number(requiredMexcUSDT.toFixed(6)),
-        availableUSDT: mexcBal.availableUSDT
-      });
+    if (mode === 'open') {
+      if (mexcBal.availableUSDT == null || mexcBal.availableUSDT < requiredMexcUSDT) {
+        return res.status(400).json({
+          error: 'Saldo MEXC insuficiente',
+          requiredUSDT: Number(requiredMexcUSDT.toFixed(6)),
+          availableUSDT: mexcBal.availableUSDT
+        });
+      }
     }
 
     if (mode === 'open') {
