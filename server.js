@@ -450,6 +450,61 @@ function applyRoundingMeta(pg, pm, qtyW, meta) {
   return { pg: pgR, pm: pmR, q: qR };
 }
 
+function normalizeLevelSelection(raw, maxGateLevels, maxMexcLevels) {
+  let arr = [];
+  if (Array.isArray(raw)) arr = raw;
+  else if (raw && typeof raw === 'object' && Array.isArray(raw.levels)) arr = raw.levels;
+
+  const set = new Set();
+  for (const item of arr) {
+    const n = Number(item);
+    if (!Number.isInteger(n) || n < 0) continue;
+    if (maxGateLevels != null && n >= maxGateLevels) continue;
+    if (maxMexcLevels != null && n >= maxMexcLevels) continue;
+    set.add(n);
+  }
+
+  const out = Array.from(set).sort((a, b) => a - b);
+  if (!out.length && maxGateLevels > 0 && maxMexcLevels > 0) out.push(0);
+  return out;
+}
+
+function aggregateGateLevels(levels, entries) {
+  let totalBase = 0;
+  let totalQuote = 0;
+  for (const idx of levels) {
+    const entry = entries?.[idx];
+    if (!entry) continue;
+    const price = Number(entry[0]);
+    const base = Number(entry[1]);
+    if (!Number.isFinite(price) || !Number.isFinite(base)) continue;
+    totalBase += base;
+    totalQuote += price * base;
+  }
+  const avgPrice = totalBase > 0 ? totalQuote / totalBase : 0;
+  return { totalBase, totalQuote, avgPrice };
+}
+
+function aggregateMexcLevels(levels, entries, contractSize) {
+  const cs = Number(contractSize) || 1;
+  let totalContracts = 0;
+  let totalBase = 0;
+  let totalQuote = 0;
+  for (const idx of levels) {
+    const entry = entries?.[idx];
+    if (!entry) continue;
+    const price = Number(entry[0]);
+    const contracts = Number(entry[1]);
+    if (!Number.isFinite(price) || !Number.isFinite(contracts)) continue;
+    const base = contracts * cs;
+    totalContracts += contracts;
+    totalBase += base;
+    totalQuote += price * base;
+  }
+  const avgPrice = totalBase > 0 ? totalQuote / totalBase : 0;
+  return { totalContracts, totalBase, totalQuote, avgPrice };
+}
+
 // ===== Rotas: meta & símbolo
 app.get('/api/market-meta', async (req, res) => {
   try {
@@ -491,56 +546,124 @@ app.get('/api/data', async (_req, res) => {
     const g = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
     const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
 
-    const gAsk = g.data?.asks?.[0], gBid = g.data?.bids?.[0];
-    const xBid = m.data?.data?.bids?.[0], xAsk = m.data?.data?.asks?.[0];
+    const gateAsksRaw = g.data?.asks || [];
+    const gateBidsRaw = g.data?.bids || [];
+    const mexcBidsRaw = m.data?.data?.bids || [];
+    const mexcAsksRaw = m.data?.data?.asks || [];
 
-    if (!gAsk || !gBid || !xBid || !xAsk) {
+    if (!gateAsksRaw.length || !gateBidsRaw.length || !mexcBidsRaw.length || !mexcAsksRaw.length) {
       return res.status(500).json({ error: 'Livro de ofertas indisponível ou par inválido' });
     }
 
-    const gateAsk = fmt11(gAsk[0]);
-    const gateBid = fmt11(gBid[0]);
-    const mexcBid = fmt11(xBid[0]);
-    const mexcAsk = fmt11(xAsk[0]);
-
-    const gateAskVolW = compactVolIntStr(gAsk[1]);
-    const gateBidVolW = compactVolIntStr(gBid[1]);
-
-    const gateAskUsd = (Number(gAsk[0]) * Number(gAsk[1])).toFixed(2);
-    const gateBidUsd = (Number(gBid[0]) * Number(gBid[1])).toFixed(2);
-
+    const limit = 3;
     const cs = Number(meta.mexc.contractSize || 1);
-    const mexcContractsBid = parseInt(String(xBid[1]).split('.')[0] || '0', 10) || 0;
-    const mexcContractsAsk = parseInt(String(xAsk[1]).split('.')[0] || '0', 10) || 0;
-    const mexcBidVolRaw = mexcContractsBid * cs;
-    const mexcAskVolRaw = mexcContractsAsk * cs;
-    const mexcBidVolW = compactVolIntStr(mexcBidVolRaw);
-    const mexcAskVolW = compactVolIntStr(mexcAskVolRaw);
-    const mexcBidUsd = (Number(xBid[0]) * mexcBidVolRaw).toFixed(2);
-    const mexcAskUsd = (Number(xAsk[0]) * mexcAskVolRaw).toFixed(2);
 
-    const diffOpen  = (((parseFloat(mexcBid) - parseFloat(gateAsk)) / parseFloat(gateAsk)) * 100).toFixed(6);
-    const diffClose = (((parseFloat(mexcAsk) - parseFloat(gateBid)) / parseFloat(gateBid)) * 100).toFixed(6);
+    const openLevels = [];
+    const closeLevels = [];
+
+    for (let i = 0; i < limit; i++) {
+      const gAsk = gateAsksRaw[i];
+      const mBid = mexcBidsRaw[i];
+      if (!gAsk || !mBid) break;
+      const gPrice = Number(gAsk[0]);
+      const gBase = Number(gAsk[1]);
+      const mPrice = Number(mBid[0]);
+      const mContracts = Number(mBid[1]);
+      const mBase = mContracts * cs;
+      const gateUsd = gPrice * gBase;
+      const mexcUsd = mPrice * mBase;
+      const diff = (Number.isFinite(gPrice) && gPrice > 0)
+        ? Number((((mPrice - gPrice) / gPrice) * 100).toFixed(6))
+        : null;
+      openLevels.push({
+        level: i,
+        gate: { price: gPrice, baseVolume: gBase, usdtVolume: gateUsd },
+        mexc: { price: mPrice, baseVolume: mBase, usdtVolume: mexcUsd, contracts: mContracts },
+        diffPct: diff
+      });
+    }
+
+    for (let i = 0; i < limit; i++) {
+      const gBid = gateBidsRaw[i];
+      const mAsk = mexcAsksRaw[i];
+      if (!gBid || !mAsk) break;
+      const gPrice = Number(gBid[0]);
+      const gBase = Number(gBid[1]);
+      const mPrice = Number(mAsk[0]);
+      const mContracts = Number(mAsk[1]);
+      const mBase = mContracts * cs;
+      const gateUsd = gPrice * gBase;
+      const mexcUsd = mPrice * mBase;
+      const diff = (Number.isFinite(gPrice) && gPrice > 0)
+        ? Number((((mPrice - gPrice) / gPrice) * 100).toFixed(6))
+        : null;
+      closeLevels.push({
+        level: i,
+        gate: { price: gPrice, baseVolume: gBase, usdtVolume: gateUsd },
+        mexc: { price: mPrice, baseVolume: mBase, usdtVolume: mexcUsd, contracts: mContracts },
+        diffPct: diff
+      });
+    }
+
+    const gateAsks = gateAsksRaw.slice(0, limit).map((entry, idx) => {
+      const price = Number(entry[0]);
+      const baseVol = Number(entry[1]);
+      return {
+        level: idx,
+        price,
+        baseVolume: baseVol,
+        usdtVolume: price * baseVol,
+        diffOpen: openLevels[idx]?.diffPct ?? null
+      };
+    });
+
+    const gateBids = gateBidsRaw.slice(0, limit).map((entry, idx) => {
+      const price = Number(entry[0]);
+      const baseVol = Number(entry[1]);
+      return {
+        level: idx,
+        price,
+        baseVolume: baseVol,
+        usdtVolume: price * baseVol,
+        diffClose: closeLevels[idx]?.diffPct ?? null
+      };
+    });
+
+    const mexcBids = mexcBidsRaw.slice(0, limit).map((entry, idx) => {
+      const price = Number(entry[0]);
+      const contracts = Number(entry[1]);
+      const baseVol = contracts * cs;
+      return {
+        level: idx,
+        price,
+        contracts,
+        baseVolume: baseVol,
+        usdtVolume: price * baseVol,
+        diffOpen: openLevels[idx]?.diffPct ?? null
+      };
+    });
+
+    const mexcAsks = mexcAsksRaw.slice(0, limit).map((entry, idx) => {
+      const price = Number(entry[0]);
+      const contracts = Number(entry[1]);
+      const baseVol = contracts * cs;
+      return {
+        level: idx,
+        price,
+        contracts,
+        baseVolume: baseVol,
+        usdtVolume: price * baseVol,
+        diffClose: closeLevels[idx]?.diffPct ?? null
+      };
+    });
 
     res.json({
       symbol,
-      gate: {
-        ask: gateAsk,
-        askVol: `${gateAskVolW} ${base}`,
-        askVolUsd: `${gateAskUsd} USDT`,
-        bid: gateBid,
-        bidVol: `${gateBidVolW} ${base}`,
-        bidVolUsd: `${gateBidUsd} USDT`
-      },
-      mexc: {
-        bid: mexcBid,
-        bidVol: `${mexcBidVolW} ${base}`,
-        bidVolUsd: `${mexcBidUsd} USDT`,
-        ask: mexcAsk,
-        askVol: `${mexcAskVolW} ${base}`,
-        askVolUsd: `${mexcAskUsd} USDT`
-      },
-      diffOpen, diffClose
+      baseSymbol: base,
+      gate: { asks: gateAsks, bids: gateBids },
+      mexc: { bids: mexcBids, asks: mexcAsks },
+      open: { diff: openLevels[0]?.diffPct ?? null, levels: openLevels },
+      close: { diff: closeLevels[0]?.diffPct ?? null, levels: closeLevels }
     });
   } catch (e) {
     console.error('[ERRO /api/data]:', e.response?.data || e.message);
@@ -659,56 +782,118 @@ app.post('/api/precheck', async (req, res) => {
     const g = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
     const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
 
-    const gAsk = g.data.asks[0], gBid = g.data.bids[0];
-    const xBid = m.data.data.bids[0], xAsk = m.data.data.asks[0];
+    const gateAsks = g.data?.asks || [];
+    const gateBids = g.data?.bids || [];
+    const mexcBids = m.data?.data?.bids || [];
+    const mexcAsks = m.data?.data?.asks || [];
 
-    const baseGate = (mode === 'open') ? Number(gAsk[0]) : Number(gBid[0]);
-    const baseMexc = (mode === 'open') ? Number(xBid[0]) : Number(xAsk[0]);
+    const selections = req.body?.levels || {};
+    const openSelection = normalizeLevelSelection(selections.open, gateAsks.length, mexcBids.length);
+    const closeSelection = normalizeLevelSelection(selections.close, gateBids.length, mexcAsks.length);
+    const selectedLevels = mode === 'open' ? openSelection : closeSelection;
+
+    const gateSide = mode === 'open' ? gateAsks : gateBids;
+    const mexcSide = mode === 'open' ? mexcBids : mexcAsks;
+
+    if (!selectedLevels.length || !gateSide.length || !mexcSide.length) {
+      return res.json({ ok: true, blocked: true, reason: 'insufficient_depth', mode });
+    }
+
+    const gateAgg = aggregateGateLevels(selectedLevels, gateSide);
+    const mexcAgg = aggregateMexcLevels(selectedLevels, mexcSide, meta.mexc.contractSize);
+
+    if (gateAgg.totalBase <= 0 || mexcAgg.totalBase <= 0 || mexcAgg.totalContracts <= 0) {
+      return res.json({ ok: true, blocked: true, reason: 'insufficient_depth', mode });
+    }
+
+    const marginPct = Number(meta.settings.marginPct || 0);
+    const baseGate = gateAgg.avgPrice;
+    const baseMexc = mexcAgg.avgPrice;
 
     let gatePrice = (mode === 'open')
-      ? baseGate * (1 - (meta.settings.marginPct / 100))
-      : baseGate * (1 + (meta.settings.marginPct / 100));
+      ? baseGate * (1 - (marginPct / 100))
+      : baseGate * (1 + (marginPct / 100));
     let mexcPrice = (mode === 'open')
-      ? baseMexc * (1 + (meta.settings.marginPct / 100))
-      : baseMexc * (1 - (meta.settings.marginPct / 100));
+      ? baseMexc * (1 + (marginPct / 100))
+      : baseMexc * (1 - (marginPct / 100));
 
-    let gateBaseAvail = parseInt(String((mode === 'open') ? gAsk[1] : gBid[1]).split('.')[0] || '0', 10) || 0;
-    const mexcContractsAvail = parseInt(String((mode === 'open') ? xBid[1] : xAsk[1]).split('.')[0] || '0', 10) || 0;
-    const mexcBaseAvail = mexcContractsAvail * Number(meta.mexc.contractSize);
+    let gateBaseAvail = gateAgg.totalBase;
+    const mexcContractsAvail = mexcAgg.totalContracts;
+    const mexcBaseAvail = mexcAgg.totalBase;
 
-    let contracts;
+    const cs = Number(meta.mexc.contractSize || 1);
+    const vp = Number(meta.mexc.volPrecision || 0);
+    const minContracts = Number(meta.mexc.minContracts || 1);
+    const factor = Math.pow(10, vp);
+    const floorContracts = (value) => {
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      if (factor > 1) return Math.floor(value * factor) / factor;
+      return Math.floor(value);
+    };
+    const normalizeContracts = (value) => {
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      return Number(value.toFixed(Math.max(vp, 0)));
+    };
+
+    let availableToClose = null;
     if (mode === 'close') {
       const balances = await getGateBalances(symbol);
-      const base = symbol.split('_')[0];
-      const baseAvail = parseInt(String(balances?.[base]?.available || '0').split('.')[0] || '0', 10) || 0;
+      const baseCurrency = symbol.split('_')[0];
+      const baseAvail = Number(balances?.[baseCurrency]?.available || 0);
       const remQty = Math.min(baseAvail, positionState.gate.filledQty);
-      gateBaseAvail = remQty;
-      contracts = baseToContracts(remQty, meta);
-    } else {
-      const minBaseQtyRaw = Math.min(gateBaseAvail, mexcBaseAvail);
-      contracts = baseToContracts(minBaseQtyRaw, meta);
+      availableToClose = remQty;
+      gateBaseAvail = Math.min(gateBaseAvail, remQty);
+    }
+
+    let maxBaseQty = Math.min(gateBaseAvail, mexcBaseAvail);
+    if (!Number.isFinite(maxBaseQty) || maxBaseQty <= 0) {
+      return res.json({ ok: true, blocked: true, reason: 'insufficient_depth', mode });
+    }
+
+    let contracts = Math.min(mexcContractsAvail, maxBaseQty / cs);
+    contracts = normalizeContracts(floorContracts(contracts));
+
+    if (contracts <= 0) {
+      return res.json({ ok: true, blocked: true, reason: 'insufficient_depth', mode });
+    }
+
+    if (mode === 'open' && positionState.targetQty > 0) {
+      const remainingBase = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
+      const remainingContracts = normalizeContracts(floorContracts(remainingBase / cs));
+      if (remainingContracts <= 0) {
+        return res.json({ ok: true, blocked: true, reason: 'target_reached', mode });
+      }
+      if (contracts > remainingContracts) contracts = remainingContracts;
+    } else if (mode === 'close') {
+      const remainingContracts = normalizeContracts(floorContracts(positionState.gate.filledQty / cs));
+      if (remainingContracts <= 0 || (availableToClose != null && availableToClose <= 0)) {
+        return res.json({ ok: true, blocked: true, reason: 'no_position', mode });
+      }
+      if (contracts > remainingContracts) contracts = remainingContracts;
+    }
+
+    if (contracts < minContracts) {
+      return res.json({ ok: true, blocked: true, reason: 'min_contracts_not_met', minContracts, mode });
+    }
+
+    let finalBaseQtyRaw = contracts * cs;
+    let rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
+    let adjustedContracts = normalizeContracts(floorContracts(rounded.q / cs));
+    if (adjustedContracts <= 0) {
+      return res.json({ ok: true, blocked: true, reason: 'rounded_qty_zero', mode });
+    }
+    if (adjustedContracts < contracts) {
+      contracts = adjustedContracts;
+      finalBaseQtyRaw = contracts * cs;
+      rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
+    }
+    contracts = normalizeContracts(contracts);
+
+    if (minContracts > 0 && contracts < minContracts) {
+      return res.json({ ok: true, blocked: true, reason: 'min_contracts_not_met', minContracts, mode });
     }
 
     const minQuote = Number(meta.gate.minQuote || 0);
-    if (minQuote > 0) {
-      const needContractsGate = Math.ceil(minQuote / (gatePrice * Number(meta.mexc.contractSize)));
-      if (needContractsGate > contracts) contracts = needContractsGate;
-    }
-    if (mode !== 'close') contracts = Math.min(contracts, mexcContractsAvail);
-
-    if (mode === 'open' && positionState.targetQty > 0) {
-      const remaining = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
-      const remContracts = baseToContracts(remaining, meta);
-      if (contracts > remContracts) contracts = remContracts;
-    } else if (mode === 'close') {
-      const remContracts = baseToContracts(positionState.gate.filledQty, meta);
-      if (contracts > remContracts) contracts = remContracts;
-    }
-
-    const finalBaseQty = contractsToBase(contracts, meta);
-
-    const rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQty, meta);
-
     if (minQuote > 0 && rounded.q * rounded.pg < minQuote) {
       return res.json({
         ok: true, blocked: true, reason: 'min_quote_not_met', minQuote,
@@ -718,13 +903,14 @@ app.post('/api/precheck', async (req, res) => {
 
     if (mode === 'open') {
       const mexcBal = await getMexcAvailableUSDT(symbol);
-      const contractValueUSDT = rounded.pm * Number(meta.mexc.contractSize);
+      const contractValueUSDT = rounded.pm * cs;
       const required = (contractValueUSDT * contracts) / Number(meta.settings.leverage || 1);
       const details = {
         mode, symbol, gateRounded: rounded.pg, mexcRounded: rounded.pm,
-        mexcContracts: contracts, contractSize: meta.mexc.contractSize,
+        mexcContracts: contracts, contractSize: cs,
         finalBaseQty: rounded.q, leverage: meta.settings.leverage,
-        marginPct: meta.settings.marginPct, requiredUSDT: Number(required.toFixed(6))
+        marginPct: meta.settings.marginPct, requiredUSDT: Number(required.toFixed(6)),
+        levelsUsed: selectedLevels
       };
       if (mexcBal.availableUSDT == null) return res.json({ ok: true, needConfirm: false, unknownBalance: true, details });
       details.availableUSDT = Number(mexcBal.availableUSDT.toFixed ? mexcBal.availableUSDT.toFixed(6) : mexcBal.availableUSDT);
@@ -734,8 +920,10 @@ app.post('/api/precheck', async (req, res) => {
       // close: sem checagem de margem
       const details = {
         mode, symbol, gateRounded: rounded.pg, mexcRounded: rounded.pm,
-        mexcContracts: contracts, contractSize: meta.mexc.contractSize,
-        finalBaseQty: rounded.q, leverage: meta.settings.leverage, marginPct: meta.settings.marginPct, requiredUSDT: 0
+        mexcContracts: contracts, contractSize: cs,
+        finalBaseQty: rounded.q, leverage: meta.settings.leverage,
+        marginPct: meta.settings.marginPct, requiredUSDT: 0,
+        levelsUsed: selectedLevels
       };
       return res.json({ ok: true, needConfirm: false, unknownBalance: false, details });
     }
@@ -755,76 +943,147 @@ app.post('/api/execute-trade', async (req, res) => {
     const g = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
     const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
 
-    const gAsk = g.data.asks[0], gBid = g.data.bids[0];
-    const xBid = m.data.data.bids[0], xAsk = m.data.data.asks[0];
+    const gateAsks = g.data?.asks || [];
+    const gateBids = g.data?.bids || [];
+    const mexcBids = m.data?.data?.bids || [];
+    const mexcAsks = m.data?.data?.asks || [];
 
-    const baseGate = (mode === 'open') ? Number(gAsk[0]) : Number(gBid[0]);
-    const baseMexc = (mode === 'open') ? Number(xBid[0]) : Number(xAsk[0]);
+    const selections = req.body?.levels || {};
+    const openSelection = normalizeLevelSelection(selections.open, gateAsks.length, mexcBids.length);
+    const closeSelection = normalizeLevelSelection(selections.close, gateBids.length, mexcAsks.length);
+    const selectedLevels = mode === 'open' ? openSelection : closeSelection;
+
+    const gateSide = mode === 'open' ? gateAsks : gateBids;
+    const mexcSide = mode === 'open' ? mexcBids : mexcAsks;
+
+    if (!selectedLevels.length || !gateSide.length || !mexcSide.length) {
+      return res.status(400).json({ error: 'Profundidade insuficiente para as seleções escolhidas.' });
+    }
+
+    const gateAgg = aggregateGateLevels(selectedLevels, gateSide);
+    const mexcAgg = aggregateMexcLevels(selectedLevels, mexcSide, meta.mexc.contractSize);
+
+    if (gateAgg.totalBase <= 0 || mexcAgg.totalBase <= 0 || mexcAgg.totalContracts <= 0) {
+      return res.status(400).json({ error: 'Profundidade insuficiente para as seleções escolhidas.' });
+    }
+
+    const marginPct = Number(meta.settings.marginPct || 0);
+    const baseGate = gateAgg.avgPrice;
+    const baseMexc = mexcAgg.avgPrice;
 
     let gatePrice = (mode === 'open')
-      ? baseGate * (1 - (meta.settings.marginPct / 100))
-      : baseGate * (1 + (meta.settings.marginPct / 100));
+      ? baseGate * (1 - (marginPct / 100))
+      : baseGate * (1 + (marginPct / 100));
     let mexcPrice = (mode === 'open')
-      ? baseMexc * (1 + (meta.settings.marginPct / 100))
-      : baseMexc * (1 - (meta.settings.marginPct / 100));
+      ? baseMexc * (1 + (marginPct / 100))
+      : baseMexc * (1 - (marginPct / 100));
 
-    let gateBaseAvail = parseInt(String((mode === 'open') ? gAsk[1] : gBid[1]).split('.')[0] || '0', 10) || 0;
-    const mexcContractsAvail = parseInt(String((mode === 'open') ? xBid[1] : xAsk[1]).split('.')[0] || '0', 10) || 0;
+    let gateBaseAvail = gateAgg.totalBase;
+    const mexcContractsAvail = mexcAgg.totalContracts;
+    const mexcBaseAvail = mexcAgg.totalBase;
 
-    let contracts;
+    const cs = Number(meta.mexc.contractSize || 1);
+    const vp = Number(meta.mexc.volPrecision || 0);
+    const minContracts = Number(meta.mexc.minContracts || 1);
+    const factor = Math.pow(10, vp);
+    const floorContracts = (value) => {
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      if (factor > 1) return Math.floor(value * factor) / factor;
+      return Math.floor(value);
+    };
+    const normalizeContracts = (value) => {
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      return Number(value.toFixed(Math.max(vp, 0)));
+    };
+
+    let gateBalances = null;
+    let availableToClose = null;
     if (mode === 'close') {
-      const balances = await getGateBalances(symbol);
-      const base = symbol.split('_')[0];
-      const baseAvail = parseInt(String(balances?.[base]?.available || '0').split('.')[0] || '0', 10) || 0;
+      gateBalances = await getGateBalances(symbol);
+      const baseCurrency = symbol.split('_')[0];
+      const baseAvail = Number(gateBalances?.[baseCurrency]?.available || 0);
       const remQty = Math.min(baseAvail, positionState.gate.filledQty);
-      gateBaseAvail = remQty;
-      contracts = baseToContracts(remQty, meta);
-    } else {
-      contracts = baseToContracts(Math.min(gateBaseAvail, mexcContractsAvail * Number(meta.mexc.contractSize)), meta);
+      availableToClose = remQty;
+      gateBaseAvail = Math.min(gateBaseAvail, remQty);
+    }
+
+    let maxBaseQty = Math.min(gateBaseAvail, mexcBaseAvail);
+    if (!Number.isFinite(maxBaseQty) || maxBaseQty <= 0) {
+      return res.status(400).json({ error: 'Profundidade insuficiente após ajustes.' });
+    }
+
+    let contracts = Math.min(mexcContractsAvail, maxBaseQty / cs);
+    contracts = normalizeContracts(floorContracts(contracts));
+
+    if (contracts <= 0) {
+      return res.status(400).json({ error: 'Contratos indisponíveis nas seleções escolhidas.' });
+    }
+
+    if (mode === 'open' && positionState.targetQty > 0) {
+      const remainingBase = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
+      const remainingContracts = normalizeContracts(floorContracts(remainingBase / cs));
+      if (remainingContracts <= 0) {
+        return res.status(400).json({ error: 'Meta de posição já atingida.' });
+      }
+      if (contracts > remainingContracts) contracts = remainingContracts;
+    } else if (mode === 'close') {
+      const remainingContracts = normalizeContracts(floorContracts(positionState.gate.filledQty / cs));
+      if (remainingContracts <= 0 || (availableToClose != null && availableToClose <= 0)) {
+        return res.status(400).json({ error: 'Sem quantidade disponível para fechar.' });
+      }
+      if (contracts > remainingContracts) contracts = remainingContracts;
+    }
+
+    if (contracts < minContracts) {
+      return res.status(400).json({ error: `Volume abaixo do mínimo de contratos (${minContracts}).` });
+    }
+
+    let finalBaseQtyRaw = contracts * cs;
+    let rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
+    let adjustedContracts = normalizeContracts(floorContracts(rounded.q / cs));
+    if (adjustedContracts <= 0) {
+      return res.status(400).json({ error: 'Quantidade arredondada resultou em zero.' });
+    }
+    if (adjustedContracts < contracts) {
+      contracts = adjustedContracts;
+      finalBaseQtyRaw = contracts * cs;
+      rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
+    }
+    contracts = normalizeContracts(contracts);
+
+    if (minContracts > 0 && contracts < minContracts) {
+      return res.status(400).json({ error: `Volume abaixo do mínimo de contratos (${minContracts}).` });
     }
 
     const minQuote = Number(meta.gate.minQuote || 0);
-    if (minQuote > 0) {
-      const needContractsGate = Math.ceil(minQuote / (gatePrice * Number(meta.mexc.contractSize)));
-      if (needContractsGate > contracts) contracts = needContractsGate;
-    }
-    if (mode !== 'close' && contracts > mexcContractsAvail) contracts = mexcContractsAvail;
-
-    if (mode === 'open' && positionState.targetQty > 0) {
-      const remaining = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
-      const remContracts = baseToContracts(remaining, meta);
-      if (contracts > remContracts) contracts = remContracts;
-    } else if (mode === 'close') {
-      const remContracts = baseToContracts(positionState.gate.filledQty, meta);
-      if (contracts > remContracts) contracts = remContracts;
-    }
-
-    const finalBaseQtyRaw = contractsToBase(contracts, meta);
-    const { pg: gatePx, pm: mexcPx, q: gateQty } = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
-
-    if (minQuote > 0 && gateQty * gatePx < minQuote) {
+    if (minQuote > 0 && rounded.q * rounded.pg < minQuote) {
       return res.status(400).json({ error: `Mínimo da Gate não atendido (>= ${minQuote} USDT). Tente aumentar contratos.` });
     }
 
-    const [gateBalances, mexcBal] = await Promise.all([
-      getGateBalances(symbol),
+    const [gateBalancesFinal, mexcBal] = await Promise.all([
+      gateBalances ? Promise.resolve(gateBalances) : getGateBalances(symbol),
       getMexcAvailableUSDT(symbol)
     ]);
+    gateBalances = gateBalancesFinal;
 
     const leverage = Number(meta.settings.leverage) || 1;
-    const contractValueUSDT = mexcPx * Number(meta.mexc.contractSize);
-    const requiredMexcUSDT = (contractValueUSDT * contracts) / leverage;
+    const contractValueUSDT = rounded.pm * cs;
+    const requiredMexcUSDT = (mode === 'open')
+      ? (contractValueUSDT * contracts) / leverage
+      : 0;
 
-    if (mexcBal.availableUSDT == null || mexcBal.availableUSDT < requiredMexcUSDT) {
-      return res.status(400).json({
-        error: 'Saldo MEXC insuficiente',
-        requiredUSDT: Number(requiredMexcUSDT.toFixed(6)),
-        availableUSDT: mexcBal.availableUSDT
-      });
+    if (mode === 'open') {
+      if (mexcBal.availableUSDT == null || mexcBal.availableUSDT < requiredMexcUSDT) {
+        return res.status(400).json({
+          error: 'Saldo MEXC insuficiente',
+          requiredUSDT: Number(requiredMexcUSDT.toFixed(6)),
+          availableUSDT: mexcBal.availableUSDT
+        });
+      }
     }
 
     if (mode === 'open') {
-      const neededGateUSDT = gatePx * gateQty;
+      const neededGateUSDT = rounded.pg * rounded.q;
       const gateUSDTAvail = Number(gateBalances?.USDT?.available || 0);
       if (gateUSDTAvail < neededGateUSDT) {
         return res.status(400).json({
@@ -834,31 +1093,31 @@ app.post('/api/execute-trade', async (req, res) => {
         });
       }
     } else {
-      const base = symbol.split('_')[0];
-      const gateBaseAvail = Number(gateBalances?.[base]?.available || 0);
-      if (gateBaseAvail < gateQty) {
+      const baseCurrency = symbol.split('_')[0];
+      const gateBaseAvailable = Number(gateBalances?.[baseCurrency]?.available || 0);
+      if (gateBaseAvailable < rounded.q) {
         return res.status(400).json({
-          error: `Saldo Gate ${base} insuficiente`,
-          requiredBase: Number(gateQty.toFixed(meta.gate.qtyScale)),
-          availableBase: gateBaseAvail
+          error: `Saldo Gate ${baseCurrency} insuficiente`,
+          requiredBase: Number(rounded.q.toFixed(meta.gate.qtyScale)),
+          availableBase: gateBaseAvailable
         });
       }
     }
 
     console.log('[EXECUTAR] Modo:', mode);
-    console.log('[EXECUTAR] Preço Gate:', gatePx);
-    console.log('[EXECUTAR] Preço MEXC:', mexcPx);
-    console.log('[EXECUTAR] Volume (moeda base final):', gateQty, '| contratos MEXC:', contracts);
+    console.log('[EXECUTAR] Preço Gate:', rounded.pg);
+    console.log('[EXECUTAR] Preço MEXC:', rounded.pm);
+    console.log('[EXECUTAR] Volume (moeda base final):', rounded.q, '| contratos MEXC:', contracts);
 
     const localId = Date.now().toString();
     const histItem = {
       localId, createdAt: nowBR(),
       mode, symbol, metaUsed: meta,
       sentido: mode === 'open' ? 'Open' : 'Close',
-      priceUsedGate: String(gatePx),
-      priceUsedMexc: String(mexcPx),
-      volume: String(gateQty),
-      mexcDisplayVolume: String(gateQty),
+      priceUsedGate: String(rounded.pg),
+      priceUsedMexc: String(rounded.pm),
+      volume: String(rounded.q),
+      mexcDisplayVolume: String(rounded.q),
       gateOrderId: null, mexcOrderId: null,
       gateStatus: 'creating', mexcStatus: 'creating',
       status: 'creating'
@@ -873,8 +1132,8 @@ app.post('/api/execute-trade', async (req, res) => {
       const go = await placeGateOrderSdk(
         symbol,
         side,
-        String(gatePx.toFixed(meta.gate.priceScale)),
-        String(gateQty.toFixed(meta.gate.qtyScale))
+        String(rounded.pg.toFixed(meta.gate.priceScale)),
+        String(rounded.q.toFixed(meta.gate.qtyScale))
       );
       histItem.gateOrderId = (go?.id != null) ? String(go.id) : null;
       gateOk = !!histItem.gateOrderId;
@@ -890,7 +1149,7 @@ app.post('/api/execute-trade', async (req, res) => {
       const sideCode = (mode === 'open') ? 3 : 2;
       const mres = await mexcSubmitOrder(
         symbol,
-        Number(mexcPx.toFixed(meta.mexc.priceScale)),
+        Number(rounded.pm.toFixed(meta.mexc.priceScale)),
         contracts,
         meta.settings.leverage,
         sideCode,

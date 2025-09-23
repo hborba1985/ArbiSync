@@ -175,6 +175,28 @@ function numOrUndef(id) {
   const n = Number(v); return (Number.isFinite(n) ? n : undefined);
 }
 
+function sanitizeLevelArray(arr) {
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  for (const item of arr) {
+    const n = Number(item);
+    if (Number.isInteger(n) && n >= 0) out.push(n);
+  }
+  return Array.from(new Set(out)).sort((a, b) => a - b);
+}
+
+function loadLevelSelection(mode) {
+  try {
+    const raw = localStorage.getItem('levels_' + mode);
+    if (!raw) return [0];
+    const parsed = JSON.parse(raw);
+    const sanitized = sanitizeLevelArray(parsed);
+    return sanitized.length ? sanitized : [0];
+  } catch {
+    return [0];
+  }
+}
+
 // ======== Toggle de modo + cotações
 function getMode() {
   const el = document.getElementById('modeClose');
@@ -192,11 +214,28 @@ document.getElementById('modeClose')?.addEventListener('change', () => {
 });
 
 let lastQuotes = null;
+const levelSelections = {
+  open: new Set(loadLevelSelection('open')),
+  close: new Set(loadLevelSelection('close'))
+};
 let alertMin = parseFloat(localStorage.getItem('alertMin'));
 let alertMax = parseFloat(localStorage.getItem('alertMax'));
 let soundEnabled = localStorage.getItem('soundOn') === '1';
 let telegramEnabled = localStorage.getItem('tgOn') === '1';
 let audioCtx = null, lastBeep = 0, lastTgSent = 0;
+
+if (Number.isFinite(alertMin)) {
+  const el = document.getElementById('alertMin');
+  if (el) el.value = alertMin;
+}
+if (Number.isFinite(alertMax)) {
+  const el = document.getElementById('alertMax');
+  if (el) el.value = alertMax;
+}
+const soundToggleEl = document.getElementById('soundToggle');
+if (soundToggleEl) soundToggleEl.checked = soundEnabled;
+const telegramToggleEl = document.getElementById('telegramToggle');
+if (telegramToggleEl) telegramToggleEl.checked = telegramEnabled;
 
 function playBeep() {
   try {
@@ -226,9 +265,9 @@ async function notifyTelegram(diff) {
   } catch {}
 }
 
-function checkAlert(diffStr) {
-  const diff = parseFloat(diffStr);
-  if (!isFinite(diff)) return;
+function checkAlert(diffVal) {
+  const diff = Number(diffVal);
+  if (!Number.isFinite(diff)) return;
   const min = isFinite(alertMin) ? alertMin : -Infinity;
   const max = isFinite(alertMax) ? alertMax : Infinity;
   if (diff < min || diff > max) {
@@ -255,39 +294,175 @@ document.getElementById('telegramToggle').addEventListener('change', e => {
   localStorage.setItem('tgOn', telegramEnabled ? '1' : '0');
 });
 
+function persistSelections() {
+  localStorage.setItem('levels_open', JSON.stringify(Array.from(levelSelections.open).sort((a, b) => a - b)));
+  localStorage.setItem('levels_close', JSON.stringify(Array.from(levelSelections.close).sort((a, b) => a - b)));
+}
+
+function syncSelectionWithLevels(mode, maxLevels) {
+  const set = levelSelections[mode];
+  let changed = false;
+  for (const idx of Array.from(set)) {
+    if (idx >= maxLevels) { set.delete(idx); changed = true; }
+  }
+  if (set.size === 0 && maxLevels > 0) {
+    set.add(0);
+    changed = true;
+  }
+  if (changed) persistSelections();
+}
+
+function formatNumberValue(value, digits = 6) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '-';
+  return num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: digits });
+}
+
+function formatVolumeValue(value, digits, unit) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '-';
+  const base = num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: digits });
+  return unit ? `${base} ${unit}` : base;
+}
+
+function formatDiffValue(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '-%';
+  return `${num.toFixed(6)}%`;
+}
+
+function renderLevelsTable(mode, levels, baseSymbol, tbodyId) {
+  const tbody = document.getElementById(tbodyId);
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  levels.forEach((lvl, idx) => {
+    const tr = document.createElement('tr');
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.mode = mode;
+    cb.dataset.level = idx;
+    cb.checked = levelSelections[mode].has(idx);
+    cb.addEventListener('change', onLevelCheckboxChange);
+
+    const tdCheck = document.createElement('td');
+    tdCheck.className = 'col-check';
+    tdCheck.appendChild(cb);
+    tr.appendChild(tdCheck);
+
+    const tdLevel = document.createElement('td');
+    tdLevel.textContent = idx + 1;
+    tr.appendChild(tdLevel);
+
+    const addCell = (text) => {
+      const td = document.createElement('td');
+      td.textContent = text;
+      tr.appendChild(td);
+    };
+
+    addCell(formatNumberValue(lvl.gate?.price));
+    addCell(formatVolumeValue(lvl.gate?.baseVolume, 6, baseSymbol));
+    addCell(formatVolumeValue(lvl.gate?.usdtVolume, 2, 'USDT'));
+    addCell(formatNumberValue(lvl.mexc?.price));
+    addCell(formatVolumeValue(lvl.mexc?.baseVolume, 6, baseSymbol));
+    addCell(formatVolumeValue(lvl.mexc?.usdtVolume, 2, 'USDT'));
+    addCell(formatDiffValue(lvl.diffPct));
+
+    tbody.appendChild(tr);
+  });
+}
+
+function computeSelectionStats(mode) {
+  const levels = mode === 'open' ? (lastQuotes?.open?.levels || []) : (lastQuotes?.close?.levels || []);
+  const selected = Array.from(levelSelections[mode]).sort((a, b) => a - b);
+  let gateBase = 0, gateQuote = 0, mexcBase = 0, mexcQuote = 0;
+  selected.forEach(idx => {
+    const lvl = levels[idx];
+    if (!lvl) return;
+    const gBase = Number(lvl.gate?.baseVolume);
+    const gQuote = Number(lvl.gate?.usdtVolume);
+    const mBase = Number(lvl.mexc?.baseVolume);
+    const mQuote = Number(lvl.mexc?.usdtVolume);
+    if (Number.isFinite(gBase) && gBase > 0) gateBase += gBase;
+    if (Number.isFinite(gQuote) && gQuote > 0) gateQuote += gQuote;
+    if (Number.isFinite(mBase) && mBase > 0) mexcBase += mBase;
+    if (Number.isFinite(mQuote) && mQuote > 0) mexcQuote += mQuote;
+  });
+  const gateAvg = gateBase > 0 ? gateQuote / gateBase : null;
+  const mexcAvg = mexcBase > 0 ? mexcQuote / mexcBase : null;
+  let diffPct = null;
+  if (Number.isFinite(gateAvg) && Number.isFinite(mexcAvg) && gateAvg > 0) {
+    diffPct = Number((((mexcAvg - gateAvg) / gateAvg) * 100).toFixed(6));
+  }
+  return { gateBase, gateQuote, mexcBase, mexcQuote, gateAvg, mexcAvg, diffPct };
+}
+
+function buildSummaryText(stats, baseSymbol) {
+  if (!stats) return '-';
+  const hasGate = Number.isFinite(stats.gateBase) && stats.gateBase > 0;
+  const hasMexc = Number.isFinite(stats.mexcBase) && stats.mexcBase > 0;
+  if (!hasGate && !hasMexc) return '-';
+  const gateBase = formatVolumeValue(stats.gateBase, 6, baseSymbol);
+  const gateUsd = formatVolumeValue(stats.gateQuote, 2, 'USDT');
+  const mexcBase = formatVolumeValue(stats.mexcBase, 6, baseSymbol);
+  const mexcUsd = formatVolumeValue(stats.mexcQuote, 2, 'USDT');
+  const diff = formatDiffValue(stats.diffPct);
+  return `Gate: ${gateBase} (${gateUsd}) • MEXC: ${mexcBase} (${mexcUsd}) • Dif: ${diff}`;
+}
+
+function onLevelCheckboxChange(event) {
+  const mode = event.target.dataset.mode;
+  const level = Number(event.target.dataset.level);
+  if (!mode || !Number.isInteger(level)) return;
+  const set = levelSelections[mode];
+  if (event.target.checked) {
+    set.add(level);
+  } else {
+    if (set.size <= 1) {
+      event.target.checked = true;
+      return;
+    }
+    set.delete(level);
+  }
+  persistSelections();
+  renderQuotes();
+}
+
+function getSelectedLevelsPayload() {
+  return {
+    open: Array.from(levelSelections.open).sort((a, b) => a - b),
+    close: Array.from(levelSelections.close).sort((a, b) => a - b)
+  };
+}
+
 function renderQuotes() {
   if (!lastQuotes) return;
+  const baseSymbol = lastQuotes.baseSymbol || (lastQuotes.symbol ? String(lastQuotes.symbol).split('_')[0] : 'BASE');
+  const openLevels = lastQuotes.open?.levels || [];
+  const closeLevels = lastQuotes.close?.levels || [];
+
+  syncSelectionWithLevels('open', openLevels.length);
+  syncSelectionWithLevels('close', closeLevels.length);
+
+  renderLevelsTable('open', openLevels, baseSymbol, 'openQuotesBody');
+  renderLevelsTable('close', closeLevels, baseSymbol, 'closeQuotesBody');
+
+  const openStats = computeSelectionStats('open');
+  const closeStats = computeSelectionStats('close');
+  const openSummaryEl = document.getElementById('openSummary');
+  if (openSummaryEl) openSummaryEl.textContent = buildSummaryText(openStats, baseSymbol);
+  const closeSummaryEl = document.getElementById('closeSummary');
+  if (closeSummaryEl) closeSummaryEl.textContent = buildSummaryText(closeStats, baseSymbol);
+
   const mode = getMode();
-  const gateLabel = document.getElementById('gateLabel');
-  const mexcLabel = document.getElementById('mexcLabel');
-  let diffVal;
-    if (mode === 'close') {
-      gateLabel.textContent = 'Bid Gate.io:';
-      mexcLabel.textContent = 'Ask MEXC:';
-      document.getElementById('gateAsk').textContent = lastQuotes.gate?.bid ?? '-';
-      document.getElementById('gateAskVol').textContent = lastQuotes.gate?.bidVolUsd
-        ? `${lastQuotes.gate.bidVol} / ${lastQuotes.gate.bidVolUsd}`
-        : lastQuotes.gate?.bidVol ?? '-';
-      document.getElementById('mexcBid').textContent = lastQuotes.mexc?.ask ?? '-';
-      document.getElementById('mexcBidVol').textContent = lastQuotes.mexc?.askVolUsd
-        ? `${lastQuotes.mexc.askVol} / ${lastQuotes.mexc.askVolUsd}`
-        : lastQuotes.mexc?.askVol ?? '-';
-      document.getElementById('diff').textContent = lastQuotes.diffClose ?? '-';
-      diffVal = lastQuotes.diffClose;
-    } else {
-      gateLabel.textContent = 'Ask Gate.io:';
-      mexcLabel.textContent = 'Bid MEXC:';
-      document.getElementById('gateAsk').textContent = lastQuotes.gate?.ask ?? '-';
-      document.getElementById('gateAskVol').textContent = lastQuotes.gate?.askVolUsd
-        ? `${lastQuotes.gate.askVol} / ${lastQuotes.gate.askVolUsd}`
-        : lastQuotes.gate?.askVol ?? '-';
-      document.getElementById('mexcBid').textContent = lastQuotes.mexc?.bid ?? '-';
-      document.getElementById('mexcBidVol').textContent = lastQuotes.mexc?.bidVolUsd
-        ? `${lastQuotes.mexc.bidVol} / ${lastQuotes.mexc.bidVolUsd}`
-        : lastQuotes.mexc?.bidVol ?? '-';
-      document.getElementById('diff').textContent = lastQuotes.diffOpen ?? '-';
-      diffVal = lastQuotes.diffOpen;
-    }
+  const labelEl = document.getElementById('quoteModeLabel');
+  if (labelEl) labelEl.textContent = mode === 'close' ? 'Fechar' : 'Abrir';
+
+  const activeStats = mode === 'close' ? closeStats : openStats;
+  const diffVal = activeStats.diffPct;
+  const diffEl = document.getElementById('diff');
+  if (diffEl) diffEl.textContent = formatDiffValue(diffVal);
+
   checkAlert(diffVal);
 }
 
@@ -419,7 +594,7 @@ document.getElementById('executeTrade').addEventListener('click', async () => {
   try {
     const pre = await fetch('/api/precheck', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode })
+      body: JSON.stringify({ mode, levels: getSelectedLevelsPayload() })
     });
     const preOut = await safeJson(pre);
 
@@ -448,7 +623,7 @@ document.getElementById('executeTrade').addEventListener('click', async () => {
     document.getElementById('status').textContent = 'Executando...';
     const r = await fetch('/api/execute-trade', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode })
+      body: JSON.stringify({ mode, levels: getSelectedLevelsPayload() })
     });
     const out = await safeJson(r);
     if (r.ok) {
