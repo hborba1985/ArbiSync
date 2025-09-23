@@ -104,12 +104,14 @@ function fillOverridesUI(merged) {
   set('ov_mexc_minc', m.minContracts);
   set('ov_set_margin', s.marginPct);
   set('ov_set_lev', s.leverage);
+  set('ov_set_gate_extra', s.gateOpenExtraPct);
 }
 function metaToText(label, meta) {
+  const gateExtra = (meta.settings && meta.settings.gateOpenExtraPct != null) ? meta.settings.gateOpenExtraPct : 0;
   return `${label}
 Gate: priceScale=${meta.gate.priceScale}, qtyScale=${meta.gate.qtyScale}, minQty=${meta.gate.minQty}, minQuote=${meta.gate.minQuote}
 MEXC: priceScale=${meta.mexc.priceScale}, volPrecision=${meta.mexc.volPrecision}, contractSize=${meta.mexc.contractSize}, minContracts=${meta.mexc.minContracts}
-Settings: margem=${meta.settings.marginPct}%, lev=${meta.settings.leverage}, parity=${meta.settings.parityVolumes}`;
+Settings: margem=${meta.settings.marginPct}%, lev=${meta.settings.leverage}, gateExtra=${gateExtra}%, parity=${meta.settings.parityVolumes}`;
 }
 async function refreshMetaUI(symbol) {
   const r = await fetch('/api/market-meta?symbol=' + encodeURIComponent(symbol));
@@ -156,6 +158,7 @@ document.getElementById('saveOverride').addEventListener('click', async () => {
     settings: {
       marginPct: numOrUndef('ov_set_margin'),
       leverage: numOrUndef('ov_set_lev'),
+      gateOpenExtraPct: numOrUndef('ov_set_gate_extra'),
       parityVolumes: true
     }
   };
@@ -548,7 +551,19 @@ async function refreshHistory() {
       tr.appendChild(td(h.sentido || '-'));
       tr.appendChild(td(h.priceUsedGate || '-'));
       tr.appendChild(td(h.priceUsedMexc || '-'));
-      tr.appendChild(td(h.volume || '-'));
+      const volumeCell = (() => {
+        if (h.volume == null) return '-';
+        const gateVol = h.gateOrderVolume;
+        if (gateVol != null && gateVol !== '') {
+          const baseNum = Number(h.volume);
+          const gateNum = Number(gateVol);
+          if ((Number.isFinite(baseNum) && Number.isFinite(gateNum) && baseNum !== gateNum) || gateVol !== h.volume) {
+            return `${h.volume} (Gate: ${gateVol})`;
+          }
+        }
+        return String(h.volume);
+      })();
+      tr.appendChild(td(volumeCell));
       tr.appendChild(td(h.arbPct != null ? Number(h.arbPct).toFixed(6) : '-'));
       tr.appendChild(td(h.pnlUsd != null ? Number(h.pnlUsd).toFixed(6) : '-'));
       tr.appendChild(td(h.gateOrderId || '-'));
@@ -612,12 +627,13 @@ document.getElementById('executeTrade').addEventListener('click', async () => {
       const ok = confirm(
         `Saldo possivelmente insuficiente na MEXC.\n` +
         `Requerido: ${d.requiredUSDT} USDT | Disponível: ${d.availableUSDT}\n` +
-        `Alavancagem: ${d.leverage}x | Contratos: ${d.mexcContracts} (x${d.contractSize} moeda base) | Moeda base final: ${d.finalBaseQty}\n` +
+        `Alavancagem: ${d.leverage}x | Contratos: ${d.mexcContracts} (x${d.contractSize} moeda base) | Moeda base final (MEXC): ${d.finalBaseQty}\n` +
+        `Gate ordem base (após extra): ${d.gateOrderBaseQty ?? d.finalBaseQty} | Extra Gate (%): ${d.gateOpenExtraPct ?? 0}\n` +
         `Deseja prosseguir?`
       );
       if (!ok) { document.getElementById('status').textContent = 'Cancelado pelo usuário.'; btn.disabled = false; return; }
     } else if (preOut.unknownBalance) {
-      document.getElementById('status').textContent = `Saldo MEXC não estimado; prosseguindo... (moeda base final: ${d.finalBaseQty})`;
+      document.getElementById('status').textContent = `Saldo MEXC não estimado; prosseguindo... (moeda base final: ${d.finalBaseQty} | Gate ordem base: ${d.gateOrderBaseQty ?? d.finalBaseQty})`;
     }
 
     document.getElementById('status').textContent = 'Executando...';
