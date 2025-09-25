@@ -178,6 +178,35 @@ function numOrUndef(id) {
   const n = Number(v); return (Number.isFinite(n) ? n : undefined);
 }
 
+function setInputValue(id, value, decimals, force) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!force && document.activeElement === el) return;
+  if (value === undefined || value === null || value === '') {
+    el.value = '';
+    return;
+  }
+  const num = Number(value);
+  if (Number.isFinite(num)) {
+    if (typeof decimals === 'number') {
+      el.value = num.toFixed(decimals);
+    } else {
+      el.value = num;
+    }
+  } else {
+    el.value = value;
+  }
+}
+
+function getNumberFromInput(id) {
+  const el = document.getElementById(id);
+  if (!el) return undefined;
+  const raw = el.value;
+  if (raw === '' || raw === null || raw === undefined) return undefined;
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : undefined;
+}
+
 function sanitizeLevelArray(arr) {
   if (!Array.isArray(arr)) return [];
   const out = [];
@@ -587,13 +616,21 @@ async function refreshPosition() {
     const s = await r.json();
     const g = s.gate || {};
     const m = s.mexc || {};
-    document.getElementById('ppTarget').textContent = s.targetQty || 0;
-    document.getElementById('ppGateFilled').textContent = g.filledQty || 0;
-    document.getElementById('ppGateAvg').textContent = (g.avgPrice || 0).toFixed ? g.avgPrice.toFixed(11) : g.avgPrice;
-    document.getElementById('ppMexcFilled').textContent = m.filledQty || 0;
-    document.getElementById('ppMexcAvg').textContent = (m.avgPrice || 0).toFixed ? m.avgPrice.toFixed(11) : m.avgPrice;
-    document.getElementById('ppArb').textContent = (s.arbPctAvg || 0).toFixed ? s.arbPctAvg.toFixed(6) : s.arbPctAvg;
-    document.getElementById('ppPnl').textContent = (s.pnlUsd || 0).toFixed ? s.pnlUsd.toFixed(6) : s.pnlUsd;
+    setInputValue('targetQty', s.targetQty);
+    setInputValue('ppTargetCurrent', s.targetQty);
+    setInputValue('ppFilledInput', s.filledQty);
+    setInputValue('ppAvgPriceInput', s.avgPrice, 11);
+    setInputValue('ppArbInput', s.arbPctAvg, 6);
+    setInputValue('ppPnlInput', s.pnlUsd, 6);
+    setInputValue('ppVolumeInput', s.totalVolume, 11);
+    setInputValue('ppGateFilledInput', g.filledQty);
+    setInputValue('ppGateAvgInput', g.avgPrice, 11);
+    setInputValue('ppMexcFilledInput', m.filledQty);
+    setInputValue('ppMexcAvgInput', m.avgPrice, 11);
+    const posIdEl = document.getElementById('ppMexcPositionId');
+    if (posIdEl && document.activeElement !== posIdEl) {
+      posIdEl.value = (m.positionId != null && m.positionId !== undefined) ? m.positionId : '';
+    }
     drawProgressChart(s.series || []);
   } catch {}
 }
@@ -672,9 +709,99 @@ document.getElementById('setTarget').addEventListener('click', async () => {
     });
     const out = await safeJson(resp);
     if (!resp.ok || !out.ok) { alert('Falha ao definir meta.'); return; }
-    document.getElementById('ppTarget').textContent = out.targetQty ?? val;
+    const newTarget = out.targetQty ?? val;
+    setInputValue('targetQty', newTarget, undefined, true);
+    setInputValue('ppTargetCurrent', newTarget, undefined, true);
+    await refreshPosition();
   } catch (e) {
     alert('Erro ao definir meta: ' + (e.message || e));
+  }
+});
+
+document.getElementById('savePositionData').addEventListener('click', async () => {
+  const btn = document.getElementById('savePositionData');
+  btn.disabled = true;
+  try {
+    const payload = {};
+    const gatePayload = {};
+    const mexcPayload = {};
+
+    const targetQty = getNumberFromInput('ppTargetCurrent');
+    if (targetQty !== undefined) payload.targetQty = targetQty;
+    const filledQty = getNumberFromInput('ppFilledInput');
+    if (filledQty !== undefined) payload.filledQty = filledQty;
+    const avgPrice = getNumberFromInput('ppAvgPriceInput');
+    if (avgPrice !== undefined) payload.avgPrice = avgPrice;
+    const arbPctAvg = getNumberFromInput('ppArbInput');
+    if (arbPctAvg !== undefined) payload.arbPctAvg = arbPctAvg;
+    const pnlUsd = getNumberFromInput('ppPnlInput');
+    if (pnlUsd !== undefined) payload.pnlUsd = pnlUsd;
+    const totalVolume = getNumberFromInput('ppVolumeInput');
+    if (totalVolume !== undefined) payload.totalVolume = totalVolume;
+
+    const gateFilled = getNumberFromInput('ppGateFilledInput');
+    if (gateFilled !== undefined) gatePayload.filledQty = gateFilled;
+    const gateAvg = getNumberFromInput('ppGateAvgInput');
+    if (gateAvg !== undefined) gatePayload.avgPrice = gateAvg;
+    if (Object.keys(gatePayload).length) payload.gate = gatePayload;
+
+    const mexcFilled = getNumberFromInput('ppMexcFilledInput');
+    if (mexcFilled !== undefined) mexcPayload.filledQty = mexcFilled;
+    const mexcAvg = getNumberFromInput('ppMexcAvgInput');
+    if (mexcAvg !== undefined) mexcPayload.avgPrice = mexcAvg;
+    const posIdEl = document.getElementById('ppMexcPositionId');
+    if (posIdEl) {
+      const trimmed = posIdEl.value.trim();
+      mexcPayload.positionId = trimmed === '' ? null : trimmed;
+    }
+    if (Object.keys(mexcPayload).length) payload.mexc = mexcPayload;
+
+    const resp = await fetch('/api/position-manual-update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const out = await safeJson(resp);
+    if (!resp.ok || out.ok === false) {
+      const errMsg = (out && out.error) ? out.error : resp.statusText;
+      alert('Falha ao salvar dados da posição: ' + errMsg);
+      return;
+    }
+    await refreshPosition();
+  } catch (e) {
+    alert('Erro ao salvar dados da posição: ' + (e.message || e));
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('dismantlePosition').addEventListener('click', async () => {
+  const btn = document.getElementById('dismantlePosition');
+  const ok = confirm('Deseja desmontar a posição atual? Um resumo final será salvo.');
+  if (!ok) return;
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/position-dismantle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const out = await safeJson(resp);
+    if (!resp.ok || out.ok === false) {
+      const errMsg = (out && out.error) ? out.error : resp.statusText;
+      alert('Falha ao desmontar posição: ' + errMsg);
+      return;
+    }
+    const summary = out.summary || {};
+    const finalArb = summary.finalArbPct != null ? Number(summary.finalArbPct).toFixed(6) : '-';
+    const finalPnl = summary.finalPnlUsd != null ? Number(summary.finalPnlUsd).toFixed(6) : '-';
+    const totalVol = summary.totalVolume != null ? summary.totalVolume : '-';
+    alert(`Posição desmontada. Arb final: ${finalArb}% | PnL final: ${finalPnl} USDT | Volume total: ${totalVol}`);
+    await refreshPosition();
+  } catch (e) {
+    alert('Erro ao desmontar posição: ' + (e.message || e));
+  } finally {
+    btn.disabled = false;
   }
 });
 

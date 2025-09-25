@@ -35,6 +35,11 @@
     .quote-controls { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
     .quote-control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
     .quote-actions { display: flex; justify-content: flex-end; }
+    .position-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+    .position-field { display: flex; flex-direction: column; font-size: 13px; }
+    .position-field input { margin-top: 4px; font-size: 13px; }
+    .position-subgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-top: 12px; }
+    .position-actions { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
   </style>
 </head>
 <body>
@@ -179,15 +184,54 @@
       </div>
 
       <div class="mono" style="margin-top:10px;">
-        <div>Alvo: <span id="ppTarget">0</span></div>
-        <div style="margin-top:6px;"><strong>Gate</strong></div>
-        <div>Preenchido: <span id="ppGateFilled">0</span></div>
-        <div>Preço Médio: <span id="ppGateAvg">0</span></div>
-        <div style="margin-top:6px;"><strong>MEXC</strong></div>
-        <div>Preenchido: <span id="ppMexcFilled">0</span></div>
-        <div>Preço Médio: <span id="ppMexcAvg">0</span></div>
-        <div style="margin-top:6px;">Arb. Média (%): <span id="ppArb">0</span></div>
-        <div>PnL Geral (USDT): <span id="ppPnl">0</span></div>
+        <div class="position-grid">
+          <label class="position-field">Alvo atual
+            <input id="ppTargetCurrent" type="number" step="any" class="mono" />
+          </label>
+          <label class="position-field">Total preenchido
+            <input id="ppFilledInput" type="number" step="any" class="mono" />
+          </label>
+          <label class="position-field">Preço médio geral
+            <input id="ppAvgPriceInput" type="number" step="any" class="mono" />
+          </label>
+          <label class="position-field">Arb. média (%)
+            <input id="ppArbInput" type="number" step="any" class="mono" />
+          </label>
+          <label class="position-field">PnL geral (USDT)
+            <input id="ppPnlInput" type="number" step="any" class="mono" />
+          </label>
+          <label class="position-field">Volume total operado
+            <input id="ppVolumeInput" type="number" step="any" class="mono" />
+          </label>
+        </div>
+        <div class="position-subgrid">
+          <div>
+            <div><strong>Gate</strong></div>
+            <label class="position-field">Preenchido
+              <input id="ppGateFilledInput" type="number" step="any" class="mono" />
+            </label>
+            <label class="position-field">Preço médio
+              <input id="ppGateAvgInput" type="number" step="any" class="mono" />
+            </label>
+          </div>
+          <div>
+            <div><strong>MEXC</strong></div>
+            <label class="position-field">Preenchido
+              <input id="ppMexcFilledInput" type="number" step="any" class="mono" />
+            </label>
+            <label class="position-field">Preço médio
+              <input id="ppMexcAvgInput" type="number" step="any" class="mono" />
+            </label>
+            <label class="position-field">Position ID
+              <input id="ppMexcPositionId" type="text" class="mono" />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="position-actions">
+        <button id="savePositionData">Salvar dados da posição</button>
+        <button id="dismantlePosition">Desmontar posição</button>
       </div>
 
       <div style="margin-top:10px;">

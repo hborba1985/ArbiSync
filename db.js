@@ -31,6 +31,17 @@ CREATE TABLE IF NOT EXISTS history (
   sentido TEXT,
   raw_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS position_state (
+  id TEXT PRIMARY KEY,
+  state_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS position_summaries (
+  id TEXT PRIMARY KEY,
+  symbol TEXT,
+  created_at TEXT NOT NULL,
+  summary_json TEXT NOT NULL
+);
 `);
 
 // Migração simples: garante colunas gate_status e mexc_status
@@ -83,6 +94,21 @@ INSERT OR REPLACE INTO history (
   @gateOrderId, @mexcOrderId, @status, @gateStatus, @mexcStatus, @sentido, @raw
 )`);
 
+const upsertPositionStateStmt = db.prepare(`
+INSERT INTO position_state(id, state_json, updated_at)
+VALUES (@id, @json, @updated_at)
+ON CONFLICT(id) DO UPDATE SET
+  state_json = excluded.state_json,
+  updated_at = excluded.updated_at
+`);
+
+const loadPositionStateStmt = db.prepare('SELECT state_json FROM position_state WHERE id = ?');
+
+const insertPositionSummaryStmt = db.prepare(`
+INSERT INTO position_summaries(id, symbol, created_at, summary_json)
+VALUES (@id, @symbol, @created_at, @json)
+`);
+
 function saveHistoryItem(item) {
   // Garante que todos os campos são bindáveis
   const payload = {
@@ -114,10 +140,37 @@ function loadHistory() {
   return arr;
 }
 
+function savePositionState(state, id = 'current') {
+  upsertPositionStateStmt.run({
+    id,
+    json: JSON.stringify(state || {}),
+    updated_at: new Date().toISOString()
+  });
+}
+
+function loadPositionState(id = 'current') {
+  const row = loadPositionStateStmt.get(id);
+  if (!row || !row.state_json) return null;
+  try { return JSON.parse(row.state_json); } catch { return null; }
+}
+
+function savePositionSummary(summary) {
+  const payload = {
+    id: summary.id,
+    symbol: summary.symbol || null,
+    created_at: summary.createdAt || new Date().toISOString(),
+    json: JSON.stringify(summary || {})
+  };
+  insertPositionSummaryStmt.run(payload);
+}
+
 module.exports = {
   DB_PATH,
   upsertOverride,
   loadOverrides,
   saveHistoryItem,
-  loadHistory
+  loadHistory,
+  savePositionState,
+  loadPositionState,
+  savePositionSummary
 };

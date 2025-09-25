@@ -7,6 +7,7 @@
 const express = require('express');
 const axios = require('axios');
 const path = require('path');
+const crypto = require('crypto');
 const GateApi = require('gate-api');
 const { MexcFuturesClient } = require('mexc-futures-sdk');
 const config = require('./config');
@@ -21,16 +22,102 @@ const autoMetaCache = new Map();
 const overridesBySymbol = new Map();
 
 let orderHistory = [];
-let positionState = {
-  targetQty: 0,
-  filledQty: 0,
-  avgPrice: 0,
-  arbPctAvg: 0,
-  pnlUsd: 0,
-  gate: { filledQty: 0, avgPrice: 0 },
-  mexc: { filledQty: 0, avgPrice: 0, positionId: null },
-  series: []
-};
+
+function createEmptyPositionState(symbol = currentSymbol) {
+  return {
+    symbol,
+    targetQty: 0,
+    filledQty: 0,
+    avgPrice: 0,
+    arbPctAvg: 0,
+    pnlUsd: 0,
+    totalVolume: 0,
+    startedAt: null,
+    lastUpdated: null,
+    gate: { filledQty: 0, avgPrice: 0 },
+    mexc: { filledQty: 0, avgPrice: 0, positionId: null },
+    series: []
+  };
+}
+
+function safeNumber(value, fallback = 0) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizePositionState(raw) {
+  if (!raw || typeof raw !== 'object') return createEmptyPositionState();
+  const symbol = typeof raw.symbol === 'string' && raw.symbol.includes('_')
+    ? raw.symbol.toUpperCase()
+    : currentSymbol;
+  const base = createEmptyPositionState(symbol);
+  base.targetQty = safeNumber(raw.targetQty, base.targetQty);
+  base.filledQty = safeNumber(raw.filledQty, base.filledQty);
+  base.avgPrice = safeNumber(raw.avgPrice, base.avgPrice);
+  base.arbPctAvg = safeNumber(raw.arbPctAvg, base.arbPctAvg);
+  base.pnlUsd = safeNumber(raw.pnlUsd, base.pnlUsd);
+  base.totalVolume = safeNumber(raw.totalVolume, base.totalVolume);
+  base.startedAt = raw.startedAt || null;
+  base.lastUpdated = raw.lastUpdated || null;
+  base.gate = {
+    filledQty: safeNumber(raw?.gate?.filledQty, 0),
+    avgPrice: safeNumber(raw?.gate?.avgPrice, 0)
+  };
+  base.mexc = {
+    filledQty: safeNumber(raw?.mexc?.filledQty, 0),
+    avgPrice: safeNumber(raw?.mexc?.avgPrice, 0),
+    positionId: raw?.mexc?.positionId ?? null
+  };
+  base.series = Array.isArray(raw.series) ? raw.series : [];
+  return base;
+}
+
+function parseNumberField(value, opts = {}) {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n)) throw new Error('Valor numérico inválido');
+  if (opts.min != null && n < opts.min) {
+    throw new Error(`Valor deve ser maior ou igual a ${opts.min}`);
+  }
+  return n;
+}
+
+function generateSummaryId() {
+  if (crypto && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+let positionState = createEmptyPositionState();
+
+function persistPositionState() {
+  try {
+    if (!positionState || typeof positionState !== 'object') return;
+    const sym = positionState.symbol && typeof positionState.symbol === 'string'
+      ? positionState.symbol.toUpperCase()
+      : currentSymbol;
+    positionState.symbol = sym.includes('_') ? sym : currentSymbol;
+    positionState.lastUpdated = new Date().toISOString();
+    db.savePositionState(positionState);
+  } catch (e) {
+    console.warn('[SQLite] Falha ao salvar posição:', e?.message || e);
+  }
+}
+
+try {
+  const storedState = db.loadPositionState();
+  if (storedState) {
+    positionState = normalizePositionState(storedState);
+    if (positionState.symbol && positionState.symbol.includes('_')) {
+      currentSymbol = positionState.symbol.toUpperCase();
+    }
+  }
+} catch (e) {
+  console.warn('[SQLite] Falha ao restaurar posição:', e?.message || e);
+}
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
@@ -70,6 +157,45 @@ function bnToStringMaybe(x) {
     if (typeof x.toString === 'function') return x.toString();
     return String(x);
   } catch { return String(x); }
+}
+
+function buildPositionSummary(state, extra = {}) {
+  const base = state || createEmptyPositionState();
+  const nowIso = new Date().toISOString();
+  const summary = {
+    id: extra.id || generateSummaryId(),
+    symbol: (base.symbol && typeof base.symbol === 'string' && base.symbol.includes('_'))
+      ? base.symbol.toUpperCase()
+      : currentSymbol,
+    createdAt: nowIso,
+    endedAt: extra.endedAt || nowIso,
+    startedAt: base.startedAt || null,
+    lastUpdated: base.lastUpdated || null,
+    targetQty: safeNumber(base.targetQty, 0),
+    finalFilledQty: safeNumber(base.filledQty, 0),
+    finalAvgPrice: roundTo(safeNumber(base.avgPrice, 0), 11),
+    finalArbPct: roundTo(safeNumber(base.arbPctAvg, 0), 6),
+    finalPnlUsd: roundTo(safeNumber(base.pnlUsd, 0), 6),
+    totalVolume: roundTo(safeNumber(base.totalVolume, 0), 11),
+    gate: {
+      filledQty: safeNumber(base?.gate?.filledQty, 0),
+      avgPrice: roundTo(safeNumber(base?.gate?.avgPrice, 0), 11)
+    },
+    mexc: {
+      filledQty: safeNumber(base?.mexc?.filledQty, 0),
+      avgPrice: roundTo(safeNumber(base?.mexc?.avgPrice, 0), 11),
+      positionId: base?.mexc?.positionId ?? null
+    },
+    seriesPoints: Array.isArray(base.series) ? base.series.length : 0
+  };
+  if (extra.note) summary.note = String(extra.note);
+  return summary;
+}
+
+function resetPositionState(symbol = positionState.symbol || currentSymbol) {
+  positionState = createEmptyPositionState(symbol);
+  persistPositionState();
+  return positionState;
 }
 
 // ===== Gate
@@ -553,6 +679,8 @@ app.post('/api/symbol', async (req, res) => {
   const s = String(req.body?.symbol || '').toUpperCase();
   if (!s.includes('_')) return res.status(400).json({ error: 'Símbolo inválido. Use BASE_QUOTE' });
   currentSymbol = s;
+  positionState.symbol = s;
+  persistPositionState();
   res.json({ ok: true, symbol: currentSymbol, meta: await getMergedMeta(currentSymbol) });
 });
 
@@ -722,9 +850,92 @@ app.post('/api/position-target', (req, res) => {
   const t = Number(req.body?.targetQty);
   if (!Number.isFinite(t) || t < 0) return res.status(400).json({ error: 'targetQty inválido' });
   positionState.targetQty = t;
+  persistPositionState();
   res.json({ ok: true, targetQty: t });
 });
 app.get('/api/position-progress', (_req, res) => res.json(positionState));
+
+app.post('/api/position-manual-update', (req, res) => {
+  try {
+    const body = req.body || {};
+    const gate = body.gate || {};
+    const mexc = body.mexc || {};
+
+    const applyNumber = (target, key, value, opts) => {
+      const parsed = parseNumberField(value, opts || {});
+      if (parsed !== undefined) target[key] = parsed;
+    };
+
+    const targetQty = parseNumberField(body.targetQty, { min: 0 });
+    if (targetQty !== undefined) positionState.targetQty = targetQty;
+
+    const filledQty = parseNumberField(body.filledQty);
+    if (filledQty !== undefined) positionState.filledQty = filledQty;
+
+    const avgPrice = parseNumberField(body.avgPrice);
+    if (avgPrice !== undefined) positionState.avgPrice = avgPrice;
+
+    const arbPctAvg = parseNumberField(body.arbPctAvg);
+    if (arbPctAvg !== undefined) positionState.arbPctAvg = arbPctAvg;
+
+    const pnlUsd = parseNumberField(body.pnlUsd);
+    if (pnlUsd !== undefined) positionState.pnlUsd = pnlUsd;
+
+    const totalVolume = parseNumberField(body.totalVolume, { min: 0 });
+    if (totalVolume !== undefined) positionState.totalVolume = totalVolume;
+
+    applyNumber(positionState.gate, 'filledQty', gate.filledQty);
+    applyNumber(positionState.gate, 'avgPrice', gate.avgPrice);
+
+    applyNumber(positionState.mexc, 'filledQty', mexc.filledQty);
+    applyNumber(positionState.mexc, 'avgPrice', mexc.avgPrice);
+
+    if ('positionId' in mexc) {
+      const raw = mexc.positionId;
+      positionState.mexc.positionId = (raw === null || raw === '' || raw === undefined)
+        ? null
+        : bnToStringMaybe(raw);
+    }
+
+    if (body.startedAt !== undefined) {
+      positionState.startedAt = body.startedAt ? String(body.startedAt) : null;
+    }
+
+    if (body.clearSeries === true) {
+      positionState.series = [];
+    }
+
+    if (Array.isArray(body.series)) {
+      positionState.series = body.series;
+    }
+
+    if (body.symbol) {
+      const sym = String(body.symbol).toUpperCase();
+      if (sym.includes('_')) {
+        positionState.symbol = sym;
+        currentSymbol = sym;
+      }
+    }
+
+    persistPositionState();
+    res.json({ ok: true, position: positionState });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message || 'Dados inválidos' });
+  }
+});
+
+app.post('/api/position-dismantle', (req, res) => {
+  const noteRaw = req.body?.note;
+  const note = typeof noteRaw === 'string' && noteRaw.trim() ? noteRaw.trim() : undefined;
+  const summary = buildPositionSummary(positionState, { note });
+  try {
+    db.savePositionSummary(summary);
+  } catch (e) {
+    console.warn('[SQLite] Falha ao salvar resumo da posição:', e?.message || e);
+  }
+  resetPositionState(summary.symbol || currentSymbol);
+  res.json({ ok: true, summary, state: positionState });
+});
 
 function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
   const meta = item?.metaUsed || {};
@@ -746,6 +957,11 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
   const mexcPrice = Number(mAvg || item.priceUsedMexc || 0);
   const sign = item.mode === 'close' ? -1 : 1;
   const adjQty = qty * sign;
+
+  positionState.symbol = (item?.symbol && typeof item.symbol === 'string' && item.symbol.includes('_'))
+    ? item.symbol.toUpperCase()
+    : currentSymbol;
+  if (!positionState.startedAt) positionState.startedAt = new Date().toISOString();
 
   const diff = mexcPrice - gatePrice;
   const arbRaw = (diff / gatePrice) * 100;
@@ -780,6 +996,7 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
   positionState.avgPrice = newAvg;
   positionState.arbPctAvg = newArb;
   positionState.pnlUsd = (positionState.pnlUsd || 0) + item.pnlUsd;
+  positionState.totalVolume = roundTo((positionState.totalVolume || 0) + Math.abs(adjQty), 11);
 
   positionState.series.push({
     t: Date.now(),
@@ -787,9 +1004,12 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
     avgPrice: Number(newAvg.toFixed(11)),
     arbPctAvg: Number(newArb.toFixed(6)),
     pnlUsd: Number(positionState.pnlUsd.toFixed(6)),
+    totalVolume: Number(positionState.totalVolume.toFixed(11)),
     gate: { filledQty: gNewQty, avgPrice: Number(gNewAvg.toFixed(11)) },
     mexc: { filledQty: mNewQty, avgPrice: Number(mNewAvg.toFixed(11)) }
   });
+
+  persistPositionState();
 }
 
 // ===== Precheck (respeita modo open/close do front)
@@ -1239,7 +1459,13 @@ app.post('/api/cancel-order', async (req, res) => {
         await mexcCancelOrder(symbol, String(item.mexcOrderId));
         const md = await getMexcOrderDetail(symbol, String(item.mexcOrderId));
         const p = parseMexcOrderDetail(md);
-        if (p.positionId) positionState.mexc.positionId = p.positionId;
+        if (p.positionId) {
+          const newPosId = bnToStringMaybe(p.positionId);
+          if (newPosId && positionState.mexc.positionId !== newPosId) {
+            positionState.mexc.positionId = newPosId;
+            persistPositionState();
+          }
+        }
         mFilled = Number(p.filled || 0);
         mAvg = Number(p.avgPrice || item.priceUsedMexc);
       }
@@ -1383,7 +1609,13 @@ async function pollOpenOrders() {
         console.log('MEXC detail', md);
         const p = parseMexcOrderDetail(md);
         console.log('parsed detail', p);
-        if (p.positionId) positionState.mexc.positionId = p.positionId;
+        if (p.positionId) {
+          const newPosId = bnToStringMaybe(p.positionId);
+          if (newPosId && positionState.mexc.positionId !== newPosId) {
+            positionState.mexc.positionId = newPosId;
+            persistPositionState();
+          }
+        }
         mFilled = Number(p.filled || 0);
         mAvg = Number(p.avgPrice || mAvg);
         mIsFilled = !!p.isFilled;
