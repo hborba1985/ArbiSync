@@ -35,6 +35,16 @@
     .quote-controls { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
     .quote-control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
     .quote-actions { display: flex; justify-content: flex-end; }
+    .position-edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 10px; }
+    .position-edit-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+    .position-edit-grid input { padding: 4px 6px; }
+    .position-edit-actions { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .position-edit-actions textarea { width: 100%; min-height: 50px; resize: vertical; padding: 6px; font-family: inherit; }
+    .position-edit-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+    .position-summaries { margin-top: 16px; }
+    .position-summaries table { font-size: 12px; }
+    .position-summaries th { background: #fafafa; }
+    .position-summaries td, .position-summaries th { text-align: left; }
   </style>
 </head>
 <body>
@@ -193,6 +203,76 @@
       <div style="margin-top:10px;">
         <canvas id="progressChart" width="600" height="260"></canvas>
       </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h3>Editar estado da posição</h3>
+    <div class="position-edit-grid">
+      <div>
+        <label>Meta total
+          <input id="posEditTarget" type="number" step="any" class="mono" />
+        </label>
+        <label>Total preenchido
+          <input id="posEditFilled" type="number" step="any" class="mono" />
+        </label>
+        <label>Preço médio geral
+          <input id="posEditAvg" type="number" step="any" class="mono" />
+        </label>
+        <label>Arb média (%)
+          <input id="posEditArb" type="number" step="any" class="mono" />
+        </label>
+        <label>PnL acumulado (USDT)
+          <input id="posEditPnl" type="number" step="any" class="mono" />
+        </label>
+      </div>
+      <div>
+        <div class="muted" style="margin-bottom:4px;"><strong>Gate</strong></div>
+        <label>Preenchido
+          <input id="posEditGateFilled" type="number" step="any" class="mono" />
+        </label>
+        <label>Preço médio
+          <input id="posEditGateAvg" type="number" step="any" class="mono" />
+        </label>
+      </div>
+      <div>
+        <div class="muted" style="margin-bottom:4px;"><strong>MEXC</strong></div>
+        <label>Preenchido
+          <input id="posEditMexcFilled" type="number" step="any" class="mono" />
+        </label>
+        <label>Preço médio
+          <input id="posEditMexcAvg" type="number" step="any" class="mono" />
+        </label>
+        <label>Position ID
+          <input id="posEditMexcId" type="text" class="mono" />
+        </label>
+      </div>
+    </div>
+    <div class="position-edit-actions">
+      <textarea id="positionNote" placeholder="Anotação (opcional, usada ao desmontar)"></textarea>
+      <div class="position-edit-buttons">
+        <button id="positionSaveBtn">Salvar posição</button>
+        <button id="positionDismantleBtn">Desmontar posição</button>
+      </div>
+    </div>
+    <div class="position-summaries">
+      <h4>Resumos recentes</h4>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Data</th>
+            <th>Meta</th>
+            <th>Gate</th>
+            <th>MEXC</th>
+            <th>Preenchido</th>
+            <th>Arb (%)</th>
+            <th>PnL</th>
+            <th>Nota</th>
+          </tr>
+        </thead>
+        <tbody id="positionSummariesBody"></tbody>
+      </table>
     </div>
   </div>
 

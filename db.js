@@ -31,6 +31,17 @@ CREATE TABLE IF NOT EXISTS history (
   sentido TEXT,
   raw_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS position_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  state_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS position_summaries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  note TEXT,
+  summary_json TEXT NOT NULL
+);
 `);
 
 // Migração simples: garante colunas gate_status e mexc_status
@@ -114,10 +125,75 @@ function loadHistory() {
   return arr;
 }
 
+const upsertPositionStateStmt = db.prepare(`
+INSERT INTO position_state (id, state_json, updated_at)
+VALUES (1, @json, @updatedAt)
+ON CONFLICT(id) DO UPDATE SET
+  state_json = excluded.state_json,
+  updated_at = excluded.updated_at
+`);
+
+function savePositionState(state) {
+  upsertPositionStateStmt.run({
+    json: JSON.stringify(state || {}),
+    updatedAt: new Date().toISOString()
+  });
+}
+
+const loadPositionStateStmt = db.prepare('SELECT state_json FROM position_state WHERE id = 1');
+function loadPositionState() {
+  const row = loadPositionStateStmt.get();
+  if (!row || !row.state_json) return null;
+  try { return JSON.parse(row.state_json); }
+  catch { return null; }
+}
+
+const insertPositionSummaryStmt = db.prepare(`
+INSERT INTO position_summaries (created_at, note, summary_json)
+VALUES (@createdAt, @note, @summaryJson)
+`);
+
+function savePositionSummary(summary) {
+  const createdAt = new Date().toISOString();
+  const info = insertPositionSummaryStmt.run({
+    createdAt,
+    note: typeof summary?.note === 'string' && summary.note.trim() ? summary.note.trim() : null,
+    summaryJson: JSON.stringify(summary || {})
+  });
+  return { id: info.lastInsertRowid, createdAt };
+}
+
+const loadPositionSummariesStmt = db.prepare(`
+SELECT id, created_at, note, summary_json
+FROM position_summaries
+ORDER BY id DESC
+LIMIT ?
+`);
+
+function loadPositionSummaries(limit = 20) {
+  const limNum = Number(limit);
+  const lim = Number.isFinite(limNum) && limNum > 0 ? limNum : 20;
+  const rows = loadPositionSummariesStmt.all(lim);
+  return rows.map((row) => {
+    let parsed = null;
+    try { parsed = JSON.parse(row.summary_json); } catch {}
+    return {
+      id: row.id,
+      createdAt: row.created_at,
+      note: row.note || (parsed && typeof parsed.note === 'string' ? parsed.note : null) || null,
+      summary: parsed || {}
+    };
+  });
+}
+
 module.exports = {
   DB_PATH,
   upsertOverride,
   loadOverrides,
   saveHistoryItem,
-  loadHistory
+  loadHistory,
+  savePositionState,
+  loadPositionState,
+  savePositionSummary,
+  loadPositionSummaries
 };

@@ -587,10 +587,112 @@ async function refreshHistory() {
 }
 setInterval(refreshHistory, 5000); refreshHistory();
 
+function setInputValueIfIdle(id, value) {
+  const el = document.getElementById(id);
+  if (!el || document.activeElement === el) return;
+  if (value === null || value === undefined || value === '') {
+    el.value = '';
+  } else if (typeof value === 'number' && Number.isFinite(value)) {
+    el.value = value;
+  } else {
+    el.value = String(value);
+  }
+}
+
+function readNumberInput(id) {
+  const el = document.getElementById(id);
+  if (!el) return 0;
+  const raw = el.value;
+  if (raw === '' || raw === null || raw === undefined) return 0;
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : 0;
+}
+
+function readPositionIdInput(id) {
+  const el = document.getElementById(id);
+  if (!el) return null;
+  const raw = el.value.trim();
+  if (!raw) return null;
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : raw;
+}
+
+function fillPositionForm(state) {
+  if (!state || typeof state !== 'object') return;
+  const g = state.gate || {};
+  const m = state.mexc || {};
+  setInputValueIfIdle('posEditTarget', state.targetQty ?? '');
+  setInputValueIfIdle('posEditFilled', state.filledQty ?? '');
+  setInputValueIfIdle('posEditAvg', state.avgPrice ?? '');
+  setInputValueIfIdle('posEditArb', state.arbPctAvg ?? '');
+  setInputValueIfIdle('posEditPnl', state.pnlUsd ?? '');
+  setInputValueIfIdle('posEditGateFilled', g.filledQty ?? '');
+  setInputValueIfIdle('posEditGateAvg', g.avgPrice ?? '');
+  setInputValueIfIdle('posEditMexcFilled', m.filledQty ?? '');
+  setInputValueIfIdle('posEditMexcAvg', m.avgPrice ?? '');
+  setInputValueIfIdle('posEditMexcId', m.positionId ?? '');
+}
+
+function collectPositionFormState() {
+  return {
+    targetQty: readNumberInput('posEditTarget'),
+    filledQty: readNumberInput('posEditFilled'),
+    avgPrice: readNumberInput('posEditAvg'),
+    arbPctAvg: readNumberInput('posEditArb'),
+    pnlUsd: readNumberInput('posEditPnl'),
+    gate: {
+      filledQty: readNumberInput('posEditGateFilled'),
+      avgPrice: readNumberInput('posEditGateAvg')
+    },
+    mexc: {
+      filledQty: readNumberInput('posEditMexcFilled'),
+      avgPrice: readNumberInput('posEditMexcAvg'),
+      positionId: readPositionIdInput('posEditMexcId')
+    }
+  };
+}
+
+function formatSummaryNumber(value, decimals) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '-';
+  if (typeof decimals === 'number') return num.toFixed(decimals);
+  return String(num);
+}
+
+function renderPositionSummaries(list) {
+  const tbody = document.getElementById('positionSummariesBody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  (Array.isArray(list) ? list : []).forEach((item) => {
+    const state = item?.summary?.state || {};
+    const gate = state.gate || {};
+    const mexc = state.mexc || {};
+    const tr = document.createElement('tr');
+    const cells = [
+      item?.id ?? '-',
+      item?.createdAt ? new Date(item.createdAt).toLocaleString('pt-BR') : '-',
+      formatSummaryNumber(state.targetQty),
+      `${formatSummaryNumber(gate.filledQty)} @ ${formatSummaryNumber(gate.avgPrice)}`,
+      `${formatSummaryNumber(mexc.filledQty)} @ ${formatSummaryNumber(mexc.avgPrice)}`,
+      formatSummaryNumber(state.filledQty),
+      formatSummaryNumber(state.arbPctAvg, 6),
+      formatSummaryNumber(state.pnlUsd, 6),
+      item?.note || item?.summary?.note || '-'
+    ];
+    cells.forEach((text) => {
+      const td = document.createElement('td');
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
 async function refreshPosition() {
   try {
     const r = await fetch('/api/position-progress');
-    const s = await r.json();
+    const payload = await r.json();
+    const s = payload?.state || payload || {};
     const g = s.gate || {};
     const m = s.mexc || {};
     document.getElementById('ppTarget').textContent = s.targetQty || 0;
@@ -601,6 +703,8 @@ async function refreshPosition() {
     document.getElementById('ppArb').textContent = (s.arbPctAvg || 0).toFixed ? s.arbPctAvg.toFixed(6) : s.arbPctAvg;
     document.getElementById('ppPnl').textContent = (s.pnlUsd || 0).toFixed ? s.pnlUsd.toFixed(6) : s.pnlUsd;
     drawProgressChart(s.series || []);
+    fillPositionForm(s);
+    renderPositionSummaries(payload?.summaries || []);
   } catch {}
 }
 setInterval(refreshPosition, 4000); refreshPosition();
@@ -684,6 +788,58 @@ document.getElementById('setTarget').addEventListener('click', async () => {
     alert('Erro ao definir meta: ' + (e.message || e));
   }
 });
+
+const positionSaveBtn = document.getElementById('positionSaveBtn');
+if (positionSaveBtn) {
+  positionSaveBtn.addEventListener('click', async () => {
+    positionSaveBtn.disabled = true;
+    try {
+      const state = collectPositionFormState();
+      const resp = await fetch('/api/position-manual-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state })
+      });
+      const out = await safeJson(resp);
+      if (!resp.ok || out.ok === false) {
+        alert('Falha ao salvar posição: ' + JSON.stringify(out));
+        return;
+      }
+      await refreshPosition();
+    } catch (e) {
+      alert('Erro ao salvar posição: ' + (e.message || e));
+    } finally {
+      positionSaveBtn.disabled = false;
+    }
+  });
+}
+
+const positionDismantleBtn = document.getElementById('positionDismantleBtn');
+if (positionDismantleBtn) {
+  positionDismantleBtn.addEventListener('click', async () => {
+    positionDismantleBtn.disabled = true;
+    try {
+      const noteEl = document.getElementById('positionNote');
+      const note = noteEl ? noteEl.value : '';
+      const resp = await fetch('/api/position-dismantle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note })
+      });
+      const out = await safeJson(resp);
+      if (!resp.ok || out.ok === false) {
+        alert('Falha ao desmontar posição: ' + JSON.stringify(out));
+        return;
+      }
+      if (noteEl) noteEl.value = '';
+      await refreshPosition();
+    } catch (e) {
+      alert('Erro ao desmontar posição: ' + (e.message || e));
+    } finally {
+      positionDismantleBtn.disabled = false;
+    }
+  });
+}
 
 // ======== Gráfico simples
 function drawProgressChart(series) {

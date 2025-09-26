@@ -21,16 +21,131 @@ const autoMetaCache = new Map();
 const overridesBySymbol = new Map();
 
 let orderHistory = [];
-let positionState = {
-  targetQty: 0,
-  filledQty: 0,
-  avgPrice: 0,
-  arbPctAvg: 0,
-  pnlUsd: 0,
-  gate: { filledQty: 0, avgPrice: 0 },
-  mexc: { filledQty: 0, avgPrice: 0, positionId: null },
-  series: []
+
+const SERIES_LIMIT = 500;
+const POSITION_SUMMARY_LIMIT = 50;
+
+function createEmptyPositionState() {
+  return {
+    targetQty: 0,
+    filledQty: 0,
+    avgPrice: 0,
+    arbPctAvg: 0,
+    pnlUsd: 0,
+    gate: { filledQty: 0, avgPrice: 0 },
+    mexc: { filledQty: 0, avgPrice: 0, positionId: null },
+    series: []
+  };
+}
+
+const finiteOr = (value, fallback) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
 };
+
+const nullableFinite = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+function sanitizeSeries(series) {
+  if (!Array.isArray(series)) return [];
+  const cleaned = [];
+  for (const entry of series) {
+    if (!entry || typeof entry !== 'object') continue;
+    const out = {};
+    out.t = finiteOr(entry.t, Date.now());
+    if ('filledQty' in entry) out.filledQty = finiteOr(entry.filledQty, 0);
+    if ('avgPrice' in entry) out.avgPrice = finiteOr(entry.avgPrice, 0);
+    if ('arbPctAvg' in entry) out.arbPctAvg = finiteOr(entry.arbPctAvg, 0);
+    if ('pnlUsd' in entry) out.pnlUsd = finiteOr(entry.pnlUsd, 0);
+    if (entry.gate && typeof entry.gate === 'object') {
+      const g = {};
+      if ('filledQty' in entry.gate) g.filledQty = finiteOr(entry.gate.filledQty, 0);
+      if ('avgPrice' in entry.gate) g.avgPrice = finiteOr(entry.gate.avgPrice, 0);
+      if (Object.keys(g).length) out.gate = g;
+    }
+    if (entry.mexc && typeof entry.mexc === 'object') {
+      const m = {};
+      if ('filledQty' in entry.mexc) m.filledQty = finiteOr(entry.mexc.filledQty, 0);
+      if ('avgPrice' in entry.mexc) m.avgPrice = finiteOr(entry.mexc.avgPrice, 0);
+      if (Object.keys(m).length) out.mexc = m;
+    }
+    cleaned.push(out);
+  }
+  return cleaned.length > SERIES_LIMIT ? cleaned.slice(-SERIES_LIMIT) : cleaned;
+}
+
+function applyPositionStatePatch(base, patch) {
+  const out = {
+    ...base,
+    gate: { ...base.gate },
+    mexc: { ...base.mexc },
+    series: Array.isArray(base.series) ? [...base.series] : []
+  };
+
+  if (patch && typeof patch === 'object') {
+    if ('targetQty' in patch) out.targetQty = finiteOr(patch.targetQty, out.targetQty);
+    if ('filledQty' in patch) out.filledQty = finiteOr(patch.filledQty, out.filledQty);
+    if ('avgPrice' in patch) out.avgPrice = finiteOr(patch.avgPrice, out.avgPrice);
+    if ('arbPctAvg' in patch) out.arbPctAvg = finiteOr(patch.arbPctAvg, out.arbPctAvg);
+    if ('pnlUsd' in patch) out.pnlUsd = finiteOr(patch.pnlUsd, out.pnlUsd);
+
+    if (patch.gate && typeof patch.gate === 'object') {
+      if ('filledQty' in patch.gate) out.gate.filledQty = finiteOr(patch.gate.filledQty, out.gate.filledQty);
+      if ('avgPrice' in patch.gate) out.gate.avgPrice = finiteOr(patch.gate.avgPrice, out.gate.avgPrice);
+      for (const key of Object.keys(patch.gate)) {
+        if (!['filledQty', 'avgPrice'].includes(key)) out.gate[key] = patch.gate[key];
+      }
+    }
+
+    if (patch.mexc && typeof patch.mexc === 'object') {
+      if ('filledQty' in patch.mexc) out.mexc.filledQty = finiteOr(patch.mexc.filledQty, out.mexc.filledQty);
+      if ('avgPrice' in patch.mexc) out.mexc.avgPrice = finiteOr(patch.mexc.avgPrice, out.mexc.avgPrice);
+      if ('positionId' in patch.mexc) {
+        const pid = patch.mexc.positionId;
+        if (pid === null || pid === '' || pid === undefined) {
+          out.mexc.positionId = null;
+        } else {
+          const nPid = nullableFinite(pid);
+          out.mexc.positionId = nPid != null ? nPid : pid;
+        }
+      }
+      for (const key of Object.keys(patch.mexc)) {
+        if (!['filledQty', 'avgPrice', 'positionId'].includes(key)) out.mexc[key] = patch.mexc[key];
+      }
+    }
+
+    if ('series' in patch) {
+      if (Array.isArray(patch.series)) out.series = sanitizeSeries(patch.series);
+      else if (patch.series === null) out.series = [];
+    }
+
+    for (const key of Object.keys(patch)) {
+      if (!['targetQty','filledQty','avgPrice','arbPctAvg','pnlUsd','gate','mexc','series'].includes(key)) {
+        out[key] = patch[key];
+      }
+    }
+  }
+
+  return out;
+}
+
+function clonePositionState(src) {
+  return applyPositionStatePatch(createEmptyPositionState(), src || {});
+}
+
+let positionState = createEmptyPositionState();
+let positionSummaries = [];
+
+function persistPositionState(context = 'unknown') {
+  try {
+    positionState.series = sanitizeSeries(positionState.series);
+    db.savePositionState(positionState);
+  } catch (e) {
+    console.warn(`[SQLite] Falha ao salvar posição (${context}):`, e?.message || e);
+  }
+}
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
@@ -44,6 +159,22 @@ try {
 } catch (e) {
   console.warn('[SQLite] Falha ao carregar estado:', e?.message || e);
 }
+
+try {
+  const savedPos = db.loadPositionState();
+  if (savedPos) positionState = clonePositionState(savedPos);
+} catch (e) {
+  console.warn('[SQLite] Falha ao carregar posição:', e?.message || e);
+}
+
+try {
+  positionSummaries = db.loadPositionSummaries(POSITION_SUMMARY_LIMIT);
+} catch (e) {
+  positionSummaries = [];
+  console.warn('[SQLite] Falha ao carregar resumos de posição:', e?.message || e);
+}
+
+console.log(`[SQLite] Estado da posição carregado: filled=${positionState.filledQty}, gate=${positionState.gate?.filledQty ?? 0}, mexc=${positionState.mexc?.filledQty ?? 0}. Resumos: ${positionSummaries.length}.`);
 
 // ===== Utils
 const nowBR = () => new Date().toLocaleString('pt-BR');
@@ -722,9 +853,60 @@ app.post('/api/position-target', (req, res) => {
   const t = Number(req.body?.targetQty);
   if (!Number.isFinite(t) || t < 0) return res.status(400).json({ error: 'targetQty inválido' });
   positionState.targetQty = t;
+  persistPositionState('set-target');
   res.json({ ok: true, targetQty: t });
 });
-app.get('/api/position-progress', (_req, res) => res.json(positionState));
+app.get('/api/position-progress', (_req, res) => {
+  res.json({ ok: true, state: positionState, summaries: positionSummaries });
+});
+
+app.post('/api/position-manual-update', (req, res) => {
+  try {
+    const payload = req.body?.state;
+    if (!payload || typeof payload !== 'object') {
+      return res.status(400).json({ ok: false, error: 'invalid_state' });
+    }
+    const next = applyPositionStatePatch(positionState, payload);
+    next.series = sanitizeSeries(next.series);
+    positionState = next;
+    persistPositionState('manual-update');
+    res.json({ ok: true, state: positionState, summaries: positionSummaries });
+  } catch (e) {
+    console.error('[API] position-manual-update:', e?.message || e);
+    res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
+
+app.post('/api/position-dismantle', (req, res) => {
+  try {
+    const noteRaw = req.body?.note;
+    const note = typeof noteRaw === 'string' ? noteRaw.trim() : '';
+    const snapshot = clonePositionState(positionState);
+    snapshot.series = sanitizeSeries(snapshot.series);
+    const summaryPayload = {
+      note: note || undefined,
+      state: snapshot
+    };
+    const info = db.savePositionSummary(summaryPayload);
+    const createdAt = info?.createdAt || new Date().toISOString();
+    const entry = {
+      id: info?.id || Date.now(),
+      createdAt,
+      note: note || null,
+      summary: { ...summaryPayload, createdAt }
+    };
+    positionSummaries.unshift(entry);
+    if (positionSummaries.length > POSITION_SUMMARY_LIMIT) {
+      positionSummaries = positionSummaries.slice(0, POSITION_SUMMARY_LIMIT);
+    }
+    positionState = createEmptyPositionState();
+    persistPositionState('dismantle-reset');
+    res.json({ ok: true, state: positionState, summaries: positionSummaries });
+  } catch (e) {
+    console.error('[API] position-dismantle:', e?.message || e);
+    res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
 
 function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
   const meta = item?.metaUsed || {};
@@ -790,6 +972,8 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
     gate: { filledQty: gNewQty, avgPrice: Number(gNewAvg.toFixed(11)) },
     mexc: { filledQty: mNewQty, avgPrice: Number(mNewAvg.toFixed(11)) }
   });
+  positionState.series = sanitizeSeries(positionState.series);
+  persistPositionState('update-position');
 }
 
 // ===== Precheck (respeita modo open/close do front)
@@ -1256,7 +1440,10 @@ app.post('/api/cancel-order', async (req, res) => {
         await mexcCancelOrder(symbol, String(item.mexcOrderId));
         const md = await getMexcOrderDetail(symbol, String(item.mexcOrderId));
         const p = parseMexcOrderDetail(md);
-        if (p.positionId) positionState.mexc.positionId = p.positionId;
+        if (p.positionId && positionState.mexc.positionId !== p.positionId) {
+          positionState.mexc.positionId = p.positionId;
+          persistPositionState('cancel-mexc-position-id');
+        }
         mFilled = Number(p.filled || 0);
         mAvg = Number(p.avgPrice || item.priceUsedMexc);
       }
@@ -1400,7 +1587,10 @@ async function pollOpenOrders() {
         console.log('MEXC detail', md);
         const p = parseMexcOrderDetail(md);
         console.log('parsed detail', p);
-        if (p.positionId) positionState.mexc.positionId = p.positionId;
+        if (p.positionId && positionState.mexc.positionId !== p.positionId) {
+          positionState.mexc.positionId = p.positionId;
+          persistPositionState('poll-mexc-position-id');
+        }
         mFilled = Number(p.filled || 0);
         mAvg = Number(p.avgPrice || mAvg);
         mIsFilled = !!p.isFilled;
