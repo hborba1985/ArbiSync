@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
-  <title>Arbitragem Gate.io x MEXC — <span id="titleSymbol">BASE_USDT</span></title>
+  <title>Arbitragem Gate.io x MEXC — BASE_USDT</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 16px; color: #111; }
@@ -24,17 +24,11 @@
     .top { margin-bottom: 14px; }
     .status { min-height: 60px; }
     canvas { border: 1px solid #ddd; background: #fff; }
-    .quotes-card input[type="number"] { width: 70px; }
-    .quotes-section h4 { margin: 12px 0 6px; font-size: 14px; }
-    .quotes-table { width: 100%; font-size: 12px; }
-    .quotes-table th, .quotes-table td { text-align: right; }
-    .quotes-table th:nth-child(2), .quotes-table td:nth-child(2) { text-align: center; }
-    .quotes-table th.col-check { text-align: center; width: 52px; }
-    .quotes-table td.col-check { text-align: center; }
-    .quote-summary { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; margin-bottom: 4px; }
-    .quote-controls { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
-    .quote-control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
-    .quote-actions { display: flex; justify-content: flex-end; }
+    .position-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+    .position-field { display: flex; flex-direction: column; font-size: 13px; }
+    .position-field input { margin-top: 4px; font-size: 13px; }
+    .position-subgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-top: 12px; }
+    .position-actions { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
   </style>
 </head>
 <body>
@@ -58,8 +52,7 @@
           <div class="muted" style="margin-bottom:6px;"><strong>Gate</strong></div>
           <label>priceScale <input id="ov_gate_price" type="number" step="1" class="mono" /></label><br/>
           <label>qtyScale <input id="ov_gate_qty" type="number" step="1" class="mono" /></label><br/>
-          <label>minQty <input id="ov_gate_minqty" type="number" step="any" class="mono" /></label><br/>
-          <label>minQuote <input id="ov_gate_minquote" type="number" step="any" class="mono" /></label>
+          <label>minQty <input id="ov_gate_minqty" type="number" step="any" class="mono" /></label>
         </div>
         <div>
           <div class="muted" style="margin-bottom:6px;"><strong>MEXC</strong></div>
@@ -71,8 +64,7 @@
         <div>
           <div class="muted" style="margin-bottom:6px;"><strong>Settings</strong></div>
           <label>margem (%) <input id="ov_set_margin" type="number" step="any" class="mono" /></label><br/>
-          <label>leverage <input id="ov_set_lev" type="number" step="any" class="mono" /></label><br/>
-          <label>Gate extra (%) <input id="ov_set_gate_extra" type="number" step="any" class="mono" /></label>
+          <label>leverage <input id="ov_set_lev" type="number" step="any" class="mono" /></label>
         </div>
       </div>
       <div style="margin-top:10px;">
@@ -84,72 +76,16 @@
 
   <div class="row">
     <!-- Cotações -->
-    <div class="card w33 quotes-card">
+    <div class="card w33">
       <h3>Cotações</h3>
 
-      <div class="quote-summary">
-        <div><strong>Modo atual:</strong> <span id="quoteModeLabel">Abrir</span></div>
-        <div><strong>Diferença selecionada:</strong> <span id="diff">-%</span></div>
-      </div>
-      <div class="quote-summary">
-        <div>Open selecionado: <span id="openSummary">-</span></div>
-        <div>Close selecionado: <span id="closeSummary">-</span></div>
-      </div>
+      <div><b id="gateLabel">Ask Gate.io:</b> <span id="gateAsk">-</span> (<span id="gateAskVol">-</span>)</div>
+      <div><b id="mexcLabel">Bid MEXC:</b> <span id="mexcBid">-</span> (<span id="mexcBidVol">-</span>)</div>
+      <div style="margin:6px 0 12px 0;">Diferença: <span id="diff">-%</span></div>
 
-      <div class="quotes-section">
-        <h4>Open — Gate (asks) vs MEXC (bids)</h4>
-        <table class="quotes-table">
-          <thead>
-            <tr>
-              <th class="col-check">Usar</th>
-              <th>Nível</th>
-              <th>Gate preço</th>
-              <th>Gate base</th>
-              <th>Gate USDT</th>
-              <th>MEXC preço</th>
-              <th>MEXC base</th>
-              <th>MEXC USDT</th>
-              <th>Dif.%</th>
-            </tr>
-          </thead>
-          <tbody id="openQuotesBody"></tbody>
-        </table>
-      </div>
-
-      <div class="quotes-section">
-        <h4>Close — Gate (bids) vs MEXC (asks)</h4>
-        <table class="quotes-table">
-          <thead>
-            <tr>
-              <th class="col-check">Usar</th>
-              <th>Nível</th>
-              <th>Gate preço</th>
-              <th>Gate base</th>
-              <th>Gate USDT</th>
-              <th>MEXC preço</th>
-              <th>MEXC base</th>
-              <th>MEXC USDT</th>
-              <th>Dif.%</th>
-            </tr>
-          </thead>
-          <tbody id="closeQuotesBody"></tbody>
-        </table>
-      </div>
-
-      <div class="quote-controls">
-        <div class="quote-control-row">
-          <label><input type="checkbox" id="modeClose" /> Fechar posições (inverter lógica)</label>
-        </div>
-        <div class="quote-control-row">
-          <span>Alerta de dif. (%):</span>
-          <input id="alertMin" type="number" step="any" class="mono" placeholder="min" />
-          <input id="alertMax" type="number" step="any" class="mono" placeholder="max" />
-          <label><input type="checkbox" id="soundToggle" /> Som</label>
-          <label><input type="checkbox" id="telegramToggle" /> Telegram</label>
-        </div>
-        <div class="quote-actions">
-          <button id="executeTrade">Executar Ordem Simultânea</button>
-        </div>
+      <label><input type="checkbox" id="modeClose" /> Fechar posições (inverter lógica)</label>
+      <div style="margin-top:10px;">
+        <button id="executeTrade">Executar Ordem Simultânea</button>
       </div>
       <pre id="status" class="mono status" style="margin-top:10px;"></pre>
     </div>
@@ -179,15 +115,54 @@
       </div>
 
       <div class="mono" style="margin-top:10px;">
-        <div>Alvo: <span id="ppTarget">0</span></div>
-        <div style="margin-top:6px;"><strong>Gate</strong></div>
-        <div>Preenchido: <span id="ppGateFilled">0</span></div>
-        <div>Preço Médio: <span id="ppGateAvg">0</span></div>
-        <div style="margin-top:6px;"><strong>MEXC</strong></div>
-        <div>Preenchido: <span id="ppMexcFilled">0</span></div>
-        <div>Preço Médio: <span id="ppMexcAvg">0</span></div>
-        <div style="margin-top:6px;">Arb. Média (%): <span id="ppArb">0</span></div>
-        <div>PnL Geral (USDT): <span id="ppPnl">0</span></div>
+        <div class="position-grid">
+          <label class="position-field">Alvo atual
+            <input id="ppTargetCurrent" type="number" step="any" class="mono" />
+          </label>
+          <label class="position-field">Total preenchido
+            <input id="ppFilledInput" type="number" step="any" class="mono" />
+          </label>
+          <label class="position-field">Preço médio geral
+            <input id="ppAvgPriceInput" type="number" step="any" class="mono" />
+          </label>
+          <label class="position-field">Arb. média (%)
+            <input id="ppArbInput" type="number" step="any" class="mono" />
+          </label>
+          <label class="position-field">PnL geral (USDT)
+            <input id="ppPnlInput" type="number" step="any" class="mono" />
+          </label>
+          <label class="position-field">Volume total operado
+            <input id="ppVolumeInput" type="number" step="any" class="mono" />
+          </label>
+        </div>
+        <div class="position-subgrid">
+          <div>
+            <div><strong>Gate</strong></div>
+            <label class="position-field">Preenchido
+              <input id="ppGateFilledInput" type="number" step="any" class="mono" />
+            </label>
+            <label class="position-field">Preço médio
+              <input id="ppGateAvgInput" type="number" step="any" class="mono" />
+            </label>
+          </div>
+          <div>
+            <div><strong>MEXC</strong></div>
+            <label class="position-field">Preenchido
+              <input id="ppMexcFilledInput" type="number" step="any" class="mono" />
+            </label>
+            <label class="position-field">Preço médio
+              <input id="ppMexcAvgInput" type="number" step="any" class="mono" />
+            </label>
+            <label class="position-field">Position ID
+              <input id="ppMexcPositionId" type="text" class="mono" />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="position-actions">
+        <button id="savePositionData">Salvar dados da posição</button>
+        <button id="dismantlePosition">Desmontar posição</button>
       </div>
 
       <div style="margin-top:10px;">
@@ -204,23 +179,43 @@
         <tr>
           <th>Local ID</th>
           <th>Hora</th>
-          <th>Sentido</th>
           <th>Gate Price</th>
           <th>MEXC Price</th>
-          <th>Volume (moeda base)</th>
-          <th>%Arb</th>
-          <th>$PnL</th>
+          <th>Volume (WMTX)</th>
           <th>Gate Order ID</th>
           <th>Gate Status</th>
-          <th>GRO</th>
           <th>MEXC Order ID</th>
           <th>MEXC Status</th>
-          <th>MRO</th>
           <th>Status</th>
           <th>Ações</th>
         </tr>
       </thead>
       <tbody id="historyBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h3>Histórico de Posições Fechadas</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Encerrada</th>
+          <th>Iniciada</th>
+          <th>Par</th>
+          <th>Meta (qty)</th>
+          <th>Preenchido</th>
+          <th>Preço médio final</th>
+          <th>Arb final (%)</th>
+          <th>PnL final (USDT)</th>
+          <th>Volume total</th>
+          <th>Gate preenchido</th>
+          <th>Gate preço médio</th>
+          <th>MEXC preenchido</th>
+          <th>MEXC preço médio</th>
+          <th>Obs.</th>
+        </tr>
+      </thead>
+      <tbody id="positionSummaryBody"></tbody>
     </table>
   </div>
 

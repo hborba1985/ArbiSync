@@ -7,6 +7,7 @@
 const express = require('express');
 const axios = require('axios');
 const path = require('path');
+const crypto = require('crypto');
 const GateApi = require('gate-api');
 const { MexcFuturesClient } = require('mexc-futures-sdk');
 const config = require('./config');
@@ -20,17 +21,133 @@ let currentSymbol = (config?.defaultSymbol || 'BASE_USDT').toUpperCase();
 const autoMetaCache = new Map();
 const overridesBySymbol = new Map();
 
+// Lista simples de instrumentos permitidos para consultas MEXC
+const SUPPORTED_INSTRUMENTS = new Set(['BOXCAT_USDT', 'WMTX_USDT', 'ACS_USDT']);
+
 let orderHistory = [];
-let positionState = {
-  targetQty: 0,
-  filledQty: 0,
-  avgPrice: 0,
-  arbPctAvg: 0,
-  pnlUsd: 0,
-  gate: { filledQty: 0, avgPrice: 0 },
-  mexc: { filledQty: 0, avgPrice: 0, positionId: null },
-  series: []
-};
+
+function createEmptyPositionState(symbol = currentSymbol) {
+  return {
+    symbol,
+    targetQty: 0,
+    filledQty: 0,
+    avgPrice: 0,
+    arbPctAvg: 0,
+    pnlUsd: 0,
+    totalVolume: 0,
+    startedAt: null,
+    lastUpdated: null,
+    gate: { filledQty: 0, avgPrice: 0 },
+    mexc: { filledQty: 0, avgPrice: 0, positionId: null },
+    series: []
+  };
+}
+
+function safeNumber(value, fallback = 0) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizePositionState(raw) {
+  if (!raw || typeof raw !== 'object') return createEmptyPositionState();
+  const symbol = typeof raw.symbol === 'string' && raw.symbol.includes('_')
+    ? raw.symbol.toUpperCase()
+    : currentSymbol;
+  const base = createEmptyPositionState(symbol);
+  base.targetQty = safeNumber(raw.targetQty, base.targetQty);
+  base.filledQty = safeNumber(raw.filledQty, base.filledQty);
+  base.avgPrice = safeNumber(raw.avgPrice, base.avgPrice);
+  base.arbPctAvg = safeNumber(raw.arbPctAvg, base.arbPctAvg);
+  base.pnlUsd = safeNumber(raw.pnlUsd, base.pnlUsd);
+  base.totalVolume = safeNumber(raw.totalVolume, base.totalVolume);
+  base.startedAt = raw.startedAt || null;
+  base.lastUpdated = raw.lastUpdated || null;
+  base.gate = {
+    filledQty: safeNumber(raw?.gate?.filledQty, 0),
+    avgPrice: safeNumber(raw?.gate?.avgPrice, 0)
+  };
+  base.mexc = {
+    filledQty: safeNumber(raw?.mexc?.filledQty, 0),
+    avgPrice: safeNumber(raw?.mexc?.avgPrice, 0),
+    positionId: raw?.mexc?.positionId ?? null
+  };
+  base.series = Array.isArray(raw.series) ? raw.series : [];
+  return base;
+}
+
+function parseNumberField(value, opts = {}) {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n)) throw new Error('Valor numérico inválido');
+  if (opts.min != null && n < opts.min) {
+    throw new Error(`Valor deve ser maior ou igual a ${opts.min}`);
+  }
+  return n;
+}
+
+function generateSummaryId() {
+  if (crypto && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+let positionState = createEmptyPositionState();
+
+function persistPositionState() {
+  try {
+    if (!positionState || typeof positionState !== 'object') return;
+    const sym = positionState.symbol && typeof positionState.symbol === 'string'
+      ? positionState.symbol.toUpperCase()
+      : currentSymbol;
+    positionState.symbol = sym.includes('_') ? sym : currentSymbol;
+    positionState.lastUpdated = new Date().toISOString();
+    db.savePositionState(positionState);
+  } catch (e) {
+    console.warn('[SQLite] Falha ao salvar posição:', e?.message || e);
+  }
+}
+
+function buildPositionSummary(state, extra = {}) {
+  const base = state || createEmptyPositionState();
+  const nowIso = new Date().toISOString();
+  const summary = {
+    id: extra.id || generateSummaryId(),
+    symbol: (base.symbol && typeof base.symbol === 'string' && base.symbol.includes('_'))
+      ? base.symbol.toUpperCase()
+      : currentSymbol,
+    createdAt: nowIso,
+    endedAt: extra.endedAt || nowIso,
+    startedAt: base.startedAt || null,
+    lastUpdated: base.lastUpdated || null,
+    targetQty: safeNumber(base.targetQty, 0),
+    finalFilledQty: safeNumber(base.filledQty, 0),
+    finalAvgPrice: roundTo(safeNumber(base.avgPrice, 0), 11),
+    finalArbPct: roundTo(safeNumber(base.arbPctAvg, 0), 6),
+    finalPnlUsd: roundTo(safeNumber(base.pnlUsd, 0), 6),
+    totalVolume: roundTo(safeNumber(base.totalVolume, 0), 11),
+    gate: {
+      filledQty: safeNumber(base?.gate?.filledQty, 0),
+      avgPrice: roundTo(safeNumber(base?.gate?.avgPrice, 0), 11)
+    },
+    mexc: {
+      filledQty: safeNumber(base?.mexc?.filledQty, 0),
+      avgPrice: roundTo(safeNumber(base?.mexc?.avgPrice, 0), 11),
+      positionId: base?.mexc?.positionId ?? null
+    },
+    seriesPoints: Array.isArray(base.series) ? base.series.length : 0
+  };
+  if (extra.note) summary.note = String(extra.note);
+  return summary;
+}
+
+function resetPositionState(symbol = positionState.symbol || currentSymbol) {
+  positionState = createEmptyPositionState(symbol);
+  persistPositionState();
+  return positionState;
+}
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
@@ -43,6 +160,18 @@ try {
   console.log(`[SQLite] Carregado: ${ov.size} override(s) e ${orderHistory.length} item(ns) de histórico.`);
 } catch (e) {
   console.warn('[SQLite] Falha ao carregar estado:', e?.message || e);
+}
+
+try {
+  const storedState = db.loadPositionState();
+  if (storedState) {
+    positionState = normalizePositionState(storedState);
+    if (positionState.symbol && positionState.symbol.includes('_')) {
+      currentSymbol = positionState.symbol.toUpperCase();
+    }
+  }
+} catch (e) {
+  console.warn('[SQLite] Falha ao restaurar posição:', e?.message || e);
 }
 
 // ===== Utils
@@ -140,18 +269,17 @@ if (config.mexc?.webAuthToken || (config.mexc?.apiKey && config.mexc?.apiSecret)
   console.warn('[WARN] mexc.webAuthToken ausente no config.js — recursos MEXC limitados.');
 }
 
-async function mexcSubmitOrder(symbol, price, contracts, leverage, sideCode, positionId) {
+async function mexcSubmitOrder(symbol, price, contracts, leverage, sideCode) {
   if (!mexcClient) throw new Error('mexcClient não inicializado.');
   const payload = {
     symbol,
     price: Number(price),
     vol: Number(contracts),
-    side: Number(sideCode ?? 3), // 3=open short, 2=close short
+    side: Number(sideCode ?? 3), // 3=open short, 4=close short
     openType: 1,                 // isolated
     leverage: Number(leverage) || 1,
     type: 1                      // limit
   };
-  if (positionId != null) payload.positionId = Number(positionId);
   console.log('[MEXC SDK] submitOrder payload:', payload);
   if (typeof mexcClient.submitOrder === 'function') {
     const r = await mexcClient.submitOrder(payload);
@@ -185,6 +313,12 @@ async function getMexcOrderDetail(symbol, orderId) {
   const idStr = String(orderId);
   if (!/^[0-9]+$/.test(idStr)) {
     const msg = `[MEXC] getMexcOrderDetail: orderId não numérico: ${orderId}`;
+    console.warn(msg);
+    throw new Error(msg);
+  }
+
+  if (!SUPPORTED_INSTRUMENTS.has(symbol)) {
+    const msg = `[MEXC] getMexcOrderDetail: symbol não suportado: ${symbol}`;
     console.warn(msg);
     throw new Error(msg);
   }
@@ -246,121 +380,36 @@ function parseMexcOrderDetail(detail) {
   const vol    = Number(d.vol ?? d.volume ?? d.quantity ?? d.origQty ?? 0);
   const remain = Number(d.remainVol ?? d.remaining_volume ?? (Number.isFinite(vol) ? Math.max(vol - filled, 0) : 0));
   const status = (d.state ?? d.status ?? d.orderStatus ?? d.orderState ?? '').toString().toLowerCase();
-  const avg    = Number(d.priceAvg ?? d.avgPrice ?? d.avg_price ?? d.avgDealPrice ?? d.dealAvgPrice ?? d.fill_price ?? 0);
-  const posId  = d.positionId ?? d.position_id ?? null;
+  const avg    = Number(d.priceAvg ?? d.avgPrice ?? d.avg_price ?? d.avgDealPrice ?? d.fill_price ?? 0);
   const statusFilled =
     status.includes('filled') || status === 'done' || status === 'closed' ||
     status === 'success' || status === 'finished' || status === '3' || status === '7';
   const isFilled = statusFilled || (vol > 0 && filled >= vol) || remain === 0;
-  return { isFilled, filled: Math.max(0, filled), avgPrice: avg || 0, positionId: posId };
+  return { isFilled, filled: Math.max(0, filled), avgPrice: avg || 0 };
 }
 
 // ===== MEXC saldo (via web token)
-function parseMaybeNumber(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-function extractMexcAssets(payload) {
-  const arr = Array.isArray(payload?.data) ? payload.data : (Array.isArray(payload) ? payload : []);
-  const out = {};
+function pickUSDTFromAssets(assets) {
+  const arr = Array.isArray(assets?.data) ? assets.data : (Array.isArray(assets) ? assets : []);
   for (const it of arr) {
-    if (!it || typeof it !== 'object') continue;
-    const cc = (it.currency || it.asset || it.coin || '').toString().toUpperCase();
-    if (!cc) continue;
-    const available = parseMaybeNumber(
-      it.availableBalance ?? it.balanceAvailable ?? it.availableCash ?? it.availableOpen ??
-      it.availableMargin ?? it.marginAvailable ?? it.available ?? it.maxAvailable ?? it.equity ?? it.cashBalance
-    );
-    const locked = parseMaybeNumber(
-      it.frozenBalance ?? it.frozen ?? it.locked ?? it.positionMargin ??
-      it.marginFrozen ?? it.orderMargin ?? it.holdVol ?? it.frozenMargin
-    );
-    const entry = {};
-    if (available != null) entry.available = available;
-    if (locked != null) entry.locked = locked;
-    if (Object.keys(entry).length > 0) out[cc] = entry;
+    const cc = (it.currency || '').toString().toUpperCase();
+    if (cc === 'USDT') {
+      const v = it.availableBalance ?? it.availableCash ?? it.availableOpen ?? it.balanceAvailable ?? it.available;
+      if (v != null) return Number(v);
+    }
   }
-  return out;
+  return null;
 }
-function collectMexcLocalBase(symbol) {
-  if (!symbol) return null;
-  const base = symbol.split('_')[0]?.toUpperCase();
-  if (!base) return null;
-
-  const filled = parseMaybeNumber(positionState?.mexc?.filledQty);
-  let locked = 0;
-  for (const item of orderHistory) {
-    if (item.symbol !== symbol) continue;
-    const st = item.mexcStatus;
-    if (st !== 'open' && st !== 'creating') continue;
-    const vol = parseMaybeNumber(item.mexcDisplayVolume ?? item.volume);
-    if (vol != null) locked += vol;
-  }
-  if (!Number.isFinite(locked) || locked <= 0) locked = null;
-
-  if (filled == null && locked == null) return null;
-  return {
-    currency: base,
-    available: filled ?? null,
-    locked: locked ?? null,
-    source: 'estimado'
-  };
-}
-async function getMexcAvailableUSDT(symbol) {
+async function getMexcAvailableUSDT() {
   const token = config.mexc?.webAuthToken;
   if (!token) return { unknown: true, reason: 'no_web_token' };
 
   const headers = { Authorization: token, 'Content-Type': 'application/json' };
   const url = 'https://futures.mexc.com/api/v1/private/account/assets';
-  const base = symbol ? symbol.split('_')[0]?.toUpperCase() : null;
   try {
     const { data } = await axios.get(url, { headers, timeout: 8000 });
-    const assets = extractMexcAssets(data);
-    const result = { assets };
-
-    if (assets.USDT && assets.USDT.available != null) {
-      result.availableUSDT = parseMaybeNumber(assets.USDT.available);
-    }
-
-    if (base) {
-      const entry = assets[base];
-      if (entry && (entry.available != null || entry.locked != null)) {
-        result.base = {
-          currency: base,
-          available: entry.available != null ? parseMaybeNumber(entry.available) : null,
-          locked: entry.locked != null ? parseMaybeNumber(entry.locked) : null,
-          source: 'api'
-        };
-      }
-    }
-
-    if ((!result.base || result.base.available == null) && base) {
-      const fallback = collectMexcLocalBase(symbol);
-      if (fallback) {
-        result.base = fallback;
-        result.assets = result.assets || {};
-        result.assets[base] = Object.assign({}, result.assets[base] || {}, {
-          available: fallback.available != null ? fallback.available : (result.assets[base]?.available ?? null),
-          locked: fallback.locked != null ? fallback.locked : (result.assets[base]?.locked ?? null)
-        });
-      }
-    }
-
-    if (base && !result.base) {
-      result.base = { currency: base, available: null, locked: null, source: 'sem dados' };
-      result.assets = result.assets || {};
-      if (!result.assets[base]) result.assets[base] = {};
-    }
-
-    if (!Object.keys(result.assets || {}).length) {
-      if (result.base) {
-        result.assets = { [result.base.currency]: { available: result.base.available, locked: result.base.locked } };
-        return result;
-      }
-      return { unknown: true, reason: 'unexpected_assets_shape' };
-    }
-
-    return result;
+    const v = pickUSDTFromAssets(data);
+    return v == null ? { unknown: true, reason: 'not_found' } : { availableUSDT: v };
   } catch (e) {
     const msg = e.response?.data || e.message;
     console.warn('[MEXC balance] erro:', msg);
@@ -406,11 +455,7 @@ async function autoDiscoverMexcMeta(symbol) {
 async function autoDiscoverMeta(symbol) {
   const gate = await autoDiscoverGateMeta(symbol);
   const mexc = await autoDiscoverMexcMeta(symbol);
-  const settings = {
-    marginPct: Number(config.execution?.marginPct ?? 10),
-    leverage: Number(config.mexc?.leverage ?? 1),
-    gateOpenExtraPct: Number(config.execution?.gateOpenExtraPct ?? 0)
-  };
+  const settings = { marginPct: Number(config.execution?.marginPct ?? 10), leverage: Number(config.mexc?.leverage ?? 1) };
   return { symbolSpot: symbol, symbolFut: symbol, gate, mexc, settings };
 }
 function deepMerge(target, src) {
@@ -431,16 +476,16 @@ async function getMergedMeta(symbol) {
 }
 
 // ===== Conversões e arredondamentos
-function baseToContracts(qtyBase, meta) {
+function wmtxToContracts(qtyWmtx, meta) {
   const cs = Number(meta?.mexc?.contractSize || 1);
   const vp = Number(meta?.mexc?.volPrecision || 0);
   const minC = Number(meta?.mexc?.minContracts || 1);
-  const raw = Number(qtyBase) / cs;
+  const raw = Number(qtyWmtx) / cs;
   let contracts = Math.floor(raw * Math.pow(10, vp)) / Math.pow(10, vp);
   if (vp === 0) contracts = Math.floor(raw);
   return Math.max(minC, contracts);
 }
-function contractsToBase(contracts, meta) {
+function contractsToWmtx(contracts, meta) {
   const cs = Number(meta?.mexc?.contractSize || 1);
   return Number(contracts) * cs;
 }
@@ -452,77 +497,6 @@ function applyRoundingMeta(pg, pm, qtyW, meta) {
   const pmR = roundTo(pm, psm);
   const qR = roundDownTo(qtyW, qsg);
   return { pg: pgR, pm: pmR, q: qR };
-}
-
-function computeGateOrderQty(baseQty, meta, mode) {
-  let qty = Number(baseQty) || 0;
-  if (mode === 'open') {
-    const extraPct = Number(meta?.settings?.gateOpenExtraPct || 0);
-    if (Number.isFinite(extraPct) && extraPct > 0) {
-      const factor = 1 + (extraPct / 100);
-      const qtyScale = Number(meta?.gate?.qtyScale || 0);
-      const adjusted = roundTo(qty * factor, qtyScale);
-      if (Number.isFinite(adjusted)) {
-        qty = Math.max(qty, adjusted);
-      }
-    }
-  }
-  return qty;
-}
-
-function normalizeLevelSelection(raw, maxGateLevels, maxMexcLevels) {
-  let arr = [];
-  if (Array.isArray(raw)) arr = raw;
-  else if (raw && typeof raw === 'object' && Array.isArray(raw.levels)) arr = raw.levels;
-
-  const set = new Set();
-  for (const item of arr) {
-    const n = Number(item);
-    if (!Number.isInteger(n) || n < 0) continue;
-    if (maxGateLevels != null && n >= maxGateLevels) continue;
-    if (maxMexcLevels != null && n >= maxMexcLevels) continue;
-    set.add(n);
-  }
-
-  const out = Array.from(set).sort((a, b) => a - b);
-  if (!out.length && maxGateLevels > 0 && maxMexcLevels > 0) out.push(0);
-  return out;
-}
-
-function aggregateGateLevels(levels, entries) {
-  let totalBase = 0;
-  let totalQuote = 0;
-  for (const idx of levels) {
-    const entry = entries?.[idx];
-    if (!entry) continue;
-    const price = Number(entry[0]);
-    const base = Number(entry[1]);
-    if (!Number.isFinite(price) || !Number.isFinite(base)) continue;
-    totalBase += base;
-    totalQuote += price * base;
-  }
-  const avgPrice = totalBase > 0 ? totalQuote / totalBase : 0;
-  return { totalBase, totalQuote, avgPrice };
-}
-
-function aggregateMexcLevels(levels, entries, contractSize) {
-  const cs = Number(contractSize) || 1;
-  let totalContracts = 0;
-  let totalBase = 0;
-  let totalQuote = 0;
-  for (const idx of levels) {
-    const entry = entries?.[idx];
-    if (!entry) continue;
-    const price = Number(entry[0]);
-    const contracts = Number(entry[1]);
-    if (!Number.isFinite(price) || !Number.isFinite(contracts)) continue;
-    const base = contracts * cs;
-    totalContracts += contracts;
-    totalBase += base;
-    totalQuote += price * base;
-  }
-  const avgPrice = totalBase > 0 ? totalQuote / totalBase : 0;
-  return { totalContracts, totalBase, totalQuote, avgPrice };
 }
 
 // ===== Rotas: meta & símbolo
@@ -553,6 +527,8 @@ app.post('/api/symbol', async (req, res) => {
   const s = String(req.body?.symbol || '').toUpperCase();
   if (!s.includes('_')) return res.status(400).json({ error: 'Símbolo inválido. Use BASE_QUOTE' });
   currentSymbol = s;
+  positionState.symbol = currentSymbol;
+  persistPositionState();
   res.json({ ok: true, symbol: currentSymbol, meta: await getMergedMeta(currentSymbol) });
 });
 
@@ -561,129 +537,35 @@ app.get('/api/data', async (_req, res) => {
   try {
     const symbol = currentSymbol;
     const meta = await getMergedMeta(symbol);
-    const [base] = symbol.split('_');
 
     const g = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
     const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
 
-    const gateAsksRaw = g.data?.asks || [];
-    const gateBidsRaw = g.data?.bids || [];
-    const mexcBidsRaw = m.data?.data?.bids || [];
-    const mexcAsksRaw = m.data?.data?.asks || [];
+    const gAsk = g.data.asks[0], gBid = g.data.bids[0];
+    const xBid = m.data.data.bids[0], xAsk = m.data.data.asks[0];
 
-    if (!gateAsksRaw.length || !gateBidsRaw.length || !mexcBidsRaw.length || !mexcAsksRaw.length) {
-      return res.status(500).json({ error: 'Livro de ofertas indisponível ou par inválido' });
-    }
+    const gateAsk = fmt11(gAsk[0]);
+    const gateBid = fmt11(gBid[0]);
+    const mexcBid = fmt11(xBid[0]);
+    const mexcAsk = fmt11(xAsk[0]);
 
-    const limit = 3;
+    const gateAskVolW = compactVolIntStr(gAsk[1]);
+    const gateBidVolW = compactVolIntStr(gBid[1]);
+
     const cs = Number(meta.mexc.contractSize || 1);
+    const mexcContractsBid = parseInt(String(xBid[1]).split('.')[0] || '0', 10) || 0;
+    const mexcContractsAsk = parseInt(String(xAsk[1]).split('.')[0] || '0', 10) || 0;
+    const mexcBidVolW = compactVolIntStr(mexcContractsBid * cs);
+    const mexcAskVolW = compactVolIntStr(mexcContractsAsk * cs);
 
-    const openLevels = [];
-    const closeLevels = [];
-
-    for (let i = 0; i < limit; i++) {
-      const gAsk = gateAsksRaw[i];
-      const mBid = mexcBidsRaw[i];
-      if (!gAsk || !mBid) break;
-      const gPrice = Number(gAsk[0]);
-      const gBase = Number(gAsk[1]);
-      const mPrice = Number(mBid[0]);
-      const mContracts = Number(mBid[1]);
-      const mBase = mContracts * cs;
-      const gateUsd = gPrice * gBase;
-      const mexcUsd = mPrice * mBase;
-      const diff = (Number.isFinite(gPrice) && gPrice > 0)
-        ? Number((((mPrice - gPrice) / gPrice) * 100).toFixed(6))
-        : null;
-      openLevels.push({
-        level: i,
-        gate: { price: gPrice, baseVolume: gBase, usdtVolume: gateUsd },
-        mexc: { price: mPrice, baseVolume: mBase, usdtVolume: mexcUsd, contracts: mContracts },
-        diffPct: diff
-      });
-    }
-
-    for (let i = 0; i < limit; i++) {
-      const gBid = gateBidsRaw[i];
-      const mAsk = mexcAsksRaw[i];
-      if (!gBid || !mAsk) break;
-      const gPrice = Number(gBid[0]);
-      const gBase = Number(gBid[1]);
-      const mPrice = Number(mAsk[0]);
-      const mContracts = Number(mAsk[1]);
-      const mBase = mContracts * cs;
-      const gateUsd = gPrice * gBase;
-      const mexcUsd = mPrice * mBase;
-      const diff = (Number.isFinite(gPrice) && gPrice > 0)
-        ? Number((((mPrice - gPrice) / gPrice) * 100).toFixed(6))
-        : null;
-      closeLevels.push({
-        level: i,
-        gate: { price: gPrice, baseVolume: gBase, usdtVolume: gateUsd },
-        mexc: { price: mPrice, baseVolume: mBase, usdtVolume: mexcUsd, contracts: mContracts },
-        diffPct: diff
-      });
-    }
-
-    const gateAsks = gateAsksRaw.slice(0, limit).map((entry, idx) => {
-      const price = Number(entry[0]);
-      const baseVol = Number(entry[1]);
-      return {
-        level: idx,
-        price,
-        baseVolume: baseVol,
-        usdtVolume: price * baseVol,
-        diffOpen: openLevels[idx]?.diffPct ?? null
-      };
-    });
-
-    const gateBids = gateBidsRaw.slice(0, limit).map((entry, idx) => {
-      const price = Number(entry[0]);
-      const baseVol = Number(entry[1]);
-      return {
-        level: idx,
-        price,
-        baseVolume: baseVol,
-        usdtVolume: price * baseVol,
-        diffClose: closeLevels[idx]?.diffPct ?? null
-      };
-    });
-
-    const mexcBids = mexcBidsRaw.slice(0, limit).map((entry, idx) => {
-      const price = Number(entry[0]);
-      const contracts = Number(entry[1]);
-      const baseVol = contracts * cs;
-      return {
-        level: idx,
-        price,
-        contracts,
-        baseVolume: baseVol,
-        usdtVolume: price * baseVol,
-        diffOpen: openLevels[idx]?.diffPct ?? null
-      };
-    });
-
-    const mexcAsks = mexcAsksRaw.slice(0, limit).map((entry, idx) => {
-      const price = Number(entry[0]);
-      const contracts = Number(entry[1]);
-      const baseVol = contracts * cs;
-      return {
-        level: idx,
-        price,
-        contracts,
-        baseVolume: baseVol,
-        usdtVolume: price * baseVol,
-        diffClose: closeLevels[idx]?.diffPct ?? null
-      };
-    });
+    const diffOpen  = (((parseFloat(mexcBid) - parseFloat(gateAsk)) / parseFloat(gateAsk)) * 100).toFixed(6);
+    const diffClose = (((parseFloat(mexcAsk) - parseFloat(gateBid)) / parseFloat(gateBid)) * 100).toFixed(6);
 
     res.json({
       symbol,
-      baseSymbol: base,
-      gate: { asks: gateAsks, bids: gateBids },
-      mexc: { bids: mexcBids, asks: mexcAsks },
-      open: { diff: openLevels[0]?.diffPct ?? null, levels: openLevels },
-      close: { diff: closeLevels[0]?.diffPct ?? null, levels: closeLevels }
+      gate: { ask: gateAsk, askVol: `${gateAskVolW} ${symbol.split('_')[0]}`, bid: gateBid, bidVol: `${gateBidVolW} ${symbol.split('_')[0]}` },
+      mexc: { bid: mexcBid, bidVol: `${mexcBidVolW} ${symbol.split('_')[0]}`, ask: mexcAsk, askVol: `${mexcAskVolW} ${symbol.split('_')[0]}` },
+      diffOpen, diffClose
     });
   } catch (e) {
     console.error('[ERRO /api/data]:', e.response?.data || e.message);
@@ -695,26 +577,8 @@ app.get('/api/data', async (_req, res) => {
 app.get('/api/balances', async (_req, res) => {
   const symbol = currentSymbol;
   const gate = await getGateBalances(symbol);
-  const mexc = await getMexcAvailableUSDT(symbol);
+  const mexc = await getMexcAvailableUSDT();
   res.json({ gate, mexc });
-});
-
-// ===== Notificação via Telegram
-app.post('/api/notify-telegram', async (req, res) => {
-  const diff = req.body?.diff;
-  if (!config.telegram?.botToken || !config.telegram?.chatId) {
-    return res.status(500).json({ error: 'Telegram não configurado' });
-  }
-  try {
-    await axios.post(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-      chat_id: config.telegram.chatId,
-      text: `Alerta de arbitragem: ${diff}%`
-    });
-    res.json({ ok: true });
-  } catch (e) {
-    console.error('[Telegram] falha ao enviar:', e.response?.data || e.message || e);
-    res.status(500).json({ error: 'Falha ao enviar' });
-  }
 });
 
 // ===== Posição (meta e progresso)
@@ -722,18 +586,108 @@ app.post('/api/position-target', (req, res) => {
   const t = Number(req.body?.targetQty);
   if (!Number.isFinite(t) || t < 0) return res.status(400).json({ error: 'targetQty inválido' });
   positionState.targetQty = t;
+  persistPositionState();
   res.json({ ok: true, targetQty: t });
 });
 app.get('/api/position-progress', (_req, res) => res.json(positionState));
 
-function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
+app.get('/api/position-summaries', (_req, res) => {
+  try {
+    const summaries = db.loadPositionSummaries();
+    res.json({ summaries });
+  } catch (e) {
+    res.status(500).json({ error: e?.message || 'Falha ao carregar resumos' });
+  }
+});
+
+function applyNumber(target, key, value, opts) {
+  if (value === undefined) return;
+  if (!target || typeof target !== 'object') return;
+  const parsed = parseNumberField(value, opts);
+  if (parsed === undefined) return;
+  target[key] = parsed;
+}
+
+app.post('/api/position-manual-update', (req, res) => {
+  try {
+    const body = req.body || {};
+
+    const targetQty = parseNumberField(body.targetQty, { min: 0 });
+    const filledQty = parseNumberField(body.filledQty);
+    const avgPrice = parseNumberField(body.avgPrice);
+    const arbPctAvg = parseNumberField(body.arbPctAvg);
+    const pnlUsd = parseNumberField(body.pnlUsd);
+    const totalVolume = parseNumberField(body.totalVolume);
+
+    if (targetQty !== undefined) positionState.targetQty = targetQty;
+    if (filledQty !== undefined) positionState.filledQty = filledQty;
+    if (avgPrice !== undefined) positionState.avgPrice = avgPrice;
+    if (arbPctAvg !== undefined) positionState.arbPctAvg = arbPctAvg;
+    if (pnlUsd !== undefined) positionState.pnlUsd = pnlUsd;
+    if (totalVolume !== undefined) positionState.totalVolume = totalVolume;
+
+    const gate = body.gate || {};
+    applyNumber(positionState.gate, 'filledQty', gate.filledQty);
+    applyNumber(positionState.gate, 'avgPrice', gate.avgPrice);
+
+    const mexc = body.mexc || {};
+    applyNumber(positionState.mexc, 'filledQty', mexc.filledQty);
+    applyNumber(positionState.mexc, 'avgPrice', mexc.avgPrice);
+    if ('positionId' in mexc) {
+      const raw = mexc.positionId;
+      positionState.mexc.positionId = (raw === null || raw === '' || raw === undefined)
+        ? null
+        : bnToStringMaybe(raw);
+    }
+
+    if (body.startedAt !== undefined) {
+      positionState.startedAt = body.startedAt ? String(body.startedAt) : null;
+    }
+
+    if (body.clearSeries === true) {
+      positionState.series = [];
+    }
+
+    if (Array.isArray(body.series)) {
+      positionState.series = body.series;
+    }
+
+    if (body.symbol) {
+      const sym = String(body.symbol).toUpperCase();
+      if (sym.includes('_')) {
+        positionState.symbol = sym;
+        currentSymbol = sym;
+      }
+    }
+
+    persistPositionState();
+    res.json({ ok: true, position: positionState });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message || 'Dados inválidos' });
+  }
+});
+
+app.post('/api/position-dismantle', (req, res) => {
+  const noteRaw = req.body?.note;
+  const note = typeof noteRaw === 'string' && noteRaw.trim() ? noteRaw.trim() : undefined;
+  const summary = buildPositionSummary(positionState, { note });
+  try {
+    db.savePositionSummary(summary);
+  } catch (e) {
+    console.warn('[SQLite] Falha ao salvar resumo da posição:', e?.message || e);
+  }
+  resetPositionState(summary.symbol || currentSymbol);
+  res.json({ ok: true, summary, state: positionState });
+});
+
+function updatePositionFromOrder(item, gateFilled, gateAvg, mexcFilled, mexcAvg) {
   const meta = item?.metaUsed || {};
-  const gateQty = Number(gFilled || 0);
-  const mexcContracts = Number(mFilled || 0);
+  const gateQty = Number(gateFilled || 0);
+  const mexcContracts = Number(mexcFilled || 0);
 
   let mexcQty = gateQty;
   if (Number.isFinite(mexcContracts) && mexcContracts > 0) {
-    mexcQty = contractsToBase(mexcContracts, meta);
+    mexcQty = contractsToWmtx(mexcContracts, meta);
   } else if (item?.mexcDisplayVolume != null) {
     const displayQty = Number(item.mexcDisplayVolume);
     if (Number.isFinite(displayQty) && displayQty > 0) mexcQty = displayQty;
@@ -742,18 +696,24 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
   const qty = Math.min(gateQty, mexcQty);
   if (!qty || qty <= 0) return;
 
-  const gatePrice = Number(gAvg || item.priceUsedGate || 0);
-  const mexcPrice = Number(mAvg || item.priceUsedMexc || 0);
+  const gatePrice = Number(gateAvg || item.priceUsedGate || 0);
+  const mexcPrice = Number(mexcAvg || item.priceUsedMexc || 0);
   const sign = item.mode === 'close' ? -1 : 1;
   const adjQty = qty * sign;
 
+  positionState.symbol = (item?.symbol && typeof item.symbol === 'string' && item.symbol.includes('_'))
+    ? item.symbol.toUpperCase()
+    : currentSymbol;
+  if (!positionState.startedAt) positionState.startedAt = new Date().toISOString();
+
   const diff = mexcPrice - gatePrice;
-  const arbRaw = (diff / gatePrice) * 100;
+  const arbRaw = gatePrice ? (diff / gatePrice) * 100 : 0;
   const pnlUsd = diff * qty * sign;
   item.arbPct = roundTo(arbRaw * sign, 6);
   item.pnlUsd = roundTo(pnlUsd, 6);
+  item.gateOrderVolume = roundTo(gateQty, 11);
+  item.mexcOrderVolume = roundTo(mexcQty, 11);
 
-  // Gate stats
   const gPrevQty = positionState.gate.filledQty;
   const gPrevAvg = positionState.gate.avgPrice;
   const gNewQty = gPrevQty + adjQty;
@@ -761,7 +721,6 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
   positionState.gate.filledQty = gNewQty;
   positionState.gate.avgPrice = gNewAvg;
 
-  // MEXC stats
   const mPrevQty = positionState.mexc.filledQty;
   const mPrevAvg = positionState.mexc.avgPrice;
   const mNewQty = mPrevQty + adjQty;
@@ -770,7 +729,6 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
   positionState.mexc.avgPrice = mNewAvg;
   if (mNewQty <= 0) positionState.mexc.positionId = null;
 
-  // Aggregates
   const prevQty = positionState.filledQty;
   const prevAvg = positionState.avgPrice;
   const newQty = prevQty + adjQty;
@@ -780,6 +738,7 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
   positionState.avgPrice = newAvg;
   positionState.arbPctAvg = newArb;
   positionState.pnlUsd = (positionState.pnlUsd || 0) + item.pnlUsd;
+  positionState.totalVolume = roundTo((positionState.totalVolume || 0) + Math.abs(adjQty), 11);
 
   positionState.series.push({
     t: Date.now(),
@@ -787,9 +746,12 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
     avgPrice: Number(newAvg.toFixed(11)),
     arbPctAvg: Number(newArb.toFixed(6)),
     pnlUsd: Number(positionState.pnlUsd.toFixed(6)),
+    totalVolume: Number(positionState.totalVolume.toFixed(11)),
     gate: { filledQty: gNewQty, avgPrice: Number(gNewAvg.toFixed(11)) },
     mexc: { filledQty: mNewQty, avgPrice: Number(mNewAvg.toFixed(11)) }
   });
+
+  persistPositionState();
 }
 
 // ===== Precheck (respeita modo open/close do front)
@@ -802,140 +764,59 @@ app.post('/api/precheck', async (req, res) => {
     const g = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
     const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
 
-    const gateAsks = g.data?.asks || [];
-    const gateBids = g.data?.bids || [];
-    const mexcBids = m.data?.data?.bids || [];
-    const mexcAsks = m.data?.data?.asks || [];
+    const gAsk = g.data.asks[0], gBid = g.data.bids[0];
+    const xBid = m.data.data.bids[0], xAsk = m.data.data.asks[0];
 
-    const selections = req.body?.levels || {};
-    const openSelection = normalizeLevelSelection(selections.open, gateAsks.length, mexcBids.length);
-    const closeSelection = normalizeLevelSelection(selections.close, gateBids.length, mexcAsks.length);
-    const selectedLevels = mode === 'open' ? openSelection : closeSelection;
-
-    const gateSide = mode === 'open' ? gateAsks : gateBids;
-    const mexcSide = mode === 'open' ? mexcBids : mexcAsks;
-
-    if (!selectedLevels.length || !gateSide.length || !mexcSide.length) {
-      return res.json({ ok: true, blocked: true, reason: 'insufficient_depth', mode });
-    }
-
-    const gateAgg = aggregateGateLevels(selectedLevels, gateSide);
-    const mexcAgg = aggregateMexcLevels(selectedLevels, mexcSide, meta.mexc.contractSize);
-
-    if (gateAgg.totalBase <= 0 || mexcAgg.totalBase <= 0 || mexcAgg.totalContracts <= 0) {
-      return res.json({ ok: true, blocked: true, reason: 'insufficient_depth', mode });
-    }
-
-    const marginPct = Number(meta.settings.marginPct || 0);
-    const baseGate = gateAgg.avgPrice;
-    const baseMexc = mexcAgg.avgPrice;
+    const baseGate = (mode === 'open') ? Number(gAsk[0]) : Number(gBid[0]);
+    const baseMexc = (mode === 'open') ? Number(xBid[0]) : Number(xAsk[0]);
 
     let gatePrice = (mode === 'open')
-      ? baseGate * (1 - (marginPct / 100))
-      : baseGate * (1 + (marginPct / 100));
+      ? baseGate * (1 - (meta.settings.marginPct / 100))
+      : baseGate * (1 + (meta.settings.marginPct / 100));
     let mexcPrice = (mode === 'open')
-      ? baseMexc * (1 + (marginPct / 100))
-      : baseMexc * (1 - (marginPct / 100));
+      ? baseMexc * (1 + (meta.settings.marginPct / 100))
+      : baseMexc * (1 - (meta.settings.marginPct / 100));
 
-    let gateBaseAvail = gateAgg.totalBase;
-    const mexcContractsAvail = mexcAgg.totalContracts;
-    const mexcBaseAvail = mexcAgg.totalBase;
+    const gateWmtxAvail = parseInt(String((mode === 'open') ? gAsk[1] : gBid[1]).split('.')[0] || '0', 10) || 0;
+    const mexcContractsAvail = parseInt(String((mode === 'open') ? xBid[1] : xAsk[1]).split('.')[0] || '0', 10) || 0;
+    const mexcWmtxAvail = mexcContractsAvail * Number(meta.mexc.contractSize);
 
-    const cs = Number(meta.mexc.contractSize || 1);
-    const vp = Number(meta.mexc.volPrecision || 0);
-    const minContracts = Number(meta.mexc.minContracts || 1);
-    const factor = Math.pow(10, vp);
-    const floorContracts = (value) => {
-      if (!Number.isFinite(value) || value <= 0) return 0;
-      if (factor > 1) return Math.floor(value * factor) / factor;
-      return Math.floor(value);
-    };
-    const normalizeContracts = (value) => {
-      if (!Number.isFinite(value) || value <= 0) return 0;
-      return Number(value.toFixed(Math.max(vp, 0)));
-    };
-
-    let availableToClose = null;
-    if (mode === 'close') {
-      const balances = await getGateBalances(symbol);
-      const baseCurrency = symbol.split('_')[0];
-      const baseAvail = Number(balances?.[baseCurrency]?.available || 0);
-      const remQty = Math.min(baseAvail, positionState.gate.filledQty);
-      availableToClose = remQty;
-      gateBaseAvail = Math.min(gateBaseAvail, remQty);
-    }
-
-    let maxBaseQty = Math.min(gateBaseAvail, mexcBaseAvail);
-    if (!Number.isFinite(maxBaseQty) || maxBaseQty <= 0) {
-      return res.json({ ok: true, blocked: true, reason: 'insufficient_depth', mode });
-    }
-
-    let contracts = Math.min(mexcContractsAvail, maxBaseQty / cs);
-    contracts = normalizeContracts(floorContracts(contracts));
-
-    if (contracts <= 0) {
-      return res.json({ ok: true, blocked: true, reason: 'insufficient_depth', mode });
-    }
-
-    if (mode === 'open' && positionState.targetQty > 0) {
-      const remainingBase = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
-      const remainingContracts = normalizeContracts(floorContracts(remainingBase / cs));
-      if (remainingContracts <= 0) {
-        return res.json({ ok: true, blocked: true, reason: 'target_reached', mode });
-      }
-      if (contracts > remainingContracts) contracts = remainingContracts;
-    } else if (mode === 'close') {
-      const remainingContracts = normalizeContracts(floorContracts(positionState.gate.filledQty / cs));
-      if (remainingContracts <= 0 || (availableToClose != null && availableToClose <= 0)) {
-        return res.json({ ok: true, blocked: true, reason: 'no_position', mode });
-      }
-      if (contracts > remainingContracts) contracts = remainingContracts;
-    }
-
-    if (contracts < minContracts) {
-      return res.json({ ok: true, blocked: true, reason: 'min_contracts_not_met', minContracts, mode });
-    }
-
-    let finalBaseQtyRaw = contracts * cs;
-    let rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
-    let adjustedContracts = normalizeContracts(floorContracts(rounded.q / cs));
-    if (adjustedContracts <= 0) {
-      return res.json({ ok: true, blocked: true, reason: 'rounded_qty_zero', mode });
-    }
-    if (adjustedContracts < contracts) {
-      contracts = adjustedContracts;
-      finalBaseQtyRaw = contracts * cs;
-      rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
-    }
-    contracts = normalizeContracts(contracts);
-
-    if (minContracts > 0 && contracts < minContracts) {
-      return res.json({ ok: true, blocked: true, reason: 'min_contracts_not_met', minContracts, mode });
-    }
-
-    const gateOrderBaseQty = computeGateOrderQty(rounded.q, meta, mode);
+    const minWmtxRaw = Math.min(gateWmtxAvail, mexcWmtxAvail);
+    let contracts = wmtxToContracts(minWmtxRaw, meta);
 
     const minQuote = Number(meta.gate.minQuote || 0);
-    if (minQuote > 0 && gateOrderBaseQty * rounded.pg < minQuote) {
+    if (minQuote > 0) {
+      const needContractsGate = Math.ceil(minQuote / (gatePrice * Number(meta.mexc.contractSize)));
+      if (needContractsGate > contracts) contracts = needContractsGate;
+    }
+    contracts = Math.min(contracts, mexcContractsAvail);
+
+    let finalWmtx = contractsToWmtx(contracts, meta);
+    if (positionState.targetQty > 0) {
+      const remaining = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
+      const remContracts = wmtxToContracts(remaining, meta);
+      contracts = Math.min(contracts, remContracts);
+      finalWmtx = contractsToWmtx(contracts, meta);
+    }
+
+    const rounded = applyRoundingMeta(gatePrice, mexcPrice, finalWmtx, meta);
+
+    if (minQuote > 0 && rounded.q * rounded.pg < minQuote) {
       return res.json({
         ok: true, blocked: true, reason: 'min_quote_not_met', minQuote,
-        calc: { gateQuote: Number((gateOrderBaseQty * rounded.pg).toFixed(6)) }, mode
+        calc: { gateQuote: Number((rounded.q * rounded.pg).toFixed(6)) }, mode
       });
     }
 
     if (mode === 'open') {
-      const mexcBal = await getMexcAvailableUSDT(symbol);
-      const contractValueUSDT = rounded.pm * cs;
+      const mexcBal = await getMexcAvailableUSDT();
+      const contractValueUSDT = rounded.pm * Number(meta.mexc.contractSize);
       const required = (contractValueUSDT * contracts) / Number(meta.settings.leverage || 1);
       const details = {
         mode, symbol, gateRounded: rounded.pg, mexcRounded: rounded.pm,
-        mexcContracts: contracts, contractSize: cs,
-        finalBaseQty: rounded.q, gateOrderBaseQty,
-        leverage: meta.settings.leverage,
-        marginPct: meta.settings.marginPct,
-        gateOpenExtraPct: meta.settings.gateOpenExtraPct,
-        requiredUSDT: Number(required.toFixed(6)),
-        levelsUsed: selectedLevels
+        mexcContracts: contracts, contractSize: meta.mexc.contractSize,
+        finalWmtx: rounded.q, leverage: meta.settings.leverage,
+        marginPct: meta.settings.marginPct, requiredUSDT: Number(required.toFixed(6))
       };
       if (mexcBal.availableUSDT == null) return res.json({ ok: true, needConfirm: false, unknownBalance: true, details });
       details.availableUSDT = Number(mexcBal.availableUSDT.toFixed ? mexcBal.availableUSDT.toFixed(6) : mexcBal.availableUSDT);
@@ -945,13 +826,8 @@ app.post('/api/precheck', async (req, res) => {
       // close: sem checagem de margem
       const details = {
         mode, symbol, gateRounded: rounded.pg, mexcRounded: rounded.pm,
-        mexcContracts: contracts, contractSize: cs,
-        finalBaseQty: rounded.q, gateOrderBaseQty,
-        leverage: meta.settings.leverage,
-        marginPct: meta.settings.marginPct,
-        gateOpenExtraPct: meta.settings.gateOpenExtraPct,
-        requiredUSDT: 0,
-        levelsUsed: selectedLevels
+        mexcContracts: contracts, contractSize: meta.mexc.contractSize,
+        finalWmtx: rounded.q, leverage: meta.settings.leverage, marginPct: meta.settings.marginPct, requiredUSDT: 0
       };
       return res.json({ ok: true, needConfirm: false, unknownBalance: false, details });
     }
@@ -971,183 +847,57 @@ app.post('/api/execute-trade', async (req, res) => {
     const g = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
     const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
 
-    const gateAsks = g.data?.asks || [];
-    const gateBids = g.data?.bids || [];
-    const mexcBids = m.data?.data?.bids || [];
-    const mexcAsks = m.data?.data?.asks || [];
+    const gAsk = g.data.asks[0], gBid = g.data.bids[0];
+    const xBid = m.data.data.bids[0], xAsk = m.data.data.asks[0];
 
-    const selections = req.body?.levels || {};
-    const openSelection = normalizeLevelSelection(selections.open, gateAsks.length, mexcBids.length);
-    const closeSelection = normalizeLevelSelection(selections.close, gateBids.length, mexcAsks.length);
-    const selectedLevels = mode === 'open' ? openSelection : closeSelection;
-
-    const gateSide = mode === 'open' ? gateAsks : gateBids;
-    const mexcSide = mode === 'open' ? mexcBids : mexcAsks;
-
-    if (!selectedLevels.length || !gateSide.length || !mexcSide.length) {
-      return res.status(400).json({ error: 'Profundidade insuficiente para as seleções escolhidas.' });
-    }
-
-    const gateAgg = aggregateGateLevels(selectedLevels, gateSide);
-    const mexcAgg = aggregateMexcLevels(selectedLevels, mexcSide, meta.mexc.contractSize);
-
-    if (gateAgg.totalBase <= 0 || mexcAgg.totalBase <= 0 || mexcAgg.totalContracts <= 0) {
-      return res.status(400).json({ error: 'Profundidade insuficiente para as seleções escolhidas.' });
-    }
-
-    const marginPct = Number(meta.settings.marginPct || 0);
-    const baseGate = gateAgg.avgPrice;
-    const baseMexc = mexcAgg.avgPrice;
+    const baseGate = (mode === 'open') ? Number(gAsk[0]) : Number(gBid[0]);
+    const baseMexc = (mode === 'open') ? Number(xBid[0]) : Number(xAsk[0]);
 
     let gatePrice = (mode === 'open')
-      ? baseGate * (1 - (marginPct / 100))
-      : baseGate * (1 + (marginPct / 100));
+      ? baseGate * (1 - (meta.settings.marginPct / 100))
+      : baseGate * (1 + (meta.settings.marginPct / 100));
     let mexcPrice = (mode === 'open')
-      ? baseMexc * (1 + (marginPct / 100))
-      : baseMexc * (1 - (marginPct / 100));
+      ? baseMexc * (1 + (meta.settings.marginPct / 100))
+      : baseMexc * (1 - (meta.settings.marginPct / 100));
 
-    let gateBaseAvail = gateAgg.totalBase;
-    const mexcContractsAvail = mexcAgg.totalContracts;
-    const mexcBaseAvail = mexcAgg.totalBase;
+    const gateWmtxAvail = parseInt(String((mode === 'open') ? gAsk[1] : gBid[1]).split('.')[0] || '0', 10) || 0;
+    const mexcContractsAvail = parseInt(String((mode === 'open') ? xBid[1] : xAsk[1]).split('.')[0] || '0', 10) || 0;
 
-    const cs = Number(meta.mexc.contractSize || 1);
-    const vp = Number(meta.mexc.volPrecision || 0);
-    const minContracts = Number(meta.mexc.minContracts || 1);
-    const factor = Math.pow(10, vp);
-    const floorContracts = (value) => {
-      if (!Number.isFinite(value) || value <= 0) return 0;
-      if (factor > 1) return Math.floor(value * factor) / factor;
-      return Math.floor(value);
-    };
-    const normalizeContracts = (value) => {
-      if (!Number.isFinite(value) || value <= 0) return 0;
-      return Number(value.toFixed(Math.max(vp, 0)));
-    };
-
-    let gateBalances = null;
-    let availableToClose = null;
-    if (mode === 'close') {
-      gateBalances = await getGateBalances(symbol);
-      const baseCurrency = symbol.split('_')[0];
-      const baseAvail = Number(gateBalances?.[baseCurrency]?.available || 0);
-      const remQty = Math.min(baseAvail, positionState.gate.filledQty);
-      availableToClose = remQty;
-      gateBaseAvail = Math.min(gateBaseAvail, remQty);
-    }
-
-    let maxBaseQty = Math.min(gateBaseAvail, mexcBaseAvail);
-    if (!Number.isFinite(maxBaseQty) || maxBaseQty <= 0) {
-      return res.status(400).json({ error: 'Profundidade insuficiente após ajustes.' });
-    }
-
-    let contracts = Math.min(mexcContractsAvail, maxBaseQty / cs);
-    contracts = normalizeContracts(floorContracts(contracts));
-
-    if (contracts <= 0) {
-      return res.status(400).json({ error: 'Contratos indisponíveis nas seleções escolhidas.' });
-    }
-
-    if (mode === 'open' && positionState.targetQty > 0) {
-      const remainingBase = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
-      const remainingContracts = normalizeContracts(floorContracts(remainingBase / cs));
-      if (remainingContracts <= 0) {
-        return res.status(400).json({ error: 'Meta de posição já atingida.' });
-      }
-      if (contracts > remainingContracts) contracts = remainingContracts;
-    } else if (mode === 'close') {
-      const remainingContracts = normalizeContracts(floorContracts(positionState.gate.filledQty / cs));
-      if (remainingContracts <= 0 || (availableToClose != null && availableToClose <= 0)) {
-        return res.status(400).json({ error: 'Sem quantidade disponível para fechar.' });
-      }
-      if (contracts > remainingContracts) contracts = remainingContracts;
-    }
-
-    if (contracts < minContracts) {
-      return res.status(400).json({ error: `Volume abaixo do mínimo de contratos (${minContracts}).` });
-    }
-
-    let finalBaseQtyRaw = contracts * cs;
-    let rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
-    let adjustedContracts = normalizeContracts(floorContracts(rounded.q / cs));
-    if (adjustedContracts <= 0) {
-      return res.status(400).json({ error: 'Quantidade arredondada resultou em zero.' });
-    }
-    if (adjustedContracts < contracts) {
-      contracts = adjustedContracts;
-      finalBaseQtyRaw = contracts * cs;
-      rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
-    }
-    contracts = normalizeContracts(contracts);
-
-    if (minContracts > 0 && contracts < minContracts) {
-      return res.status(400).json({ error: `Volume abaixo do mínimo de contratos (${minContracts}).` });
-    }
-
-    const gateOrderBaseQty = computeGateOrderQty(rounded.q, meta, mode);
+    let contracts = wmtxToContracts(Math.min(gateWmtxAvail, mexcContractsAvail * Number(meta.mexc.contractSize)), meta);
 
     const minQuote = Number(meta.gate.minQuote || 0);
-    if (minQuote > 0 && gateOrderBaseQty * rounded.pg < minQuote) {
+    if (minQuote > 0) {
+      const needContractsGate = Math.ceil(minQuote / (gatePrice * Number(meta.mexc.contractSize)));
+      if (needContractsGate > contracts) contracts = needContractsGate;
+    }
+    if (contracts > mexcContractsAvail) contracts = mexcContractsAvail;
+
+    if (positionState.targetQty > 0) {
+      const remaining = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
+      const remContracts = wmtxToContracts(remaining, meta);
+      if (contracts > remContracts) contracts = remContracts;
+    }
+
+    const finalWmtxRaw = contractsToWmtx(contracts, meta);
+    const { pg: gatePx, pm: mexcPx, q: gateQty } = applyRoundingMeta(gatePrice, mexcPrice, finalWmtxRaw, meta);
+
+    if (minQuote > 0 && gateQty * gatePx < minQuote) {
       return res.status(400).json({ error: `Mínimo da Gate não atendido (>= ${minQuote} USDT). Tente aumentar contratos.` });
     }
 
-    const [gateBalancesFinal, mexcBal] = await Promise.all([
-      gateBalances ? Promise.resolve(gateBalances) : getGateBalances(symbol),
-      getMexcAvailableUSDT(symbol)
-    ]);
-    gateBalances = gateBalancesFinal;
-
-    const leverage = Number(meta.settings.leverage) || 1;
-    const contractValueUSDT = rounded.pm * cs;
-    const requiredMexcUSDT = (mode === 'open')
-      ? (contractValueUSDT * contracts) / leverage
-      : 0;
-
-    if (mode === 'open') {
-      if (mexcBal.availableUSDT == null || mexcBal.availableUSDT < requiredMexcUSDT) {
-        return res.status(400).json({
-          error: 'Saldo MEXC insuficiente',
-          requiredUSDT: Number(requiredMexcUSDT.toFixed(6)),
-          availableUSDT: mexcBal.availableUSDT
-        });
-      }
-    }
-
-    if (mode === 'open') {
-      const neededGateUSDT = rounded.pg * gateOrderBaseQty;
-      const gateUSDTAvail = Number(gateBalances?.USDT?.available || 0);
-      if (gateUSDTAvail < neededGateUSDT) {
-        return res.status(400).json({
-          error: 'Saldo Gate USDT insuficiente',
-          requiredUSDT: Number(neededGateUSDT.toFixed(6)),
-          availableUSDT: gateUSDTAvail
-        });
-      }
-    } else {
-      const baseCurrency = symbol.split('_')[0];
-      const gateBaseAvailable = Number(gateBalances?.[baseCurrency]?.available || 0);
-      if (gateBaseAvailable < gateOrderBaseQty) {
-        return res.status(400).json({
-          error: `Saldo Gate ${baseCurrency} insuficiente`,
-          requiredBase: Number(gateOrderBaseQty.toFixed(meta.gate.qtyScale)),
-          availableBase: gateBaseAvailable
-        });
-      }
-    }
-
     console.log('[EXECUTAR] Modo:', mode);
-    console.log('[EXECUTAR] Preço Gate:', rounded.pg);
-    console.log('[EXECUTAR] Preço MEXC:', rounded.pm);
-    console.log('[EXECUTAR] Volume (moeda base final):', rounded.q, '| Volume Gate (com extra):', gateOrderBaseQty, '| contratos MEXC:', contracts);
+    console.log('[EXECUTAR] Preço Gate:', gatePx);
+    console.log('[EXECUTAR] Preço MEXC:', mexcPx);
+    console.log('[EXECUTAR] Volume (WMTX final):', gateQty, '| contratos MEXC:', contracts);
 
     const localId = Date.now().toString();
     const histItem = {
       localId, createdAt: nowBR(),
       mode, symbol, metaUsed: meta,
-      sentido: mode === 'open' ? 'Open' : 'Close',
-      priceUsedGate: String(rounded.pg),
-      priceUsedMexc: String(rounded.pm),
-      volume: String(rounded.q),
-      mexcDisplayVolume: String(rounded.q),
+      priceUsedGate: String(gatePx),
+      priceUsedMexc: String(mexcPx),
+      volume: String(gateQty),
+      mexcDisplayVolume: String(gateQty),
       gateOrderId: null, mexcOrderId: null,
       gateStatus: 'creating', mexcStatus: 'creating',
       status: 'creating'
@@ -1162,11 +912,10 @@ app.post('/api/execute-trade', async (req, res) => {
       const go = await placeGateOrderSdk(
         symbol,
         side,
-        String(rounded.pg.toFixed(meta.gate.priceScale)),
-        String(gateOrderBaseQty.toFixed(meta.gate.qtyScale))
+        String(gatePx.toFixed(meta.gate.priceScale)),
+        String(gateQty.toFixed(meta.gate.qtyScale))
       );
       histItem.gateOrderId = (go?.id != null) ? String(go.id) : null;
-      histItem.gateOrderVolume = String(gateOrderBaseQty.toFixed(meta.gate.qtyScale));
       gateOk = !!histItem.gateOrderId;
       histItem.gateStatus = gateOk ? 'open' : 'error';
     } catch (e) {
@@ -1174,17 +923,16 @@ app.post('/api/execute-trade', async (req, res) => {
       histItem.gateStatus = 'error';
     }
 
-    // MEXC: open=3 | close=2
+    // MEXC: open=3 | close=4
     let mexcOk = false;
     try {
-      const sideCode = (mode === 'open') ? 3 : 2;
+      const sideCode = (mode === 'open') ? 3 : 4;
       const mres = await mexcSubmitOrder(
         symbol,
-        Number(rounded.pm.toFixed(meta.mexc.priceScale)),
+        Number(mexcPx.toFixed(meta.mexc.priceScale)),
         contracts,
         meta.settings.leverage,
-        sideCode,
-        mode === 'close' ? positionState.mexc.positionId : undefined
+        sideCode
       );
       if (mres?.id) {
         histItem.mexcOrderId = bnToStringMaybe(mres.id);
@@ -1204,8 +952,8 @@ app.post('/api/execute-trade', async (req, res) => {
 
     res.json({
       ok: true, localId, mode,
-      gate: { id: histItem.gateOrderId, price: histItem.priceUsedGate, displayBaseQty: histItem.gateOrderVolume },
-      mexc: { id: histItem.mexcOrderId, price: histItem.priceUsedMexc, displayBaseQty: histItem.mexcDisplayVolume },
+      gate: { id: histItem.gateOrderId, price: histItem.priceUsedGate },
+      mexc: { id: histItem.mexcOrderId, price: histItem.priceUsedMexc, displayWmtx: histItem.mexcDisplayVolume },
       status: histItem.status
     });
   } catch (e) {
@@ -1239,9 +987,15 @@ app.post('/api/cancel-order', async (req, res) => {
         await mexcCancelOrder(symbol, String(item.mexcOrderId));
         const md = await getMexcOrderDetail(symbol, String(item.mexcOrderId));
         const p = parseMexcOrderDetail(md);
-        if (p.positionId) positionState.mexc.positionId = p.positionId;
         mFilled = Number(p.filled || 0);
         mAvg = Number(p.avgPrice || item.priceUsedMexc);
+        if (p.positionId) {
+          const newPosId = bnToStringMaybe(p.positionId);
+          if (newPosId && positionState.mexc.positionId !== newPosId) {
+            positionState.mexc.positionId = newPosId;
+            persistPositionState();
+          }
+        }
       }
       catch (e) { return res.status(500).json({ error: 'Erro ao cancelar MEXC', detail: e?.message || e }); }
     }
@@ -1251,109 +1005,18 @@ app.post('/api/cancel-order', async (req, res) => {
     if (item.mexcOrderId) item.mexcStatus = 'cancelled';
     try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (cancel):', e?.message || e); }
 
-    if (gFilled > 0 || mFilled > 0) {
-      updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg);
-      try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (cancel post):', e?.message || e); }
-    }
+    if (gFilled > 0 || mFilled > 0) updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg);
     res.json({ ok: true, localId, status: item.status });
   } catch (e) {
     res.status(500).json({ error: 'Erro ao cancelar ordem.' });
   }
 });
 
-// ===== Reposicionamento de ordens
-app.post('/api/reposition-gate', async (req, res) => {
-  try {
-    const { localId } = req.body || {};
-    const idx = orderHistory.findIndex(o => o.localId === localId);
-    if (idx === -1) return res.status(404).json({ error: 'Ordem não encontrada' });
-    const item = orderHistory[idx];
-    if (!item.gateOrderId) return res.status(400).json({ error: 'Sem ordem Gate' });
-    if (item.gateStatus === 'filled' || item.gateStatus === 'cancelled') {
-      return res.status(400).json({ error: 'Ordem Gate já finalizada' });
-    }
-
-    const symbol = item.symbol;
-    const meta = item.metaUsed || await getMergedMeta(symbol);
-    const book = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
-    const gAsk = book.data.asks[0], gBid = book.data.bids[0];
-    const rawPrice = (item.mode === 'open') ? Number(gAsk[0]) : Number(gBid[0]);
-    const newPrice = Number(rawPrice.toFixed(meta.gate.priceScale));
-    const storedQty = Number(item.gateOrderVolume);
-    let qty = Number.isFinite(storedQty)
-      ? storedQty
-      : computeGateOrderQty(Number(item.volume), meta, item.mode);
-    if (!Number.isFinite(qty) || qty <= 0) qty = Number(item.volume);
-    const side = (item.mode === 'open') ? 'buy' : 'sell';
-
-    try { await cancelGateOrderSdk(symbol, item.gateOrderId); } catch {}
-    const go = await placeGateOrderSdk(
-      symbol,
-      side,
-      String(newPrice.toFixed(meta.gate.priceScale)),
-      String(qty.toFixed(meta.gate.qtyScale))
-    );
-    item.gateOrderId = go?.id ? String(go.id) : null;
-    item.priceUsedGate = String(newPrice);
-    item.gateOrderVolume = String(qty.toFixed(meta.gate.qtyScale));
-    item.gateStatus = item.gateOrderId ? 'open' : 'error';
-    item.status = (item.mexcStatus === 'filled') ? 'mexc_filled' : 'open';
-    try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (reposition gate):', e?.message || e); }
-    if (!item.gateOrderId) return res.status(500).json({ error: 'Falha ao criar nova ordem Gate' });
-    res.json({ ok: true, gateOrderId: item.gateOrderId, price: item.priceUsedGate });
-  } catch (e) {
-    res.status(500).json({ error: 'Erro ao reposicionar Gate' });
-  }
-});
-
-app.post('/api/reposition-mexc', async (req, res) => {
-  try {
-    const { localId } = req.body || {};
-    const idx = orderHistory.findIndex(o => o.localId === localId);
-    if (idx === -1) return res.status(404).json({ error: 'Ordem não encontrada' });
-    const item = orderHistory[idx];
-    if (!item.mexcOrderId) return res.status(400).json({ error: 'Sem ordem MEXC' });
-    if (item.mexcStatus === 'filled' || item.mexcStatus === 'cancelled') {
-      return res.status(400).json({ error: 'Ordem MEXC já finalizada' });
-    }
-
-    const symbol = item.symbol;
-    const meta = item.metaUsed || await getMergedMeta(symbol);
-    const book = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
-    const xBid = book.data.data.bids[0], xAsk = book.data.data.asks[0];
-    const rawPrice = (item.mode === 'open') ? Number(xBid[0]) : Number(xAsk[0]);
-    const newPrice = Number(rawPrice.toFixed(meta.mexc.priceScale));
-    const contracts = baseToContracts(Number(item.volume), meta);
-    const sideCode = (item.mode === 'open') ? 3 : 2;
-
-    try { await mexcCancelOrder(symbol, String(item.mexcOrderId)); } catch {}
-    const mres = await mexcSubmitOrder(
-      symbol,
-      newPrice,
-      contracts,
-      meta.settings.leverage,
-      sideCode,
-      item.mode === 'close' ? positionState.mexc.positionId : undefined
-    );
-    const newId = mres?.id ? bnToStringMaybe(mres.id) : null;
-    item.mexcOrderId = newId;
-    item.priceUsedMexc = String(newPrice);
-    item.mexcStatus = newId ? 'open' : 'error';
-    item.status = (item.gateStatus === 'filled') ? 'gate_filled' : 'open';
-    try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (reposition mexc):', e?.message || e); }
-    if (!newId) return res.status(500).json({ error: 'Falha ao criar nova ordem MEXC' });
-    res.json({ ok: true, mexcOrderId: newId, price: item.priceUsedMexc });
-  } catch (e) {
-    res.status(500).json({ error: 'Erro ao reposicionar MEXC' });
-  }
-});
-
 // ===== Poll: marcar "filled" somente quando Gate **e** MEXC estiverem preenchidas
 async function pollOpenOrders() {
-  const ACTIVE_STATUSES = ['open', 'creating', 'gate_filled', 'mexc_filled', 'gate_error', 'mexc_error'];
   for (const item of orderHistory) {
     const symbol = item.symbol;
-    if (!ACTIVE_STATUSES.includes(item.status)) continue;
+    if (!['open', 'creating', 'gate_filled', 'mexc_filled', 'gate_error', 'mexc_error'].includes(item.status)) continue;
 
     // Gate
     let gFilled = 0, gAvg = Number(item.priceUsedGate || 0), gIsFilled = false;
@@ -1383,19 +1046,21 @@ async function pollOpenOrders() {
         console.log('MEXC detail', md);
         const p = parseMexcOrderDetail(md);
         console.log('parsed detail', p);
-        if (p.positionId) positionState.mexc.positionId = p.positionId;
         mFilled = Number(p.filled || 0);
         mAvg = Number(p.avgPrice || mAvg);
         mIsFilled = !!p.isFilled;
+        if (p.positionId) {
+          const newPosId = bnToStringMaybe(p.positionId);
+          if (newPosId && positionState.mexc.positionId !== newPosId) {
+            positionState.mexc.positionId = newPosId;
+            persistPositionState();
+          }
+        }
       } catch {
         // caso não consiga consultar, não marca como filled
         mIsFilled = false;
       }
     }
-
-    // Se durante as chamadas assíncronas o status foi alterado (ex.: cancelado),
-    // não sobrescreve o valor definido pelo cancelamento.
-    if (!ACTIVE_STATUSES.includes(item.status)) continue;
 
     const prevStatus = item.status;
     const prevGateStatus = item.gateStatus;

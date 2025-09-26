@@ -28,15 +28,24 @@ CREATE TABLE IF NOT EXISTS history (
   status TEXT,
   gate_status TEXT,
   mexc_status TEXT,
-  sentido TEXT,
   raw_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS position_state (
+  id TEXT PRIMARY KEY,
+  state_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS position_summaries (
+  id TEXT PRIMARY KEY,
+  symbol TEXT,
+  created_at TEXT NOT NULL,
+  summary_json TEXT NOT NULL
 );
 `);
 
 // Migração simples: garante colunas gate_status e mexc_status
 try { db.exec('ALTER TABLE history ADD COLUMN gate_status TEXT'); } catch {}
 try { db.exec('ALTER TABLE history ADD COLUMN mexc_status TEXT'); } catch {}
-try { db.exec('ALTER TABLE history ADD COLUMN sentido TEXT'); } catch {}
 
 const upsertOverrideStmt = db.prepare(`
 INSERT INTO overrides(symbol, override_json, updated_at)
@@ -76,12 +85,32 @@ const insertHistoryStmt = db.prepare(`
 INSERT OR REPLACE INTO history (
   local_id, created_at, executed_at, cancelled_at, symbol,
   price_used_gate, price_used_mexc, volume,
-  gate_order_id, mexc_order_id, status, gate_status, mexc_status, sentido, raw_json
+  gate_order_id, mexc_order_id, status, gate_status, mexc_status, raw_json
 ) VALUES (
   @localId, @createdAt, @executedAt, @cancelledAt, @symbol,
   @priceUsedGate, @priceUsedMexc, @volume,
-  @gateOrderId, @mexcOrderId, @status, @gateStatus, @mexcStatus, @sentido, @raw
+  @gateOrderId, @mexcOrderId, @status, @gateStatus, @mexcStatus, @raw
 )`);
+
+const upsertPositionStateStmt = db.prepare(`
+INSERT INTO position_state(id, state_json, updated_at)
+VALUES (@id, @json, @updated_at)
+ON CONFLICT(id) DO UPDATE SET
+  state_json = excluded.state_json,
+  updated_at = excluded.updated_at
+`);
+
+const loadPositionStateStmt = db.prepare('SELECT state_json FROM position_state WHERE id = ?');
+
+const insertPositionSummaryStmt = db.prepare(`
+INSERT INTO position_summaries(id, symbol, created_at, summary_json)
+VALUES (@id, @symbol, @created_at, @json)
+`);
+
+const loadPositionSummariesStmt = db.prepare(`
+SELECT summary_json FROM position_summaries
+ORDER BY datetime(created_at) DESC, created_at DESC
+`);
 
 function saveHistoryItem(item) {
   // Garante que todos os campos são bindáveis
@@ -99,7 +128,6 @@ function saveHistoryItem(item) {
     status: toBind(item.status),
     gateStatus: toBind(item.gateStatus),
     mexcStatus: toBind(item.mexcStatus),
-    sentido: toBind(item.sentido),
     raw: JSON.stringify(item || {})
   };
   insertHistoryStmt.run(payload);
@@ -114,10 +142,48 @@ function loadHistory() {
   return arr;
 }
 
+function savePositionState(state, id = 'current') {
+  upsertPositionStateStmt.run({
+    id,
+    json: JSON.stringify(state || {}),
+    updated_at: new Date().toISOString()
+  });
+}
+
+function loadPositionState(id = 'current') {
+  const row = loadPositionStateStmt.get(id);
+  if (!row || !row.state_json) return null;
+  try { return JSON.parse(row.state_json); } catch { return null; }
+}
+
+function savePositionSummary(summary) {
+  const payload = {
+    id: summary.id,
+    symbol: summary.symbol || null,
+    created_at: summary.createdAt || new Date().toISOString(),
+    json: JSON.stringify(summary || {})
+  };
+  insertPositionSummaryStmt.run(payload);
+}
+
+function loadPositionSummaries() {
+  const arr = [];
+  for (const row of loadPositionSummariesStmt.all()) {
+    try {
+      arr.push(JSON.parse(row.summary_json));
+    } catch {}
+  }
+  return arr;
+}
+
 module.exports = {
   DB_PATH,
   upsertOverride,
   loadOverrides,
   saveHistoryItem,
-  loadHistory
+  loadHistory,
+  savePositionState,
+  loadPositionState,
+  savePositionSummary,
+  loadPositionSummaries
 };
