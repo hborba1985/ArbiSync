@@ -31,12 +31,19 @@ CREATE TABLE IF NOT EXISTS history (
   sentido TEXT,
   raw_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS position_summaries (
+  symbol TEXT PRIMARY KEY,
+  summary_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  note TEXT
+);
 `);
 
 // Migração simples: garante colunas gate_status e mexc_status
 try { db.exec('ALTER TABLE history ADD COLUMN gate_status TEXT'); } catch {}
 try { db.exec('ALTER TABLE history ADD COLUMN mexc_status TEXT'); } catch {}
 try { db.exec('ALTER TABLE history ADD COLUMN sentido TEXT'); } catch {}
+try { db.exec('ALTER TABLE position_summaries ADD COLUMN note TEXT'); } catch {}
 
 const upsertOverrideStmt = db.prepare(`
 INSERT INTO overrides(symbol, override_json, updated_at)
@@ -83,6 +90,24 @@ INSERT OR REPLACE INTO history (
   @gateOrderId, @mexcOrderId, @status, @gateStatus, @mexcStatus, @sentido, @raw
 )`);
 
+const insertPositionSummaryStmt = db.prepare(`
+INSERT INTO position_summaries (
+  symbol, summary_json, updated_at, note
+) VALUES (
+  @symbol, @summaryJson, @updatedAt, @note
+)
+ON CONFLICT(symbol) DO UPDATE SET
+  summary_json = excluded.summary_json,
+  updated_at = excluded.updated_at,
+  note = excluded.note
+`);
+
+const loadPositionSummariesStmt = db.prepare(`
+SELECT symbol, summary_json, updated_at, note
+FROM position_summaries
+ORDER BY symbol
+`);
+
 function saveHistoryItem(item) {
   // Garante que todos os campos são bindáveis
   const payload = {
@@ -114,10 +139,43 @@ function loadHistory() {
   return arr;
 }
 
+function toSummaryJson(payload) {
+  if (typeof payload === 'string') return payload;
+  try { return JSON.stringify(payload || {}); } catch { return '{}'; }
+}
+
+function savePositionSummary(summary) {
+  if (!summary || !summary.symbol) return;
+  insertPositionSummaryStmt.run({
+    symbol: toBind(summary.symbol),
+    summaryJson: toSummaryJson(summary.summary ?? summary.summaryJson ?? summary.data),
+    updatedAt: toBind(summary.updatedAt || new Date().toISOString()),
+    note: toBind(summary.note)
+  });
+}
+
+function loadPositionSummaries() {
+  const rows = [];
+  for (const row of loadPositionSummariesStmt.all()) {
+    let parsed = null;
+    try { parsed = JSON.parse(row.summary_json); } catch {}
+    rows.push({
+      symbol: row.symbol,
+      summary: parsed,
+      summaryJson: row.summary_json,
+      updatedAt: row.updated_at,
+      note: row.note ?? null
+    });
+  }
+  return rows;
+}
+
 module.exports = {
   DB_PATH,
   upsertOverride,
   loadOverrides,
   saveHistoryItem,
-  loadHistory
+  loadHistory,
+  savePositionSummary,
+  loadPositionSummaries
 };
