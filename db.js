@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS position_summaries (
 try { db.exec('ALTER TABLE history ADD COLUMN gate_status TEXT'); } catch {}
 try { db.exec('ALTER TABLE history ADD COLUMN mexc_status TEXT'); } catch {}
 try { db.exec('ALTER TABLE history ADD COLUMN sentido TEXT'); } catch {}
+try { db.exec('ALTER TABLE position_summaries ADD COLUMN note TEXT'); } catch {}
 
 const upsertOverrideStmt = db.prepare(`
 INSERT INTO overrides(symbol, override_json, updated_at)
