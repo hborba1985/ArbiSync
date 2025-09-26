@@ -34,6 +34,7 @@ module.exports = {
 
   // Políticas de execução (opcional). Você já usa a margem de 10%:
   execution: {
-    marginPct: 10 // % de distância para evitar que a ordem seja consumida imediatamente
+    marginPct: 10, // % de distância para evitar que a ordem seja consumida imediatamente
+    gateOpenExtraPct: 0 // % adicional aplicado apenas às ordens de abertura enviadas para a Gate
   }
 };
