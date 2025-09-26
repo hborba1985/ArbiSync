@@ -406,11 +406,7 @@ async function autoDiscoverMexcMeta(symbol) {
 async function autoDiscoverMeta(symbol) {
   const gate = await autoDiscoverGateMeta(symbol);
   const mexc = await autoDiscoverMexcMeta(symbol);
-  const settings = {
-    marginPct: Number(config.execution?.marginPct ?? 10),
-    leverage: Number(config.mexc?.leverage ?? 1),
-    gateOpenExtraPct: Number(config.execution?.gateOpenExtraPct ?? 0)
-  };
+  const settings = { marginPct: Number(config.execution?.marginPct ?? 10), leverage: Number(config.mexc?.leverage ?? 1) };
   return { symbolSpot: symbol, symbolFut: symbol, gate, mexc, settings };
 }
 function deepMerge(target, src) {
@@ -452,22 +448,6 @@ function applyRoundingMeta(pg, pm, qtyW, meta) {
   const pmR = roundTo(pm, psm);
   const qR = roundDownTo(qtyW, qsg);
   return { pg: pgR, pm: pmR, q: qR };
-}
-
-function computeGateOrderQty(baseQty, meta, mode) {
-  let qty = Number(baseQty) || 0;
-  if (mode === 'open') {
-    const extraPct = Number(meta?.settings?.gateOpenExtraPct || 0);
-    if (Number.isFinite(extraPct) && extraPct > 0) {
-      const factor = 1 + (extraPct / 100);
-      const qtyScale = Number(meta?.gate?.qtyScale || 0);
-      const adjusted = roundTo(qty * factor, qtyScale);
-      if (Number.isFinite(adjusted)) {
-        qty = Math.max(qty, adjusted);
-      }
-    }
-  }
-  return qty;
 }
 
 function normalizeLevelSelection(raw, maxGateLevels, maxMexcLevels) {
@@ -913,13 +893,11 @@ app.post('/api/precheck', async (req, res) => {
       return res.json({ ok: true, blocked: true, reason: 'min_contracts_not_met', minContracts, mode });
     }
 
-    const gateOrderBaseQty = computeGateOrderQty(rounded.q, meta, mode);
-
     const minQuote = Number(meta.gate.minQuote || 0);
-    if (minQuote > 0 && gateOrderBaseQty * rounded.pg < minQuote) {
+    if (minQuote > 0 && rounded.q * rounded.pg < minQuote) {
       return res.json({
         ok: true, blocked: true, reason: 'min_quote_not_met', minQuote,
-        calc: { gateQuote: Number((gateOrderBaseQty * rounded.pg).toFixed(6)) }, mode
+        calc: { gateQuote: Number((rounded.q * rounded.pg).toFixed(6)) }, mode
       });
     }
 
@@ -930,11 +908,8 @@ app.post('/api/precheck', async (req, res) => {
       const details = {
         mode, symbol, gateRounded: rounded.pg, mexcRounded: rounded.pm,
         mexcContracts: contracts, contractSize: cs,
-        finalBaseQty: rounded.q, gateOrderBaseQty,
-        leverage: meta.settings.leverage,
-        marginPct: meta.settings.marginPct,
-        gateOpenExtraPct: meta.settings.gateOpenExtraPct,
-        requiredUSDT: Number(required.toFixed(6)),
+        finalBaseQty: rounded.q, leverage: meta.settings.leverage,
+        marginPct: meta.settings.marginPct, requiredUSDT: Number(required.toFixed(6)),
         levelsUsed: selectedLevels
       };
       if (mexcBal.availableUSDT == null) return res.json({ ok: true, needConfirm: false, unknownBalance: true, details });
@@ -946,11 +921,8 @@ app.post('/api/precheck', async (req, res) => {
       const details = {
         mode, symbol, gateRounded: rounded.pg, mexcRounded: rounded.pm,
         mexcContracts: contracts, contractSize: cs,
-        finalBaseQty: rounded.q, gateOrderBaseQty,
-        leverage: meta.settings.leverage,
-        marginPct: meta.settings.marginPct,
-        gateOpenExtraPct: meta.settings.gateOpenExtraPct,
-        requiredUSDT: 0,
+        finalBaseQty: rounded.q, leverage: meta.settings.leverage,
+        marginPct: meta.settings.marginPct, requiredUSDT: 0,
         levelsUsed: selectedLevels
       };
       return res.json({ ok: true, needConfirm: false, unknownBalance: false, details });
@@ -1083,10 +1055,8 @@ app.post('/api/execute-trade', async (req, res) => {
       return res.status(400).json({ error: `Volume abaixo do mínimo de contratos (${minContracts}).` });
     }
 
-    const gateOrderBaseQty = computeGateOrderQty(rounded.q, meta, mode);
-
     const minQuote = Number(meta.gate.minQuote || 0);
-    if (minQuote > 0 && gateOrderBaseQty * rounded.pg < minQuote) {
+    if (minQuote > 0 && rounded.q * rounded.pg < minQuote) {
       return res.status(400).json({ error: `Mínimo da Gate não atendido (>= ${minQuote} USDT). Tente aumentar contratos.` });
     }
 
@@ -1113,7 +1083,7 @@ app.post('/api/execute-trade', async (req, res) => {
     }
 
     if (mode === 'open') {
-      const neededGateUSDT = rounded.pg * gateOrderBaseQty;
+      const neededGateUSDT = rounded.pg * rounded.q;
       const gateUSDTAvail = Number(gateBalances?.USDT?.available || 0);
       if (gateUSDTAvail < neededGateUSDT) {
         return res.status(400).json({
@@ -1125,10 +1095,10 @@ app.post('/api/execute-trade', async (req, res) => {
     } else {
       const baseCurrency = symbol.split('_')[0];
       const gateBaseAvailable = Number(gateBalances?.[baseCurrency]?.available || 0);
-      if (gateBaseAvailable < gateOrderBaseQty) {
+      if (gateBaseAvailable < rounded.q) {
         return res.status(400).json({
           error: `Saldo Gate ${baseCurrency} insuficiente`,
-          requiredBase: Number(gateOrderBaseQty.toFixed(meta.gate.qtyScale)),
+          requiredBase: Number(rounded.q.toFixed(meta.gate.qtyScale)),
           availableBase: gateBaseAvailable
         });
       }
@@ -1137,7 +1107,7 @@ app.post('/api/execute-trade', async (req, res) => {
     console.log('[EXECUTAR] Modo:', mode);
     console.log('[EXECUTAR] Preço Gate:', rounded.pg);
     console.log('[EXECUTAR] Preço MEXC:', rounded.pm);
-    console.log('[EXECUTAR] Volume (moeda base final):', rounded.q, '| Volume Gate (com extra):', gateOrderBaseQty, '| contratos MEXC:', contracts);
+    console.log('[EXECUTAR] Volume (moeda base final):', rounded.q, '| contratos MEXC:', contracts);
 
     const localId = Date.now().toString();
     const histItem = {
@@ -1163,10 +1133,9 @@ app.post('/api/execute-trade', async (req, res) => {
         symbol,
         side,
         String(rounded.pg.toFixed(meta.gate.priceScale)),
-        String(gateOrderBaseQty.toFixed(meta.gate.qtyScale))
+        String(rounded.q.toFixed(meta.gate.qtyScale))
       );
       histItem.gateOrderId = (go?.id != null) ? String(go.id) : null;
-      histItem.gateOrderVolume = String(gateOrderBaseQty.toFixed(meta.gate.qtyScale));
       gateOk = !!histItem.gateOrderId;
       histItem.gateStatus = gateOk ? 'open' : 'error';
     } catch (e) {
@@ -1204,7 +1173,7 @@ app.post('/api/execute-trade', async (req, res) => {
 
     res.json({
       ok: true, localId, mode,
-      gate: { id: histItem.gateOrderId, price: histItem.priceUsedGate, displayBaseQty: histItem.gateOrderVolume },
+      gate: { id: histItem.gateOrderId, price: histItem.priceUsedGate },
       mexc: { id: histItem.mexcOrderId, price: histItem.priceUsedMexc, displayBaseQty: histItem.mexcDisplayVolume },
       status: histItem.status
     });
@@ -1279,11 +1248,7 @@ app.post('/api/reposition-gate', async (req, res) => {
     const gAsk = book.data.asks[0], gBid = book.data.bids[0];
     const rawPrice = (item.mode === 'open') ? Number(gAsk[0]) : Number(gBid[0]);
     const newPrice = Number(rawPrice.toFixed(meta.gate.priceScale));
-    const storedQty = Number(item.gateOrderVolume);
-    let qty = Number.isFinite(storedQty)
-      ? storedQty
-      : computeGateOrderQty(Number(item.volume), meta, item.mode);
-    if (!Number.isFinite(qty) || qty <= 0) qty = Number(item.volume);
+    const qty = Number(item.volume);
     const side = (item.mode === 'open') ? 'buy' : 'sell';
 
     try { await cancelGateOrderSdk(symbol, item.gateOrderId); } catch {}
@@ -1295,7 +1260,6 @@ app.post('/api/reposition-gate', async (req, res) => {
     );
     item.gateOrderId = go?.id ? String(go.id) : null;
     item.priceUsedGate = String(newPrice);
-    item.gateOrderVolume = String(qty.toFixed(meta.gate.qtyScale));
     item.gateStatus = item.gateOrderId ? 'open' : 'error';
     item.status = (item.mexcStatus === 'filled') ? 'mexc_filled' : 'open';
     try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (reposition gate):', e?.message || e); }
