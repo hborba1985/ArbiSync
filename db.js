@@ -109,6 +109,11 @@ INSERT INTO position_summaries(id, symbol, created_at, summary_json)
 VALUES (@id, @symbol, @created_at, @json)
 `);
 
+const loadPositionSummariesStmt = db.prepare(`
+SELECT summary_json FROM position_summaries
+ORDER BY datetime(created_at) DESC, created_at DESC
+`);
+
 function saveHistoryItem(item) {
   // Garante que todos os campos são bindáveis
   const payload = {
@@ -164,6 +169,16 @@ function savePositionSummary(summary) {
   insertPositionSummaryStmt.run(payload);
 }
 
+function loadPositionSummaries() {
+  const arr = [];
+  for (const row of loadPositionSummariesStmt.all()) {
+    try {
+      arr.push(JSON.parse(row.summary_json));
+    } catch {}
+  }
+  return arr;
+}
+
 module.exports = {
   DB_PATH,
   upsertOverride,
@@ -172,5 +187,6 @@ module.exports = {
   loadHistory,
   savePositionState,
   loadPositionState,
-  savePositionSummary
+  savePositionSummary,
+  loadPositionSummaries
 };

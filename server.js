@@ -855,6 +855,16 @@ app.post('/api/position-target', (req, res) => {
 });
 app.get('/api/position-progress', (_req, res) => res.json(positionState));
 
+app.get('/api/position-summaries', (_req, res) => {
+  try {
+    const summaries = db.loadPositionSummaries();
+    res.json({ summaries });
+  } catch (err) {
+    console.warn('[SQLite] Falha ao carregar resumos de posições:', err?.message || err);
+    res.status(500).json({ error: 'Falha ao carregar resumos de posições' });
+  }
+});
+
 app.post('/api/position-manual-update', (req, res) => {
   try {
     const body = req.body || {};

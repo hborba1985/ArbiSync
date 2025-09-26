@@ -198,6 +198,24 @@ function setInputValue(id, value, decimals, force) {
   }
 }
 
+function formatDateTime(value) {
+  if (!value) return '-';
+  try {
+    return new Date(value).toLocaleString('pt-BR');
+  } catch {
+    return value;
+  }
+}
+
+function formatNumberCell(value, decimals) {
+  if (value === undefined || value === null || value === '') return '-';
+  const num = Number(value);
+  if (Number.isFinite(num)) {
+    return typeof decimals === 'number' ? num.toFixed(decimals) : String(num);
+  }
+  return String(value);
+}
+
 function getNumberFromInput(id) {
   const el = document.getElementById(id);
   if (!el) return undefined;
@@ -610,6 +628,61 @@ async function refreshHistory() {
 }
 setInterval(refreshHistory, 5000); refreshHistory();
 
+async function refreshPositionSummaries() {
+  const tbody = document.getElementById('positionSummaryBody');
+  if (!tbody) return;
+
+  const renderMessageRow = (text) => {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 14;
+    td.textContent = text;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  };
+
+  try {
+    const resp = await fetch('/api/position-summaries');
+    const out = await safeJson(resp);
+    if (!resp.ok) throw new Error(out?.error || 'Falha ao carregar');
+    const list = Array.isArray(out.summaries) ? out.summaries : [];
+    tbody.innerHTML = '';
+    if (!list.length) {
+      renderMessageRow('Nenhum resumo registrado ainda.');
+      return;
+    }
+
+    list.forEach((summary) => {
+      const tr = document.createElement('tr');
+      const td = (text) => { const el = document.createElement('td'); el.textContent = text; return el; };
+      const gate = summary.gate || {};
+      const mexc = summary.mexc || {};
+
+      tr.appendChild(td(formatDateTime(summary.endedAt || summary.createdAt)));
+      tr.appendChild(td(formatDateTime(summary.startedAt)));
+      tr.appendChild(td(summary.symbol || '-'));
+      tr.appendChild(td(formatNumberCell(summary.targetQty, 6)));
+      tr.appendChild(td(formatNumberCell(summary.finalFilledQty, 6)));
+      tr.appendChild(td(formatNumberCell(summary.finalAvgPrice, 11)));
+      tr.appendChild(td(formatNumberCell(summary.finalArbPct, 6)));
+      tr.appendChild(td(formatNumberCell(summary.finalPnlUsd, 6)));
+      tr.appendChild(td(formatNumberCell(summary.totalVolume, 11)));
+      tr.appendChild(td(formatNumberCell(gate.filledQty, 6)));
+      tr.appendChild(td(formatNumberCell(gate.avgPrice, 11)));
+      tr.appendChild(td(formatNumberCell(mexc.filledQty, 6)));
+      tr.appendChild(td(formatNumberCell(mexc.avgPrice, 11)));
+      tr.appendChild(td(summary.note ? String(summary.note) : '-'));
+
+      tbody.appendChild(tr);
+    });
+  } catch (err) {
+    console.error('refreshPositionSummaries erro:', err);
+    tbody.innerHTML = '';
+    renderMessageRow('Erro ao carregar resumos de posições.');
+  }
+}
+setInterval(refreshPositionSummaries, 7000); refreshPositionSummaries();
+
 async function refreshPosition() {
   try {
     const r = await fetch('/api/position-progress');
@@ -798,6 +871,7 @@ document.getElementById('dismantlePosition').addEventListener('click', async () 
     const totalVol = summary.totalVolume != null ? summary.totalVolume : '-';
     alert(`Posição desmontada. Arb final: ${finalArb}% | PnL final: ${finalPnl} USDT | Volume total: ${totalVol}`);
     await refreshPosition();
+    await refreshPositionSummaries();
   } catch (e) {
     alert('Erro ao desmontar posição: ' + (e.message || e));
   } finally {
@@ -841,5 +915,5 @@ function drawProgressChart(series) {
   if (isFinite(alertMax)) document.getElementById('alertMax').value = alertMax;
   document.getElementById('soundToggle').checked = soundEnabled;
   document.getElementById('telegramToggle').checked = telegramEnabled;
-  refreshBalances(); refreshHistory(); refreshPosition(); fetchData();
+  refreshBalances(); refreshHistory(); refreshPosition(); refreshPositionSummaries(); fetchData();
 })();
