@@ -243,6 +243,67 @@ async function getGateOrderDetail(symbol, id) {
     return null;
   }
 }
+
+function pickFiniteNumber(...candidates) {
+  for (const value of candidates) {
+    const num = Number(value);
+    if (Number.isFinite(num)) return num;
+  }
+  return null;
+}
+
+function parseGateOrderDetail(detail, fallbackAmount = 0, fallbackPrice = 0) {
+  const data = detail?.body || detail || {};
+  const total = pickFiniteNumber(
+    data.amount, data.initialAmount, data.initial_amount,
+    data.size, data.quantity, data.vol, data.volume, fallbackAmount
+  ) || 0;
+  const filled = pickFiniteNumber(
+    data.filledAmount, data.filled_amount, data.filled,
+    data.dealAmount, data.deal_amount, data.finish_amount, data.dealVolume
+  ) || 0;
+  const leftRaw = pickFiniteNumber(
+    data.left, data.left_amount, data.remain,
+    data.remaining, data.remainingAmount, data.unfilled
+  );
+  const remaining = Number.isFinite(leftRaw)
+    ? Math.max(leftRaw, 0)
+    : Math.max(total - filled, 0);
+  const avgPrice = pickFiniteNumber(
+    data.avgDealPrice, data.fill_price, data.avgFillPrice,
+    data.avgPrice, data.avg_deal_price, fallbackPrice
+  ) || 0;
+  const statusRaw = (data.status ?? data.state ?? '').toString().toLowerCase();
+  const isFilled = (remaining <= 0) || ['closed', 'finished', 'done', 'filled', 'completed'].includes(statusRaw);
+  return {
+    total,
+    filled: Math.max(0, filled),
+    remaining,
+    avgPrice,
+    isFilled,
+    status: statusRaw
+  };
+}
+
+async function fetchGateOrderDetailWithStatus(symbol, id) {
+  try {
+    const resp = await gateSpotApi.getOrder(id, symbol);
+    const data = resp?.body || resp || null;
+    return { detail: data, notFound: false };
+  } catch (err) {
+    const code = err?.response?.status;
+    const payload = err?.response?.data;
+    const msg = (typeof payload === 'string'
+      ? payload
+      : payload?.message || payload?.label || err?.message || err
+    ).toString().toLowerCase();
+    if (code === 404 || msg.includes('not found') || msg.includes('not_exist') || msg.includes('does not exist')) {
+      return { detail: null, notFound: true };
+    }
+    console.warn(`[GATE] failed to fetch order detail for reposition ${id} ${symbol}:`, payload || err?.message || err);
+    return { detail: null, notFound: false, error: err };
+  }
+}
 async function getGateBalances(symbol) {
   try {
     const [base, quote] = symbol.split('_');
@@ -371,11 +432,14 @@ async function getMexcOrderDetail(symbol, orderId) {
   return null;
 }
 function parseMexcOrderDetail(detail) {
-  if (!detail) return { isFilled: false, filled: 0, avgPrice: 0 };
+  if (!detail) return { isFilled: false, filled: 0, avgPrice: 0, total: 0, remaining: 0 };
   const d = detail?.data || detail;
   const filled = Number(d.dealVol ?? d.filledQty ?? d.filled ?? d.deal_volume ?? d.cumQty ?? 0);
   const vol    = Number(d.vol ?? d.volume ?? d.quantity ?? d.origQty ?? 0);
-  const remain = Number(d.remainVol ?? d.remaining_volume ?? (Number.isFinite(vol) ? Math.max(vol - filled, 0) : 0));
+  const remainRaw = Number(d.remainVol ?? d.remaining_volume ?? d.leavesQty ?? d.leaves ?? NaN);
+  const remain = Number.isFinite(remainRaw)
+    ? Math.max(remainRaw, 0)
+    : (Number.isFinite(vol) ? Math.max(vol - filled, 0) : 0);
   const status = (d.state ?? d.status ?? d.orderStatus ?? d.orderState ?? '').toString().toLowerCase();
   const avg    = Number(d.priceAvg ?? d.avgPrice ?? d.avg_price ?? d.avgDealPrice ?? d.dealAvgPrice ?? d.fill_price ?? 0);
   const posId  = d.positionId ?? d.position_id ?? null;
@@ -383,7 +447,14 @@ function parseMexcOrderDetail(detail) {
     status.includes('filled') || status === 'done' || status === 'closed' ||
     status === 'success' || status === 'finished' || status === '3' || status === '7';
   const isFilled = statusFilled || (vol > 0 && filled >= vol) || remain === 0;
-  return { isFilled, filled: Math.max(0, filled), avgPrice: avg || 0, positionId: posId };
+  return {
+    isFilled,
+    filled: Math.max(0, filled),
+    avgPrice: avg || 0,
+    positionId: posId,
+    total: Math.max(0, Number.isFinite(vol) ? vol : 0),
+    remaining: Math.max(0, remain)
+  };
 }
 
 // ===== MEXC saldo (via web token)
@@ -1341,6 +1412,7 @@ app.post('/api/execute-trade', async (req, res) => {
       priceUsedMexc: String(rounded.pm),
       volume: String(rounded.q),
       mexcDisplayVolume: String(rounded.q),
+      mexcOrderContracts: Number(contracts),
       gateOpenExtraPct: appliedGateExtraPct,
       gateOrderId: null, mexcOrderId: null,
       gateStatus: 'creating', mexcStatus: 'creating',
@@ -1483,23 +1555,63 @@ app.post('/api/reposition-gate', async (req, res) => {
     const gAsk = book.data.asks[0], gBid = book.data.bids[0];
     const rawPrice = (item.mode === 'open') ? Number(gAsk[0]) : Number(gBid[0]);
     const newPrice = Number(rawPrice.toFixed(meta.gate.priceScale));
-    const storedQty = Number(item.gateOrderVolume);
-    let qty = Number.isFinite(storedQty)
-      ? storedQty
-      : computeGateOrderQty(Number(item.volume), meta, item.mode);
-    if (!Number.isFinite(qty) || qty <= 0) qty = Number(item.volume);
-    const side = (item.mode === 'open') ? 'buy' : 'sell';
 
+    const fallbackQty = Number(item.gateOrderBaseQty ?? item.gateOrderVolume ?? item.volume ?? 0);
+    const fallbackPrice = Number(item.priceUsedGate || rawPrice || 0);
+    const { detail, notFound, error } = await fetchGateOrderDetailWithStatus(symbol, item.gateOrderId);
+    if (error && !notFound) {
+      return res.status(502).json({ error: 'Falha ao consultar ordem Gate' });
+    }
+
+    if (notFound) {
+      const qtyNum = Number.isFinite(fallbackQty) ? fallbackQty : 0;
+      if (qtyNum > 0) {
+        item.gatePartialFilled = Number(roundTo(qtyNum, meta.gate.qtyScale));
+      }
+      item.gateOrderFilled = Number(roundTo(qtyNum, meta.gate.qtyScale));
+      item.gateStatus = 'filled';
+      item.status = (item.mexcStatus === 'filled') ? 'filled' : 'mexc_filled';
+      try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (reposition gate-notfound):', e?.message || e); }
+      return res.status(409).json({ error: 'Ordem Gate já finalizada' });
+    }
+
+    const parsed = parseGateOrderDetail(detail, fallbackQty, fallbackPrice);
+    const currentFilled = Math.max(0, Math.min((parsed.total || fallbackQty), parsed.filled || 0));
+    const prevKnownFilled = Number(item.gateOrderFilled || 0);
+    const incrementalFilled = Math.max(0, currentFilled - (Number.isFinite(prevKnownFilled) ? prevKnownFilled : 0));
+    const prevPartial = Number(item.gatePartialFilled || 0);
+    const partialAfterCancel = prevPartial + incrementalFilled;
+
+    const remainingRawBase = Math.max(0, (Number.isFinite(parsed.total) && parsed.total > 0 ? parsed.total : fallbackQty) - currentFilled);
+    let remainingBase = roundDownTo(remainingRawBase, meta.gate.qtyScale);
+    if (!Number.isFinite(remainingBase)) remainingBase = 0;
+
+    if (remainingBase <= 0 || parsed.isFilled) {
+      item.gateOrderFilled = Number(roundTo(currentFilled, meta.gate.qtyScale));
+      item.gateStatus = 'filled';
+      item.status = (item.mexcStatus === 'filled') ? 'filled' : 'mexc_filled';
+      try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (reposition gate-filled):', e?.message || e); }
+      return res.status(409).json({ error: 'Ordem Gate já finalizada' });
+    }
+
+    if (incrementalFilled > 0) {
+      item.gatePartialFilled = Number(roundTo(partialAfterCancel, meta.gate.qtyScale));
+    }
+
+    const side = (item.mode === 'open') ? 'buy' : 'sell';
     try { await cancelGateOrderSdk(symbol, item.gateOrderId); } catch {}
+    const qtyStr = String(remainingBase.toFixed(meta.gate.qtyScale));
     const go = await placeGateOrderSdk(
       symbol,
       side,
       String(newPrice.toFixed(meta.gate.priceScale)),
-      String(qty.toFixed(meta.gate.qtyScale))
+      qtyStr
     );
     item.gateOrderId = go?.id ? String(go.id) : null;
     item.priceUsedGate = String(newPrice);
-    item.gateOrderVolume = String(qty.toFixed(meta.gate.qtyScale));
+    item.gateOrderVolume = qtyStr;
+    item.gateOrderBaseQty = Number(qtyStr);
+    item.gateOrderFilled = 0;
     item.gateStatus = item.gateOrderId ? 'open' : 'error';
     item.status = (item.mexcStatus === 'filled') ? 'mexc_filled' : 'open';
     try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (reposition gate):', e?.message || e); }
@@ -1527,14 +1639,54 @@ app.post('/api/reposition-mexc', async (req, res) => {
     const xBid = book.data.data.bids[0], xAsk = book.data.data.asks[0];
     const rawPrice = (item.mode === 'open') ? Number(xBid[0]) : Number(xAsk[0]);
     const newPrice = Number(rawPrice.toFixed(meta.mexc.priceScale));
-    const contracts = baseToContracts(Number(item.volume), meta);
+
+    const detail = await getMexcOrderDetail(symbol, String(item.mexcOrderId));
+    if (!detail) {
+      return res.status(502).json({ error: 'Não foi possível consultar ordem MEXC' });
+    }
+
+    const parsed = parseMexcOrderDetail(detail);
+    const fallbackContracts = Number.isFinite(parsed.total) && parsed.total > 0
+      ? parsed.total
+      : Number(item.mexcOrderContracts ?? baseToContracts(Number(item.volume), meta));
+    const currentFilled = Math.max(0, Math.min(fallbackContracts, parsed.filled || 0));
+    const prevKnownFilled = Number(item.mexcOrderFilled || 0);
+    const incrementalFilled = Math.max(0, currentFilled - (Number.isFinite(prevKnownFilled) ? prevKnownFilled : 0));
+    const prevPartial = Number(item.mexcPartialFilled || 0);
+    const vp = Number(meta.mexc.volPrecision || 0);
+    const partialAfterCancel = prevPartial + incrementalFilled;
+    const factor = Math.pow(10, vp);
+    const totalContracts = Number.isFinite(parsed.total) && parsed.total > 0 ? parsed.total : fallbackContracts;
+    const remainingRaw = Math.max(0, totalContracts - currentFilled);
+    let remainingContracts = remainingRaw;
+    if (vp > 0) {
+      remainingContracts = Math.floor(remainingRaw * factor) / factor;
+    } else {
+      remainingContracts = Math.floor(remainingRaw);
+    }
+
+    if (!Number.isFinite(remainingContracts)) remainingContracts = 0;
+
+    if (remainingContracts <= 0 || parsed.isFilled) {
+      const totalFilled = prevPartial + currentFilled;
+      item.mexcOrderFilled = Number(roundTo(totalFilled, vp));
+      item.mexcStatus = 'filled';
+      item.status = (item.gateStatus === 'filled') ? 'filled' : 'gate_filled';
+      try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (reposition mexc-filled):', e?.message || e); }
+      return res.status(409).json({ error: 'Ordem MEXC já finalizada' });
+    }
+
+    if (incrementalFilled > 0) {
+      item.mexcPartialFilled = Number(roundTo(partialAfterCancel, vp));
+    }
+
     const sideCode = (item.mode === 'open') ? 3 : 2;
 
     try { await mexcCancelOrder(symbol, String(item.mexcOrderId)); } catch {}
     const mres = await mexcSubmitOrder(
       symbol,
       newPrice,
-      contracts,
+      remainingContracts,
       meta.settings.leverage,
       sideCode,
       item.mode === 'close' ? positionState.mexc.positionId : undefined
@@ -1542,6 +1694,11 @@ app.post('/api/reposition-mexc', async (req, res) => {
     const newId = mres?.id ? bnToStringMaybe(mres.id) : null;
     item.mexcOrderId = newId;
     item.priceUsedMexc = String(newPrice);
+    item.mexcOrderContracts = Number(remainingContracts);
+    const baseDisplay = contractsToBase(remainingContracts, meta);
+    const baseDisplayRounded = roundTo(baseDisplay, meta.gate.qtyScale || 6);
+    item.mexcDisplayVolume = String(baseDisplayRounded);
+    item.mexcOrderFilled = 0;
     item.mexcStatus = newId ? 'open' : 'error';
     item.status = (item.gateStatus === 'filled') ? 'gate_filled' : 'open';
     try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (reposition mexc):', e?.message || e); }
@@ -1560,27 +1717,36 @@ async function pollOpenOrders() {
     if (!ACTIVE_STATUSES.includes(item.status)) continue;
 
     // Gate
-    let gFilled = 0, gAvg = Number(item.priceUsedGate || 0), gIsFilled = false;
+    const fallbackGateQty = Number(item.gateOrderBaseQty ?? item.gateOrderVolume ?? item.volume ?? 0);
+    let gFilledCurrent = 0;
+    let gAvg = Number(item.priceUsedGate || 0);
+    let gIsFilled = false;
     if (item.gateOrderId) {
-      try {
-        const d = await getGateOrderDetail(symbol, item.gateOrderId);
-        if (d) {
-          gFilled = Number(d.filledAmount ?? d.filled_amount ?? 0);
-          const left = Number(d.left ?? d.left_amount ?? (Number(d.amount ?? item.volume ?? 0) - gFilled));
-          gAvg = Number(d.avgDealPrice ?? d.fill_price ?? d.avgFillPrice ?? gAvg);
-          const st = (d.status || '').toString().toLowerCase();
-          gIsFilled = (left <= 0) || ['closed','finished','done','filled','completed'].includes(st);
-        }
-      } catch {
-        // Se a Gate reportar "ORDER_NOT_FOUND", considerar preenchida (executada e removida)
-        gIsFilled = true;
-        gFilled = Number(item.volume || 0);
-        gAvg = Number(item.priceUsedGate || 0);
+      const detail = await getGateOrderDetail(symbol, item.gateOrderId);
+      if (detail) {
+        const parsedGate = parseGateOrderDetail(detail, fallbackGateQty, gAvg);
+        gFilledCurrent = Math.max(0, parsedGate.filled || 0);
+        gAvg = Number(parsedGate.avgPrice || gAvg);
+        gIsFilled = !!parsedGate.isFilled;
+      } else {
+        // Se não conseguimos o detalhe, mantém status atual
+        gIsFilled = item.gateStatus === 'filled';
+        gFilledCurrent = Number(item.gateOrderFilled || 0);
       }
+    } else if (item.gateStatus === 'filled') {
+      gIsFilled = true;
+      gFilledCurrent = Number(item.gateOrderFilled || item.gatePartialFilled || fallbackGateQty);
     }
 
+    item.gateOrderFilled = Math.max(0, gFilledCurrent);
+    const gatePartial = Number(item.gatePartialFilled || 0);
+    const totalGateFilled = gFilledCurrent + (Number.isFinite(gatePartial) ? gatePartial : 0);
+
     // MEXC
-    let mFilled = 0, mAvg = Number(item.priceUsedMexc || 0), mIsFilled = false;
+    const fallbackMexcContracts = Number(item.mexcOrderContracts ?? 0);
+    let mFilledCurrent = 0;
+    let mAvg = Number(item.priceUsedMexc || 0);
+    let mIsFilled = false;
     if (item.mexcOrderId) {
       try {
         const md = await getMexcOrderDetail(symbol, String(item.mexcOrderId));
@@ -1591,14 +1757,21 @@ async function pollOpenOrders() {
           positionState.mexc.positionId = p.positionId;
           persistPositionState('poll-mexc-position-id');
         }
-        mFilled = Number(p.filled || 0);
+        mFilledCurrent = Math.max(0, p.filled || 0);
         mAvg = Number(p.avgPrice || mAvg);
         mIsFilled = !!p.isFilled;
       } catch {
-        // caso não consiga consultar, não marca como filled
-        mIsFilled = false;
+        mIsFilled = item.mexcStatus === 'filled';
+        mFilledCurrent = Number(item.mexcOrderFilled || 0);
       }
+    } else if (item.mexcStatus === 'filled') {
+      mIsFilled = true;
+      mFilledCurrent = Number(item.mexcOrderFilled || item.mexcPartialFilled || fallbackMexcContracts);
     }
+
+    item.mexcOrderFilled = Math.max(0, mFilledCurrent);
+    const mexcPartial = Number(item.mexcPartialFilled || 0);
+    const totalMexcFilled = mFilledCurrent + (Number.isFinite(mexcPartial) ? mexcPartial : 0);
 
     // Se durante as chamadas assíncronas o status foi alterado (ex.: cancelado),
     // não sobrescreve o valor definido pelo cancelamento.
@@ -1620,12 +1793,16 @@ async function pollOpenOrders() {
       if (!item._positionCounted) {
         updatePositionFromOrder(
           item,
-          gFilled || Number(item.volume),
+          totalGateFilled || Number(item.volume),
           gAvg || Number(item.priceUsedGate || 0),
-          mFilled || Number(item.volume),
+          totalMexcFilled || Number(item.volume),
           mAvg || Number(item.priceUsedMexc || 0)
         );
         item._positionCounted = true;
+        item.gatePartialFilled = 0;
+        item.mexcPartialFilled = 0;
+        item.gateOrderFilled = 0;
+        item.mexcOrderFilled = 0;
       }
     } else if (gIsFilled && !mIsFilled) {
       item.status = 'gate_filled';
