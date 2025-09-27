@@ -121,6 +121,7 @@ async function refreshMetaUI(symbol) {
     metaToText('Auto', d.auto) + '\n\n' +
     'Override: ' + (d.override ? JSON.stringify(d.override) : '(nenhum)') + '\n\n' +
     metaToText('Usado', d.merged);
+  currentMeta = d.merged || null;
   fillOverridesUI(d.merged);
 }
 
@@ -217,6 +218,7 @@ document.getElementById('modeClose')?.addEventListener('change', () => {
 });
 
 let lastQuotes = null;
+let currentMeta = null;
 const levelSelections = {
   open: new Set(loadLevelSelection('open')),
   close: new Set(loadLevelSelection('close'))
@@ -225,6 +227,15 @@ let alertMin = parseFloat(localStorage.getItem('alertMin'));
 let alertMax = parseFloat(localStorage.getItem('alertMax'));
 let soundEnabled = localStorage.getItem('soundOn') === '1';
 let telegramEnabled = localStorage.getItem('tgOn') === '1';
+const loadFlag = (key, defaultValue) => {
+  const raw = localStorage.getItem(key);
+  if (raw === null || raw === undefined) return defaultValue;
+  return raw === '1';
+};
+let telegramVolumeGuard = loadFlag('tgVolumeGuard', false);
+let telegramIncludeSymbol = loadFlag('tgIncludeSymbol', true);
+let telegramIncludeDiff = loadFlag('tgIncludeDiff', true);
+let telegramIncludeVolumes = loadFlag('tgIncludeVolumes', false);
 let audioCtx = null, lastBeep = 0, lastTgSent = 0;
 
 if (Number.isFinite(alertMin)) {
@@ -239,6 +250,14 @@ const soundToggleEl = document.getElementById('soundToggle');
 if (soundToggleEl) soundToggleEl.checked = soundEnabled;
 const telegramToggleEl = document.getElementById('telegramToggle');
 if (telegramToggleEl) telegramToggleEl.checked = telegramEnabled;
+const telegramVolumeGuardEl = document.getElementById('telegramVolumeGuard');
+if (telegramVolumeGuardEl) telegramVolumeGuardEl.checked = telegramVolumeGuard;
+const telegramIncludeSymbolEl = document.getElementById('telegramIncludeSymbol');
+if (telegramIncludeSymbolEl) telegramIncludeSymbolEl.checked = telegramIncludeSymbol;
+const telegramIncludeDiffEl = document.getElementById('telegramIncludeDiff');
+if (telegramIncludeDiffEl) telegramIncludeDiffEl.checked = telegramIncludeDiff;
+const telegramIncludeVolumesEl = document.getElementById('telegramIncludeVolumes');
+if (telegramIncludeVolumesEl) telegramIncludeVolumesEl.checked = telegramIncludeVolumes;
 
 function playBeep() {
   try {
@@ -256,14 +275,90 @@ function playBeep() {
 
 async function notifyTelegram(diff) {
   if (!telegramEnabled) return;
+  if (!lastQuotes) return;
   const now = Date.now();
   if (now - lastTgSent < 10000) return; // evita spam
+  const mode = getMode();
+  const stats = computeSelectionStats(mode);
+  const selectedLevels = Array.from(levelSelections[mode]).sort((a, b) => a - b);
+  const levelsRaw = mode === 'close'
+    ? (lastQuotes?.close?.levels || [])
+    : (lastQuotes?.open?.levels || []);
+  const levelEntries = Array.isArray(levelsRaw) ? levelsRaw.slice(0, 3) : [];
+  const baseSymbol = lastQuotes?.baseSymbol || (lastQuotes?.symbol ? String(lastQuotes.symbol).split('_')[0] : 'BASE');
+  const symbol = lastQuotes?.symbol || null;
+
+  if (telegramVolumeGuard) {
+    if (!currentMeta) return;
+    const gateMinQuote = Number(currentMeta?.gate?.minQuote || 0);
+    const gateQuote = Number.isFinite(stats.gateQuote) ? stats.gateQuote : 0;
+    if (gateMinQuote > 0 && gateQuote < gateMinQuote) return;
+
+    const minContracts = Number(currentMeta?.mexc?.minContracts || 0);
+    const contractSize = Number(currentMeta?.mexc?.contractSize || 1);
+    const mexcMinBase = minContracts * contractSize;
+    const mexcQuote = Number.isFinite(stats.mexcQuote) ? stats.mexcQuote : 0;
+    const mexcAvg = Number.isFinite(stats.mexcAvg) ? stats.mexcAvg : 0;
+    if (mexcMinBase > 0) {
+      const requiredQuote = mexcAvg > 0 ? mexcMinBase * mexcAvg : Infinity;
+      if (!Number.isFinite(requiredQuote) || mexcQuote < requiredQuote) return;
+    }
+  }
+
   lastTgSent = now;
+  const sanitizeLevel = (entry) => {
+    const level = Number(entry?.level);
+    const gatePrice = Number(entry?.gate?.price);
+    const gateBase = Number(entry?.gate?.baseVolume);
+    const gateQuote = Number(entry?.gate?.usdtVolume);
+    const mexcPrice = Number(entry?.mexc?.price);
+    const mexcBase = Number(entry?.mexc?.baseVolume);
+    const mexcQuote = Number(entry?.mexc?.usdtVolume);
+    return {
+      level: Number.isInteger(level) ? level : undefined,
+      gate: {
+        price: Number.isFinite(gatePrice) ? gatePrice : null,
+        baseVolume: Number.isFinite(gateBase) ? gateBase : null,
+        usdtVolume: Number.isFinite(gateQuote) ? gateQuote : null
+      },
+      mexc: {
+        price: Number.isFinite(mexcPrice) ? mexcPrice : null,
+        baseVolume: Number.isFinite(mexcBase) ? mexcBase : null,
+        usdtVolume: Number.isFinite(mexcQuote) ? mexcQuote : null
+      }
+    };
+  };
+
+  const payload = {
+    symbol,
+    baseSymbol,
+    mode,
+    diff,
+    options: {
+      includeSymbol: telegramIncludeSymbol,
+      includeDiff: telegramIncludeDiff,
+      includeVolumes: telegramIncludeVolumes,
+      requireMinVolume: telegramVolumeGuard
+    },
+    active: {
+      selectedLevels,
+      stats: {
+        gateBase: Number.isFinite(stats.gateBase) ? stats.gateBase : 0,
+        gateQuote: Number.isFinite(stats.gateQuote) ? stats.gateQuote : 0,
+        mexcBase: Number.isFinite(stats.mexcBase) ? stats.mexcBase : 0,
+        mexcQuote: Number.isFinite(stats.mexcQuote) ? stats.mexcQuote : 0,
+        gateAvg: Number.isFinite(stats.gateAvg) ? stats.gateAvg : null,
+        mexcAvg: Number.isFinite(stats.mexcAvg) ? stats.mexcAvg : null,
+        diffPct: Number.isFinite(stats.diffPct) ? stats.diffPct : null
+      },
+      levels: levelEntries.map(sanitizeLevel)
+    }
+  };
   try {
     await fetch('/api/notify-telegram', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ diff })
+      body: JSON.stringify(payload)
     });
   } catch {}
 }
@@ -295,6 +390,22 @@ document.getElementById('soundToggle').addEventListener('change', e => {
 document.getElementById('telegramToggle').addEventListener('change', e => {
   telegramEnabled = e.target.checked;
   localStorage.setItem('tgOn', telegramEnabled ? '1' : '0');
+});
+telegramVolumeGuardEl?.addEventListener('change', e => {
+  telegramVolumeGuard = e.target.checked;
+  localStorage.setItem('tgVolumeGuard', telegramVolumeGuard ? '1' : '0');
+});
+telegramIncludeSymbolEl?.addEventListener('change', e => {
+  telegramIncludeSymbol = e.target.checked;
+  localStorage.setItem('tgIncludeSymbol', telegramIncludeSymbol ? '1' : '0');
+});
+telegramIncludeDiffEl?.addEventListener('change', e => {
+  telegramIncludeDiff = e.target.checked;
+  localStorage.setItem('tgIncludeDiff', telegramIncludeDiff ? '1' : '0');
+});
+telegramIncludeVolumesEl?.addEventListener('change', e => {
+  telegramIncludeVolumes = e.target.checked;
+  localStorage.setItem('tgIncludeVolumes', telegramIncludeVolumes ? '1' : '0');
 });
 
 function persistSelections() {
