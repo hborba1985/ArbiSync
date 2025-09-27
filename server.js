@@ -901,18 +901,171 @@ app.get('/api/balances', async (_req, res) => {
   res.json({ gate, mexc });
 });
 
+function sanitizeTelegramLevels(levels) {
+  const map = new Map();
+  if (!Array.isArray(levels)) return map;
+  for (const entry of levels) {
+    if (!entry || typeof entry !== 'object') continue;
+    const idx = Number(entry.level);
+    if (!Number.isInteger(idx) || idx < 0) continue;
+    const gate = entry.gate || {};
+    const mexc = entry.mexc || {};
+    const gatePrice = Number(gate.price);
+    const gateBase = Number(gate.baseVolume);
+    const gateQuote = Number(gate.usdtVolume);
+    const mexcPrice = Number(mexc.price);
+    const mexcBase = Number(mexc.baseVolume);
+    const mexcQuote = Number(mexc.usdtVolume);
+    map.set(idx, {
+      level: idx,
+      gate: {
+        price: Number.isFinite(gatePrice) ? gatePrice : null,
+        baseVolume: Number.isFinite(gateBase) ? gateBase : null,
+        usdtVolume: Number.isFinite(gateQuote) ? gateQuote : null
+      },
+      mexc: {
+        price: Number.isFinite(mexcPrice) ? mexcPrice : null,
+        baseVolume: Number.isFinite(mexcBase) ? mexcBase : null,
+        usdtVolume: Number.isFinite(mexcQuote) ? mexcQuote : null
+      }
+    });
+  }
+  return map;
+}
+
+function computeTelegramStats(levelMap, selectedLevels) {
+  const result = {
+    gateBase: 0,
+    gateQuote: 0,
+    mexcBase: 0,
+    mexcQuote: 0,
+    gateAvg: null,
+    mexcAvg: null,
+    diffPct: null
+  };
+
+  const sanitizedSelected = Array.isArray(selectedLevels)
+    ? Array.from(new Set(selectedLevels.map(n => Number(n)).filter(n => Number.isInteger(n) && n >= 0)))
+    : [];
+
+  let indices = sanitizedSelected;
+  if (!indices.length) {
+    if (levelMap.has(0)) indices = [0];
+    else indices = Array.from(levelMap.keys()).sort((a, b) => a - b).slice(0, 1);
+  }
+
+  for (const idx of indices) {
+    const level = levelMap.get(idx);
+    if (!level) continue;
+    const gBase = Number(level.gate?.baseVolume);
+    const gQuote = Number(level.gate?.usdtVolume);
+    const mBase = Number(level.mexc?.baseVolume);
+    const mQuote = Number(level.mexc?.usdtVolume);
+    if (Number.isFinite(gBase) && gBase > 0) result.gateBase += gBase;
+    if (Number.isFinite(gQuote) && gQuote > 0) result.gateQuote += gQuote;
+    if (Number.isFinite(mBase) && mBase > 0) result.mexcBase += mBase;
+    if (Number.isFinite(mQuote) && mQuote > 0) result.mexcQuote += mQuote;
+  }
+
+  if (result.gateBase > 0 && result.gateQuote > 0) {
+    result.gateAvg = result.gateQuote / result.gateBase;
+  }
+  if (result.mexcBase > 0 && result.mexcQuote > 0) {
+    result.mexcAvg = result.mexcQuote / result.mexcBase;
+  }
+  if (Number.isFinite(result.gateAvg) && result.gateAvg > 0 && Number.isFinite(result.mexcAvg)) {
+    result.diffPct = ((result.mexcAvg - result.gateAvg) / result.gateAvg) * 100;
+  }
+
+  return result;
+}
+
+function formatTelegramVolumeLines(levelMap) {
+  const entries = Array.from(levelMap.values()).filter(Boolean).sort((a, b) => {
+    const la = Number.isInteger(a.level) ? a.level : Number.MAX_SAFE_INTEGER;
+    const lb = Number.isInteger(b.level) ? b.level : Number.MAX_SAFE_INTEGER;
+    return la - lb;
+  }).slice(0, 3);
+
+  const fmt = (value) => {
+    if (value == null) return '—';
+    const num = Number(value);
+    return Number.isFinite(num)
+      ? num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+      : '—';
+  };
+
+  return entries.map(entry => {
+    const lvl = Number.isInteger(entry.level) ? entry.level + 1 : '?';
+    const gateText = fmt(entry.gate?.usdtVolume);
+    const mexcText = fmt(entry.mexc?.usdtVolume);
+    return `Nível ${lvl}: Gate ${gateText} USDT | MEXC ${mexcText} USDT`;
+  });
+}
+
 // ===== Notificação via Telegram
 app.post('/api/notify-telegram', async (req, res) => {
-  const diff = req.body?.diff;
   if (!config.telegram?.botToken || !config.telegram?.chatId) {
     return res.status(500).json({ error: 'Telegram não configurado' });
   }
   try {
+    const payload = req.body || {};
+    const symbolRaw = typeof payload.symbol === 'string' ? payload.symbol.trim() : '';
+    const symbol = symbolRaw ? symbolRaw.toUpperCase() : currentSymbol;
+    const options = payload.options || {};
+    const includeSymbol = options.includeSymbol !== false;
+    const includeDiff = options.includeDiff !== false;
+    const includeVolumes = !!options.includeVolumes;
+    const requireMinVolume = !!options.requireMinVolume;
+
+    const levelMap = sanitizeTelegramLevels(payload.active?.levels);
+    const stats = computeTelegramStats(levelMap, payload.active?.selectedLevels);
+
+    const meta = await getMergedMeta(symbol || currentSymbol);
+    if (requireMinVolume) {
+      const gateMinQuote = Number(meta?.gate?.minQuote || 0);
+      if (gateMinQuote > 0 && stats.gateQuote < gateMinQuote) {
+        return res.json({ ok: true, skipped: true, reason: 'gate_min_quote' });
+      }
+
+      const minContracts = Number(meta?.mexc?.minContracts || 0);
+      const contractSize = Number(meta?.mexc?.contractSize || 1);
+      const mexcMinBase = minContracts * contractSize;
+      if (mexcMinBase > 0) {
+        const mexcAvg = stats.mexcAvg;
+        if (!Number.isFinite(mexcAvg) || mexcAvg <= 0) {
+          return res.json({ ok: true, skipped: true, reason: 'mexc_avg_unavailable' });
+        }
+        const requiredQuote = mexcMinBase * mexcAvg;
+        if (!Number.isFinite(requiredQuote) || stats.mexcQuote < requiredQuote) {
+          return res.json({ ok: true, skipped: true, reason: 'mexc_min_quote' });
+        }
+      }
+    }
+
+    const lines = ['Alerta de arbitragem'];
+    if (includeSymbol && symbol) lines.push(`Ativo: ${symbol}`);
+    const diffRaw = Number(payload.diff);
+    const diffVal = Number.isFinite(diffRaw) ? diffRaw : (Number.isFinite(stats.diffPct) ? stats.diffPct : null);
+    if (includeDiff && Number.isFinite(diffVal)) {
+      const diffText = Number(diffVal).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 3 });
+      lines.push(`Diferença: ${diffText}%`);
+    }
+    if (includeVolumes) {
+      const volumes = formatTelegramVolumeLines(levelMap);
+      if (volumes.length) {
+        lines.push('Volumes (USDT):');
+        lines.push(...volumes);
+      }
+    }
+
+    const message = lines.join('\n');
+
     await axios.post(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
       chat_id: config.telegram.chatId,
-      text: `Alerta de arbitragem: ${diff}%`
+      text: message
     });
-    res.json({ ok: true });
+    res.json({ ok: true, sent: true });
   } catch (e) {
     console.error('[Telegram] falha ao enviar:', e.response?.data || e.message || e);
     res.status(500).json({ error: 'Falha ao enviar' });

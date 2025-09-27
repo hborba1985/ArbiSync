@@ -46,6 +46,8 @@ module.exports = {
    ```
 
 5. Reinicie o servidor. No painel web, marque a opção **Telegram** ao lado do alerta de diferença para ativar o envio das mensagens.
+   - Use as opções logo abaixo para personalizar o conteúdo do alerta (incluir nome do ativo, diferença percentual e volumes por nível)
+     e, se desejar, restringir o disparo apenas quando os volumes em USDT atenderem aos mínimos exigidos pelas corretoras.
 
 ## Execução
 Inicie o servidor com:
