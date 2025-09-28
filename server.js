@@ -17,6 +17,8 @@ const PORT = 3000;
 
 let currentSymbol = (config?.defaultSymbol || 'BASE_USDT').toUpperCase();
 
+const SPREAD_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 const autoMetaCache = new Map();
 const overridesBySymbol = new Map();
 
@@ -879,6 +881,19 @@ app.get('/api/data', async (_req, res) => {
       };
     });
 
+    const nowTs = Date.now();
+    const openSpread = Number(openLevels[0]?.diffPct);
+    const closeSpread = Number(closeLevels[0]?.diffPct);
+    try {
+      db.saveSpreadSnapshot(symbol, nowTs,
+        Number.isFinite(openSpread) ? openSpread : null,
+        Number.isFinite(closeSpread) ? closeSpread : null
+      );
+      db.pruneSpreadSnapshots(symbol, nowTs - SPREAD_WINDOW_MS);
+    } catch (err) {
+      console.warn('[SQLite] Falha ao registrar spread:', err?.message || err);
+    }
+
     res.json({
       symbol,
       baseSymbol: base,
@@ -890,6 +905,61 @@ app.get('/api/data', async (_req, res) => {
   } catch (e) {
     console.error('[ERRO /api/data]:', e.response?.data || e.message);
     res.status(500).json({ error: 'Erro ao obter dados.' });
+  }
+});
+
+app.get('/api/spreads', (req, res) => {
+  const symbol = String(req.query.symbol || currentSymbol || '').toUpperCase();
+  if (!symbol) return res.status(400).json({ error: 'Símbolo inválido.' });
+  const nowTs = Date.now();
+  const since = nowTs - SPREAD_WINDOW_MS;
+  let rows = [];
+  try {
+    rows = db.loadSpreadSnapshots(symbol, since);
+  } catch (e) {
+    console.warn('[SQLite] Falha ao carregar spreads:', e?.message || e);
+    return res.status(500).json({ error: 'Erro ao carregar spreads.' });
+  }
+
+  const points = rows.map((row) => ({
+    ts: Number(row.ts) || nowTs,
+    open: row.open == null ? null : Number(row.open),
+    close: row.close == null ? null : Number(row.close)
+  }));
+
+  const computeExtrema = (key) => {
+    let max = null;
+    let min = null;
+    for (const entry of points) {
+      const value = entry[key];
+      if (!Number.isFinite(value)) continue;
+      if (!max || value > max.value) max = { value, ts: entry.ts };
+      if (!min || value < min.value) min = { value, ts: entry.ts };
+    }
+    return { max, min };
+  };
+
+  res.json({
+    symbol,
+    windowStart: since,
+    windowEnd: nowTs,
+    points,
+    extremes: {
+      open: computeExtrema('open'),
+      close: computeExtrema('close')
+    }
+  });
+});
+
+app.delete('/api/spreads', (req, res) => {
+  const symbol = String(req.query.symbol || currentSymbol || '').toUpperCase();
+  if (!symbol) return res.status(400).json({ error: 'Símbolo inválido.' });
+  try {
+    db.clearSpreadSnapshots(symbol);
+    res.json({ ok: true });
+  } catch (e) {
+    console.warn('[SQLite] Falha ao limpar spreads:', e?.message || e);
+    res.status(500).json({ error: 'Erro ao limpar spreads.' });
   }
 });
 
