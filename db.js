@@ -42,6 +42,14 @@ CREATE TABLE IF NOT EXISTS position_summaries (
   note TEXT,
   summary_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS spread_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  open_spread REAL,
+  close_spread REAL
+);
+CREATE INDEX IF NOT EXISTS idx_spread_symbol_ts ON spread_snapshots(symbol, ts);
 `);
 
 // Migração simples: garante colunas gate_status e mexc_status
@@ -187,6 +195,54 @@ function loadPositionSummaries(limit = 20) {
   });
 }
 
+const insertSpreadSnapshotStmt = db.prepare(`
+INSERT INTO spread_snapshots(symbol, ts, open_spread, close_spread)
+VALUES (@symbol, @ts, @open, @close)
+`);
+
+const pruneSpreadSnapshotsStmt = db.prepare(`
+DELETE FROM spread_snapshots
+WHERE symbol = @symbol AND ts < @cutoff
+`);
+
+const loadSpreadSnapshotsStmt = db.prepare(`
+SELECT ts, open_spread AS open, close_spread AS close
+FROM spread_snapshots
+WHERE symbol = @symbol AND ts >= @since
+ORDER BY ts ASC
+`);
+
+const clearSpreadSnapshotsStmt = db.prepare(`
+DELETE FROM spread_snapshots WHERE symbol = @symbol
+`);
+
+function saveSpreadSnapshot(symbol, ts, openSpread, closeSpread) {
+  if (!symbol) return;
+  const payload = {
+    symbol: String(symbol).toUpperCase(),
+    ts: Number.isFinite(ts) ? Math.trunc(ts) : Date.now(),
+    open: Number.isFinite(openSpread) ? openSpread : null,
+    close: Number.isFinite(closeSpread) ? closeSpread : null
+  };
+  insertSpreadSnapshotStmt.run(payload);
+}
+
+function pruneSpreadSnapshots(symbol, cutoffTs) {
+  if (!symbol || !Number.isFinite(cutoffTs)) return;
+  pruneSpreadSnapshotsStmt.run({ symbol: String(symbol).toUpperCase(), cutoff: Math.trunc(cutoffTs) });
+}
+
+function loadSpreadSnapshots(symbol, sinceTs) {
+  if (!symbol) return [];
+  const since = Number.isFinite(sinceTs) ? Math.trunc(sinceTs) : 0;
+  return loadSpreadSnapshotsStmt.all({ symbol: String(symbol).toUpperCase(), since });
+}
+
+function clearSpreadSnapshots(symbol) {
+  if (!symbol) return;
+  clearSpreadSnapshotsStmt.run({ symbol: String(symbol).toUpperCase() });
+}
+
 module.exports = {
   DB_PATH,
   upsertOverride,
@@ -196,5 +252,9 @@ module.exports = {
   savePositionState,
   loadPositionState,
   savePositionSummary,
-  loadPositionSummaries
+  loadPositionSummaries,
+  saveSpreadSnapshot,
+  loadSpreadSnapshots,
+  pruneSpreadSnapshots,
+  clearSpreadSnapshots
 };

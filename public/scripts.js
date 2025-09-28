@@ -132,6 +132,7 @@ document.getElementById('applySymbol').addEventListener('click', async () => {
   localStorage.setItem('lastSymbol', sym);
   document.getElementById('titleSymbol').textContent = sym;
   await refreshMetaUI(sym);
+  await fetchSpreadData(true);
 });
 
 document.getElementById('autoCfg').addEventListener('click', async () => {
@@ -237,6 +238,11 @@ let telegramIncludeSymbol = loadFlag('tgIncludeSymbol', true);
 let telegramIncludeDiff = loadFlag('tgIncludeDiff', true);
 let telegramIncludeVolumes = loadFlag('tgIncludeVolumes', false);
 let audioCtx = null, lastBeep = 0, lastTgSent = 0;
+
+let spreadChart = null;
+let spreadPoints = [];
+let spreadFilter = 'all';
+let lastSpreadFetch = 0;
 
 if (Number.isFinite(alertMin)) {
   const el = document.getElementById('alertMin');
@@ -580,6 +586,220 @@ function renderQuotes() {
   checkAlert(diffVal);
 }
 
+function ensureSpreadChart() {
+  if (spreadChart) return spreadChart;
+  if (typeof Chart === 'undefined') return null;
+  const canvas = document.getElementById('spreadChart');
+  if (!canvas) return null;
+  const ctx = canvas.getContext('2d');
+  spreadChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          id: 'open',
+          label: 'Abertura',
+          data: [],
+          borderColor: '#1f77b4',
+          backgroundColor: 'rgba(31,119,180,0.1)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 2,
+          tension: 0.15,
+          spanGaps: true
+        },
+        {
+          id: 'close',
+          label: 'Fechamento',
+          data: [],
+          borderColor: '#ff7f0e',
+          backgroundColor: 'rgba(255,127,14,0.1)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 2,
+          borderDash: [5, 4],
+          tension: 0.15,
+          spanGaps: true
+        },
+        {
+          id: 'cross',
+          label: 'Cruzamentos',
+          type: 'scatter',
+          data: [],
+          pointBackgroundColor: '#d62728',
+          pointBorderColor: '#d62728',
+          pointRadius: 5,
+          showLine: false
+        }
+      ]
+    },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'nearest' },
+      scales: {
+        x: {
+          type: 'linear',
+          title: { display: true, text: 'Horário (24h)' },
+          ticks: {
+            callback: (value) => {
+              const date = new Date(Number(value));
+              if (!Number.isFinite(date.getTime())) return '';
+              return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+            },
+            maxRotation: 0
+          },
+          grid: { display: false }
+        },
+        y: {
+          title: { display: true, text: 'Diferença (%)' }
+        }
+      },
+      plugins: {
+        legend: { position: 'bottom' },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const prefix = ctx.dataset?.label ? `${ctx.dataset.label}: ` : '';
+              const value = Number(ctx.parsed.y);
+              const ts = Number(ctx.parsed.x);
+              const formatted = Number.isFinite(value) ? value.toFixed(4) + '%' : '-';
+              const time = Number.isFinite(ts)
+                ? new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+                : '';
+              return `${prefix}${formatted}${time ? ` às ${time}` : ''}`;
+            }
+          }
+        }
+      }
+    }
+  });
+  return spreadChart;
+}
+
+function computeSpreadCrossings(points) {
+  const out = [];
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    if (!prev || !curr) continue;
+    if (!Number.isFinite(prev.open) || !Number.isFinite(prev.close) || !Number.isFinite(curr.open) || !Number.isFinite(curr.close)) continue;
+    const prevDiff = prev.open - prev.close;
+    const currDiff = curr.open - curr.close;
+    if (!Number.isFinite(prevDiff) || !Number.isFinite(currDiff)) continue;
+    if (prevDiff === 0) {
+      out.push({ x: prev.ts, y: (prev.open + prev.close) / 2 });
+      continue;
+    }
+    if (currDiff === 0) {
+      out.push({ x: curr.ts, y: (curr.open + curr.close) / 2 });
+      continue;
+    }
+    if ((prevDiff > 0 && currDiff < 0) || (prevDiff < 0 && currDiff > 0)) {
+      const diffSpan = Math.abs(prevDiff) + Math.abs(currDiff);
+      if (diffSpan === 0) continue;
+      const ratio = Math.abs(prevDiff) / diffSpan;
+      const tsDelta = Number(curr.ts) - Number(prev.ts);
+      const crossTs = Number(prev.ts) + ratio * tsDelta;
+      const openVal = prev.open + (curr.open - prev.open) * ratio;
+      const closeVal = prev.close + (curr.close - prev.close) * ratio;
+      const y = (openVal + closeVal) / 2;
+      if (Number.isFinite(crossTs) && Number.isFinite(y)) out.push({ x: crossTs, y });
+    }
+  }
+  return out;
+}
+
+function applySpreadFilter(chart) {
+  chart.data.datasets.forEach((dataset) => {
+    if (!dataset?.id) return;
+    if (spreadFilter === 'all') {
+      dataset.hidden = false;
+    } else if (spreadFilter === 'open') {
+      dataset.hidden = dataset.id !== 'open';
+    } else if (spreadFilter === 'close') {
+      dataset.hidden = dataset.id !== 'close';
+    } else if (spreadFilter === 'cross') {
+      dataset.hidden = dataset.id !== 'cross';
+    }
+  });
+}
+
+function formatSpreadStat(entry) {
+  if (!entry || !Number.isFinite(entry.value)) return '-';
+  const value = `${entry.value.toFixed(4)}%`;
+  if (!Number.isFinite(entry.ts)) return value;
+  const time = new Date(entry.ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  return `${value} às ${time}`;
+}
+
+function updateSpreadStats(extremes) {
+  const openMaxEl = document.getElementById('spreadOpenMax');
+  const openMinEl = document.getElementById('spreadOpenMin');
+  const closeMaxEl = document.getElementById('spreadCloseMax');
+  const closeMinEl = document.getElementById('spreadCloseMin');
+  const open = extremes?.open || {};
+  const close = extremes?.close || {};
+  if (openMaxEl) openMaxEl.textContent = formatSpreadStat(open.max);
+  if (openMinEl) openMinEl.textContent = formatSpreadStat(open.min);
+  if (closeMaxEl) closeMaxEl.textContent = formatSpreadStat(close.max);
+  if (closeMinEl) closeMinEl.textContent = formatSpreadStat(close.min);
+}
+
+function renderSpreadChart() {
+  const chart = ensureSpreadChart();
+  if (!chart) return;
+  const openData = [];
+  const closeData = [];
+  for (const entry of spreadPoints) {
+    if (Number.isFinite(entry.open)) openData.push({ x: entry.ts, y: entry.open });
+    if (Number.isFinite(entry.close)) closeData.push({ x: entry.ts, y: entry.close });
+  }
+  const crossData = computeSpreadCrossings(spreadPoints);
+  const datasetById = new Map(chart.data.datasets.map((d) => [d.id, d]));
+  if (datasetById.has('open')) datasetById.get('open').data = openData;
+  if (datasetById.has('close')) datasetById.get('close').data = closeData;
+  if (datasetById.has('cross')) datasetById.get('cross').data = crossData;
+  applySpreadFilter(chart);
+  chart.update('none');
+}
+
+async function fetchSpreadData(force = false) {
+  const now = Date.now();
+  if (!force && now - lastSpreadFetch < 10000) return;
+  lastSpreadFetch = now;
+  try {
+    const symbol = lastQuotes?.symbol;
+    const url = symbol ? `/api/spreads?symbol=${encodeURIComponent(symbol)}` : '/api/spreads';
+    const resp = await fetch(url);
+    const data = await safeJson(resp);
+    if (!resp.ok) throw new Error(data?.error || 'Falha ao carregar spreads.');
+    const pts = Array.isArray(data.points) ? data.points : [];
+    spreadPoints = pts.map((entry) => {
+      const ts = Number(entry.ts);
+      const openRaw = entry.open;
+      const closeRaw = entry.close;
+      const openNum = Number(openRaw);
+      const closeNum = Number(closeRaw);
+      return {
+        ts: Number.isFinite(ts) ? ts : Date.now(),
+        open: (openRaw === null || openRaw === undefined || !Number.isFinite(openNum)) ? null : openNum,
+        close: (closeRaw === null || closeRaw === undefined || !Number.isFinite(closeNum)) ? null : closeNum
+      };
+    });
+    updateSpreadStats(data.extremes || null);
+    renderSpreadChart();
+  } catch (e) {
+    console.warn('Falha ao carregar spreads:', e?.message || e);
+    if (force) {
+      spreadPoints = [];
+      updateSpreadStats(null);
+      renderSpreadChart();
+    }
+  }
+}
+
 async function fetchData() {
   try {
     const r = await fetch('/api/data');
@@ -587,9 +807,60 @@ async function fetchData() {
     lastQuotes = d;
     document.getElementById('titleSymbol').textContent = d.symbol || '-';
     renderQuotes();
+    fetchSpreadData();
   } catch {}
 }
 setInterval(fetchData, 1000);
+setInterval(() => fetchSpreadData(false), 15000);
+
+const spreadFilterButtons = document.querySelectorAll('[data-spread-filter]');
+spreadFilterButtons.forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const filter = btn.dataset.spreadFilter || 'all';
+    spreadFilter = filter;
+    spreadFilterButtons.forEach((b) => b.classList.toggle('active', b === btn));
+    renderSpreadChart();
+  });
+});
+
+const toggleSpreadCardBtn = document.getElementById('toggleSpreadCard');
+if (toggleSpreadCardBtn) {
+  toggleSpreadCardBtn.addEventListener('click', () => {
+    const card = document.getElementById('spreadCard');
+    if (!card) return;
+    card.classList.toggle('collapsed');
+    const collapsed = card.classList.contains('collapsed');
+    toggleSpreadCardBtn.textContent = collapsed ? 'Mostrar' : 'Ocultar';
+    if (!collapsed) renderSpreadChart();
+  });
+}
+
+const clearSpreadBtn = document.getElementById('clearSpreadData');
+if (clearSpreadBtn) {
+  clearSpreadBtn.addEventListener('click', async () => {
+    const symbol = lastQuotes?.symbol;
+    if (!symbol) {
+      alert('Símbolo ainda não carregado.');
+      return;
+    }
+    if (!confirm(`Apagar dados armazenados de ${symbol}?`)) return;
+    try {
+      const resp = await fetch(`/api/spreads?symbol=${encodeURIComponent(symbol)}`, { method: 'DELETE' });
+      const out = await safeJson(resp);
+      if (!resp.ok || out?.ok === false) {
+        alert('Falha ao limpar dados: ' + JSON.stringify(out));
+        return;
+      }
+      spreadPoints = [];
+      updateSpreadStats(null);
+      renderSpreadChart();
+    } catch (e) {
+      alert('Erro ao limpar dados: ' + (e?.message || e));
+    }
+  });
+}
+
+fetchSpreadData(true);
 
 // ======== Histórico / Posição
 async function refreshHistory() {
