@@ -25,6 +25,7 @@ const overridesBySymbol = new Map();
 let orderHistory = [];
 
 const SERIES_LIMIT = 500;
+const TRADES_LIMIT = 500;
 const POSITION_SUMMARY_LIMIT = 50;
 
 function createEmptyPositionState() {
@@ -36,7 +37,8 @@ function createEmptyPositionState() {
     pnlUsd: 0,
     gate: { filledQty: 0, avgPrice: 0 },
     mexc: { filledQty: 0, avgPrice: 0, positionId: null },
-    series: []
+    series: [],
+    trades: []
   };
 }
 
@@ -78,12 +80,39 @@ function sanitizeSeries(series) {
   return cleaned.length > SERIES_LIMIT ? cleaned.slice(-SERIES_LIMIT) : cleaned;
 }
 
+function sanitizeTrades(trades) {
+  if (!Array.isArray(trades)) return [];
+  const cleaned = [];
+  for (const entry of trades) {
+    if (!entry || typeof entry !== 'object') continue;
+    const mode = entry.mode === 'close' ? 'close' : 'open';
+    const qty = Number(entry.qty);
+    if (!Number.isFinite(qty) || qty <= 0) continue;
+    const gatePrice = Number(entry.gatePrice);
+    const mexcPrice = Number(entry.mexcPrice);
+    const pnlUsd = Number(entry.pnlUsd);
+    const diffPct = Number(entry.diffPct);
+    const t = Number(entry.t);
+    cleaned.push({
+      mode,
+      qty,
+      gatePrice: Number.isFinite(gatePrice) ? gatePrice : null,
+      mexcPrice: Number.isFinite(mexcPrice) ? mexcPrice : null,
+      pnlUsd: Number.isFinite(pnlUsd) ? pnlUsd : 0,
+      diffPct: Number.isFinite(diffPct) ? diffPct : null,
+      t: Number.isFinite(t) ? t : Date.now()
+    });
+  }
+  return cleaned.length > TRADES_LIMIT ? cleaned.slice(-TRADES_LIMIT) : cleaned;
+}
+
 function applyPositionStatePatch(base, patch) {
   const out = {
     ...base,
     gate: { ...base.gate },
     mexc: { ...base.mexc },
-    series: Array.isArray(base.series) ? [...base.series] : []
+    series: Array.isArray(base.series) ? [...base.series] : [],
+    trades: Array.isArray(base.trades) ? [...base.trades] : []
   };
 
   if (patch && typeof patch === 'object') {
@@ -123,8 +152,13 @@ function applyPositionStatePatch(base, patch) {
       else if (patch.series === null) out.series = [];
     }
 
+    if ('trades' in patch) {
+      if (Array.isArray(patch.trades)) out.trades = sanitizeTrades(patch.trades);
+      else if (patch.trades === null) out.trades = [];
+    }
+
     for (const key of Object.keys(patch)) {
-      if (!['targetQty','filledQty','avgPrice','arbPctAvg','pnlUsd','gate','mexc','series'].includes(key)) {
+      if (!['targetQty','filledQty','avgPrice','arbPctAvg','pnlUsd','gate','mexc','series','trades'].includes(key)) {
         out[key] = patch[key];
       }
     }
@@ -143,6 +177,7 @@ let positionSummaries = [];
 function persistPositionState(context = 'unknown') {
   try {
     positionState.series = sanitizeSeries(positionState.series);
+    positionState.trades = sanitizeTrades(positionState.trades);
     db.savePositionState(positionState);
   } catch (e) {
     console.warn(`[SQLite] Falha ao salvar posição (${context}):`, e?.message || e);
@@ -1177,6 +1212,7 @@ app.post('/api/position-dismantle', (req, res) => {
     const note = typeof noteRaw === 'string' ? noteRaw.trim() : '';
     const snapshot = clonePositionState(positionState);
     snapshot.series = sanitizeSeries(snapshot.series);
+    snapshot.trades = sanitizeTrades(snapshot.trades);
     const summaryPayload = {
       note: note || undefined,
       state: snapshot
@@ -1228,6 +1264,19 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
   const pnlUsd = diff * qty * sign;
   item.arbPct = roundTo(arbRaw * sign, 6);
   item.pnlUsd = roundTo(pnlUsd, 6);
+
+  positionState.trades.push({
+    t: Date.now(),
+    mode: item.mode === 'close' ? 'close' : 'open',
+    qty: Number(qty),
+    gatePrice: Number.isFinite(gatePrice) ? gatePrice : null,
+    mexcPrice: Number.isFinite(mexcPrice) ? mexcPrice : null,
+    pnlUsd: Number.isFinite(item.pnlUsd) ? Number(item.pnlUsd) : 0,
+    diffPct: Number.isFinite(item.arbPct) ? Number(item.arbPct) : null
+  });
+  if (positionState.trades.length > TRADES_LIMIT) {
+    positionState.trades = positionState.trades.slice(-TRADES_LIMIT);
+  }
 
   // Gate stats
   const gPrevQty = positionState.gate.filledQty;
