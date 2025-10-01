@@ -626,6 +626,7 @@ function ensureSpreadChart() {
           id: 'open',
           label: 'Abertura',
           data: [],
+          metaGroup: 'open',
           borderColor: '#1f77b4',
           backgroundColor: 'rgba(31,119,180,0.1)',
           fill: false,
@@ -638,6 +639,7 @@ function ensureSpreadChart() {
           id: 'close',
           label: 'Fechamento',
           data: [],
+          metaGroup: 'close',
           borderColor: '#ff7f0e',
           backgroundColor: 'rgba(255,127,14,0.1)',
           fill: false,
@@ -648,10 +650,109 @@ function ensureSpreadChart() {
           spanGaps: true
         },
         {
+          id: 'positionArb',
+          label: '% Arb posição aberta',
+          data: [],
+          metaGroup: 'position',
+          borderColor: '#666666',
+          backgroundColor: 'rgba(102,102,102,0.15)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1.5,
+          borderDash: [4, 3],
+          tension: 0,
+          spanGaps: true
+        },
+        {
+          id: 'openVol0',
+          label: 'Volume abertura Nível 1',
+          data: [],
+          metaGroup: 'open-volume',
+          borderColor: 'rgba(31,119,180,0.45)',
+          backgroundColor: 'rgba(31,119,180,0.15)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'openVol1',
+          label: 'Volume abertura Nível 2',
+          data: [],
+          metaGroup: 'open-volume',
+          borderColor: 'rgba(31,119,180,0.35)',
+          backgroundColor: 'rgba(31,119,180,0.12)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'openVol2',
+          label: 'Volume abertura Nível 3',
+          data: [],
+          metaGroup: 'open-volume',
+          borderColor: 'rgba(31,119,180,0.25)',
+          backgroundColor: 'rgba(31,119,180,0.08)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'closeVol0',
+          label: 'Volume fechamento Nível 1',
+          data: [],
+          metaGroup: 'close-volume',
+          borderColor: 'rgba(255,127,14,0.5)',
+          backgroundColor: 'rgba(255,127,14,0.18)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'closeVol1',
+          label: 'Volume fechamento Nível 2',
+          data: [],
+          metaGroup: 'close-volume',
+          borderColor: 'rgba(255,127,14,0.4)',
+          backgroundColor: 'rgba(255,127,14,0.14)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'closeVol2',
+          label: 'Volume fechamento Nível 3',
+          data: [],
+          metaGroup: 'close-volume',
+          borderColor: 'rgba(255,127,14,0.3)',
+          backgroundColor: 'rgba(255,127,14,0.1)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
           id: 'cross',
           label: 'Cruzamentos',
           type: 'scatter',
           data: [],
+          metaGroup: 'cross',
           pointBackgroundColor: '#d62728',
           pointBorderColor: '#d62728',
           pointRadius: 5,
@@ -680,6 +781,21 @@ function ensureSpreadChart() {
         },
         y: {
           title: { display: true, text: 'Diferença (%)' }
+        },
+        yVolume: {
+          position: 'right',
+          title: { display: true, text: 'Volume (USDT)' },
+          beginAtZero: true,
+          grid: { drawOnChartArea: false },
+          ticks: {
+            callback: (value) => {
+              const num = Number(value);
+              if (!Number.isFinite(num)) return '';
+              if (Math.abs(num) >= 1_000_000) return (num / 1_000_000).toFixed(1) + 'M';
+              if (Math.abs(num) >= 1_000) return (num / 1_000).toFixed(1) + 'k';
+              return num.toFixed(0);
+            }
+          }
         }
       },
       plugins: {
@@ -690,10 +806,19 @@ function ensureSpreadChart() {
               const prefix = ctx.dataset?.label ? `${ctx.dataset.label}: ` : '';
               const value = Number(ctx.parsed.y);
               const ts = Number(ctx.parsed.x);
-              const formatted = Number.isFinite(value) ? value.toFixed(4) + '%' : '-';
               const time = Number.isFinite(ts)
                 ? new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
                 : '';
+              const group = ctx.dataset?.metaGroup;
+              if (group === 'open-volume' || group === 'close-volume') {
+                const formattedVol = Number.isFinite(value)
+                  ? value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + ' USDT'
+                  : '-';
+                return `${prefix}${formattedVol}${time ? ` às ${time}` : ''}`;
+              }
+              const formatted = Number.isFinite(value)
+                ? value.toFixed(4) + '%'
+                : '-';
               return `${prefix}${formatted}${time ? ` às ${time}` : ''}`;
             }
           }
@@ -761,15 +886,16 @@ function computeSpreadCrossings(points) {
 
 function applySpreadFilter(chart) {
   chart.data.datasets.forEach((dataset) => {
-    if (!dataset?.id) return;
+    if (!dataset) return;
+    const group = dataset.metaGroup || dataset.id;
     if (spreadFilter === 'all') {
       dataset.hidden = false;
     } else if (spreadFilter === 'open') {
-      dataset.hidden = dataset.id !== 'open';
+      dataset.hidden = !['open', 'open-volume'].includes(group);
     } else if (spreadFilter === 'close') {
-      dataset.hidden = dataset.id !== 'close';
+      dataset.hidden = !['close', 'close-volume', 'position'].includes(group);
     } else if (spreadFilter === 'cross') {
-      dataset.hidden = dataset.id !== 'cross';
+      dataset.hidden = group !== 'cross';
     }
   });
 }
@@ -850,17 +976,72 @@ function renderSpreadChart() {
   const filteredPoints = getFilteredSpreadPoints();
   const openData = [];
   const closeData = [];
+  const positionArbData = [];
+  const openVolumeData = [[], [], []];
+  const closeVolumeData = [[], [], []];
+  let latestFinalArb = null;
   for (const entry of filteredPoints) {
     if (Number.isFinite(entry.open)) openData.push({ x: entry.ts, y: entry.open });
-    if (Number.isFinite(entry.close)) closeData.push({ x: entry.ts, y: entry.close });
+    const arbValue = Number(entry.positionArb);
+    if (Number.isFinite(arbValue)) positionArbData.push({ x: entry.ts, y: arbValue });
+    if (Number.isFinite(entry.close)) {
+      closeData.push({ x: entry.ts, y: entry.close, arbRef: Number.isFinite(arbValue) ? arbValue : null });
+      if (Number.isFinite(arbValue)) {
+        latestFinalArb = { ts: entry.ts, diff: arbValue - entry.close };
+      }
+    }
+    const openLevels = Array.isArray(entry.openVolumes) ? entry.openVolumes : [];
+    const closeLevels = Array.isArray(entry.closeVolumes) ? entry.closeVolumes : [];
+    for (let i = 0; i < 3; i++) {
+      const oVal = openLevels[i];
+      if (Number.isFinite(oVal) && oVal > 0) openVolumeData[i].push({ x: entry.ts, y: oVal });
+      const cVal = closeLevels[i];
+      if (Number.isFinite(cVal) && cVal > 0) closeVolumeData[i].push({ x: entry.ts, y: cVal });
+    }
   }
   const crossData = computeSpreadCrossings(filteredPoints);
   const datasetById = new Map(chart.data.datasets.map((d) => [d.id, d]));
   if (datasetById.has('open')) datasetById.get('open').data = openData;
-  if (datasetById.has('close')) datasetById.get('close').data = closeData;
+  if (datasetById.has('close')) {
+    const closeDataset = datasetById.get('close');
+    closeDataset.data = closeData;
+    closeDataset.segment = closeDataset.segment || {};
+    closeDataset.segment.borderColor = (ctx) => {
+      const yVal = ctx?.p1?.parsed?.y ?? ctx?.p0?.parsed?.y;
+      const arbVal = ctx?.p1?.raw?.arbRef ?? ctx?.p0?.raw?.arbRef;
+      if (Number.isFinite(yVal) && Number.isFinite(arbVal)) {
+        return yVal > arbVal ? '#d62728' : '#2ca02c';
+      }
+      return '#ff7f0e';
+    };
+  }
   if (datasetById.has('cross')) datasetById.get('cross').data = crossData;
+  if (datasetById.has('positionArb')) datasetById.get('positionArb').data = positionArbData;
+  for (let i = 0; i < 3; i++) {
+    const openDs = datasetById.get(`openVol${i}`);
+    if (openDs) openDs.data = openVolumeData[i];
+    const closeDs = datasetById.get(`closeVol${i}`);
+    if (closeDs) closeDs.data = closeVolumeData[i];
+  }
   applySpreadFilter(chart);
   updateSpreadStats(calculateSpreadExtremes(filteredPoints));
+  const finalArbEl = document.getElementById('spreadFinalArb');
+  if (finalArbEl) {
+    if (latestFinalArb && Number.isFinite(latestFinalArb.diff)) {
+      const diff = latestFinalArb.diff;
+      const sign = diff > 0 ? '+' : diff < 0 ? '-' : '';
+      const absValue = Math.abs(diff).toFixed(4);
+      let status = 'empate';
+      let color = '#666';
+      if (diff > 0) { status = 'lucro'; color = '#2ca02c'; }
+      else if (diff < 0) { status = 'prejuízo'; color = '#d62728'; }
+      finalArbEl.textContent = `${sign}${absValue}% (${status})`;
+      finalArbEl.style.color = color;
+    } else {
+      finalArbEl.textContent = '-';
+      finalArbEl.style.color = '';
+    }
+  }
   chart.update('none');
 }
 
@@ -881,10 +1062,22 @@ async function fetchSpreadData(force = false) {
       const closeRaw = entry.close;
       const openNum = Number(openRaw);
       const closeNum = Number(closeRaw);
+      const parseVolumeArray = (raw) => {
+        if (!Array.isArray(raw)) return [];
+        return raw.map((v) => {
+          if (v === null || v === undefined) return null;
+          const num = Number(v);
+          return Number.isFinite(num) ? num : null;
+        });
+      };
+      const positionArb = Number(entry.positionArb);
       return {
         ts: Number.isFinite(ts) ? ts : Date.now(),
         open: (openRaw === null || openRaw === undefined || !Number.isFinite(openNum)) ? null : openNum,
-        close: (closeRaw === null || closeRaw === undefined || !Number.isFinite(closeNum)) ? null : closeNum
+        close: (closeRaw === null || closeRaw === undefined || !Number.isFinite(closeNum)) ? null : closeNum,
+        positionArb: Number.isFinite(positionArb) ? positionArb : null,
+        openVolumes: parseVolumeArray(entry.openVolumes),
+        closeVolumes: parseVolumeArray(entry.closeVolumes)
       };
     });
     spreadPoints.sort((a, b) => Number(a.ts) - Number(b.ts));
@@ -1119,36 +1312,22 @@ function readNumberInput(id) {
   return Number.isFinite(num) ? num : 0;
 }
 
-function readPositionIdInput(id) {
-  const el = document.getElementById(id);
-  if (!el) return null;
-  const raw = el.value.trim();
-  if (!raw) return null;
-  const num = Number(raw);
-  return Number.isFinite(num) ? num : raw;
-}
-
 function fillPositionForm(state) {
   if (!state || typeof state !== 'object') return;
   const g = state.gate || {};
   const m = state.mexc || {};
   setInputValueIfIdle('posEditTarget', state.targetQty ?? '');
-  setInputValueIfIdle('posEditFilled', state.filledQty ?? '');
-  setInputValueIfIdle('posEditAvg', state.avgPrice ?? '');
   setInputValueIfIdle('posEditArb', state.arbPctAvg ?? '');
   setInputValueIfIdle('posEditPnl', state.pnlUsd ?? '');
   setInputValueIfIdle('posEditGateFilled', g.filledQty ?? '');
   setInputValueIfIdle('posEditGateAvg', g.avgPrice ?? '');
   setInputValueIfIdle('posEditMexcFilled', m.filledQty ?? '');
   setInputValueIfIdle('posEditMexcAvg', m.avgPrice ?? '');
-  setInputValueIfIdle('posEditMexcId', m.positionId ?? '');
 }
 
 function collectPositionFormState() {
   return {
     targetQty: readNumberInput('posEditTarget'),
-    filledQty: readNumberInput('posEditFilled'),
-    avgPrice: readNumberInput('posEditAvg'),
     arbPctAvg: readNumberInput('posEditArb'),
     pnlUsd: readNumberInput('posEditPnl'),
     gate: {
@@ -1157,8 +1336,7 @@ function collectPositionFormState() {
     },
     mexc: {
       filledQty: readNumberInput('posEditMexcFilled'),
-      avgPrice: readNumberInput('posEditMexcAvg'),
-      positionId: readPositionIdInput('posEditMexcId')
+      avgPrice: readNumberInput('posEditMexcAvg')
     }
   };
 }
@@ -1171,56 +1349,131 @@ function formatSummaryNumber(value, decimals) {
   return String(num);
 }
 
+function formatDateTime(ts) {
+  const num = Number(ts);
+  if (!Number.isFinite(num)) return '-';
+  try {
+    return new Date(num).toLocaleString('pt-BR');
+  } catch {
+    return '-';
+  }
+}
+
+function formatDuration(ms) {
+  const totalMs = Number(ms);
+  if (!Number.isFinite(totalMs) || totalMs < 0) return '-';
+  const totalSeconds = Math.floor(totalMs / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (hours) parts.push(`${hours}h`);
+  if (minutes) parts.push(`${minutes}m`);
+  if (!parts.length || (days === 0 && hours === 0 && minutes === 0)) {
+    parts.push(`${seconds}s`);
+  }
+  return parts.join(' ');
+}
+
 function computePositionSummaryMetrics(state) {
   const trades = Array.isArray(state?.trades) ? state.trades : [];
-  let openQty = 0;
-  let openGateValue = 0;
-  let closeQty = 0;
-  let closeGateValue = 0;
+  const accum = {
+    gate: {
+      open: { qty: 0, value: 0 },
+      close: { qty: 0, value: 0 }
+    },
+    mexc: {
+      open: { qty: 0, value: 0 },
+      close: { qty: 0, value: 0 }
+    }
+  };
+
   let tradesPnl = 0;
   let hasTradesPnl = false;
+  let openedAt = null;
+  let closedAt = null;
+  let firstTradeTs = null;
+  let lastTradeTs = null;
 
   for (const trade of trades) {
     if (!trade || typeof trade !== 'object') continue;
     const qty = Number(trade.qty);
     if (!Number.isFinite(qty) || qty <= 0) continue;
+
     const gatePrice = Number(trade.gatePrice);
+    const mexcPrice = Number(trade.mexcPrice);
     const pnl = Number(trade.pnlUsd);
+    const ts = Number(trade.t);
+
+    if (Number.isFinite(ts)) {
+      if (!Number.isFinite(firstTradeTs) || ts < firstTradeTs) firstTradeTs = ts;
+      if (!Number.isFinite(lastTradeTs) || ts > lastTradeTs) lastTradeTs = ts;
+    }
+
     if (Number.isFinite(pnl)) {
       tradesPnl += pnl;
       hasTradesPnl = true;
     }
-    if (trade.mode === 'close') {
-      if (Number.isFinite(gatePrice)) closeGateValue += gatePrice * qty;
-      closeQty += qty;
-    } else {
-      if (Number.isFinite(gatePrice)) openGateValue += gatePrice * qty;
-      openQty += qty;
+
+    const group = trade.mode === 'close' ? 'close' : 'open';
+    if (group === 'open' && Number.isFinite(ts)) {
+      if (!Number.isFinite(openedAt) || ts < openedAt) openedAt = ts;
+    }
+    if (group === 'close' && Number.isFinite(ts)) {
+      if (!Number.isFinite(closedAt) || ts > closedAt) closedAt = ts;
+    }
+
+    if (Number.isFinite(gatePrice)) {
+      accum.gate[group].value += gatePrice * qty;
+      accum.gate[group].qty += qty;
+    }
+    if (Number.isFinite(mexcPrice)) {
+      accum.mexc[group].value += mexcPrice * qty;
+      accum.mexc[group].qty += qty;
     }
   }
 
-  const avgOpenGate = openQty > 0 ? openGateValue / openQty : null;
-  const avgCloseGate = closeQty > 0 ? closeGateValue / closeQty : null;
+  if (!Number.isFinite(openedAt)) openedAt = Number.isFinite(firstTradeTs) ? firstTradeTs : null;
+  if (!Number.isFinite(closedAt)) closedAt = Number.isFinite(lastTradeTs) ? lastTradeTs : openedAt;
+
+  const avgGateOpen = accum.gate.open.qty > 0 ? accum.gate.open.value / accum.gate.open.qty : null;
+  const avgGateClose = accum.gate.close.qty > 0 ? accum.gate.close.value / accum.gate.close.qty : null;
+  const avgMexcOpen = accum.mexc.open.qty > 0 ? accum.mexc.open.value / accum.mexc.open.qty : null;
+  const avgMexcClose = accum.mexc.close.qty > 0 ? accum.mexc.close.value / accum.mexc.close.qty : null;
 
   let totalPnl = Number(state?.pnlUsd);
   if (!Number.isFinite(totalPnl)) totalPnl = null;
   if (hasTradesPnl) totalPnl = tradesPnl;
 
-  const costBasis = openGateValue > 0 ? openGateValue : (closeGateValue > 0 ? closeGateValue : null);
+  const openCostBasis = accum.gate.open.value > 0 ? accum.gate.open.value : null;
   let arbPctFinal = null;
-  if (costBasis && totalPnl !== null) {
-    arbPctFinal = (totalPnl / costBasis) * 100;
+  if (openCostBasis && totalPnl !== null) {
+    arbPctFinal = (totalPnl / openCostBasis) * 100;
   } else if (Number.isFinite(state?.arbPctAvg)) {
     arbPctFinal = Number(state.arbPctAvg);
   }
 
+  const durationMs = (Number.isFinite(openedAt) && Number.isFinite(closedAt) && closedAt >= openedAt)
+    ? (closedAt - openedAt)
+    : null;
+
+  const symbol = typeof state?.symbol === 'string' && state.symbol ? state.symbol : null;
+
   return {
-    avgOpenGate,
-    avgCloseGate,
+    gateOpenAvg: avgGateOpen,
+    gateCloseAvg: avgGateClose,
+    mexcOpenAvg: avgMexcOpen,
+    mexcCloseAvg: avgMexcClose,
     arbPctFinal,
     pnlUsd: totalPnl,
-    openQty,
-    closeQty
+    openQty: accum.gate.open.qty,
+    closeQty: accum.gate.close.qty,
+    openedAt,
+    closedAt,
+    durationMs,
+    symbol
   };
 }
 
@@ -1234,19 +1487,36 @@ function renderPositionSummaries(list) {
     const mexc = state.mexc || {};
     const metrics = computePositionSummaryMetrics(state);
     const tr = document.createElement('tr');
-    const avgOpenPrice = metrics?.avgOpenGate;
-    const avgClosePrice = metrics?.avgCloseGate;
+    const gateOpenAvg = metrics?.gateOpenAvg;
+    const gateCloseAvg = metrics?.gateCloseAvg;
+    const mexcOpenAvg = metrics?.mexcOpenAvg;
+    const mexcCloseAvg = metrics?.mexcCloseAvg;
     const finalArbPct = metrics?.arbPctFinal != null ? metrics.arbPctFinal : state.arbPctAvg;
     const finalPnl = metrics?.pnlUsd != null ? metrics.pnlUsd : state.pnlUsd;
+    const createdAtTs = item?.createdAt ? Date.parse(item.createdAt) : null;
+    const openedAtTs = Number.isFinite(metrics?.openedAt) ? metrics.openedAt : createdAtTs;
+    const closedAtTs = Number.isFinite(metrics?.closedAt) ? metrics.closedAt : createdAtTs;
+    const durationMs = Number.isFinite(metrics?.durationMs)
+      ? metrics.durationMs
+      : (Number.isFinite(openedAtTs) && Number.isFinite(closedAtTs) ? (closedAtTs - openedAtTs) : null);
+    const openedAtText = formatDateTime(openedAtTs);
+    const closedAtText = formatDateTime(closedAtTs);
+    const durationText = formatDuration(durationMs);
+    const rawSymbol = metrics?.symbol || state.symbol || item?.summary?.symbol || null;
+    const symbolText = rawSymbol ? String(rawSymbol).toUpperCase() : '-';
     const cells = [
       item?.id ?? '-',
-      item?.createdAt ? new Date(item.createdAt).toLocaleString('pt-BR') : '-',
+      symbolText,
+      openedAtText,
+      closedAtText,
+      durationText,
       formatSummaryNumber(state.targetQty),
-      `${formatSummaryNumber(gate.filledQty)} @ ${formatSummaryNumber(gate.avgPrice)}`,
-      `${formatSummaryNumber(mexc.filledQty)} @ ${formatSummaryNumber(mexc.avgPrice)}`,
-      formatSummaryNumber(state.filledQty),
-      formatSummaryNumber(avgOpenPrice, 8),
-      formatSummaryNumber(avgClosePrice, 8),
+      `${formatSummaryNumber(gate.filledQty)} @ ${formatSummaryNumber(gate.avgPrice, 8)}`,
+      `${formatSummaryNumber(mexc.filledQty)} @ ${formatSummaryNumber(mexc.avgPrice, 8)}`,
+      formatSummaryNumber(gateOpenAvg, 8),
+      formatSummaryNumber(mexcOpenAvg, 8),
+      formatSummaryNumber(gateCloseAvg, 8),
+      formatSummaryNumber(mexcCloseAvg, 8),
       formatSummaryNumber(finalArbPct, 4),
       formatSummaryNumber(finalPnl, 6),
       item?.note || item?.summary?.note || '-'

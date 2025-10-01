@@ -57,6 +57,9 @@ try { db.exec('ALTER TABLE history ADD COLUMN gate_status TEXT'); } catch {}
 try { db.exec('ALTER TABLE history ADD COLUMN mexc_status TEXT'); } catch {}
 try { db.exec('ALTER TABLE history ADD COLUMN sentido TEXT'); } catch {}
 try { db.exec('ALTER TABLE position_summaries ADD COLUMN note TEXT'); } catch {}
+try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN open_volumes TEXT'); } catch {}
+try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN close_volumes TEXT'); } catch {}
+try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN position_arb_pct REAL'); } catch {}
 
 const upsertOverrideStmt = db.prepare(`
 INSERT INTO overrides(symbol, override_json, updated_at)
@@ -196,8 +199,8 @@ function loadPositionSummaries(limit = 20) {
 }
 
 const insertSpreadSnapshotStmt = db.prepare(`
-INSERT INTO spread_snapshots(symbol, ts, open_spread, close_spread)
-VALUES (@symbol, @ts, @open, @close)
+INSERT INTO spread_snapshots(symbol, ts, open_spread, close_spread, open_volumes, close_volumes, position_arb_pct)
+VALUES (@symbol, @ts, @open, @close, @openVolumes, @closeVolumes, @positionArb)
 `);
 
 const pruneSpreadSnapshotsStmt = db.prepare(`
@@ -206,7 +209,9 @@ WHERE symbol = @symbol AND ts < @cutoff
 `);
 
 const loadSpreadSnapshotsStmt = db.prepare(`
-SELECT ts, open_spread AS open, close_spread AS close
+SELECT ts, open_spread AS open, close_spread AS close,
+       open_volumes AS openVolumes, close_volumes AS closeVolumes,
+       position_arb_pct AS positionArb
 FROM spread_snapshots
 WHERE symbol = @symbol AND ts >= @since
 ORDER BY ts ASC
@@ -216,13 +221,16 @@ const clearSpreadSnapshotsStmt = db.prepare(`
 DELETE FROM spread_snapshots WHERE symbol = @symbol
 `);
 
-function saveSpreadSnapshot(symbol, ts, openSpread, closeSpread) {
+function saveSpreadSnapshot(symbol, ts, openSpread, closeSpread, openVolumes, closeVolumes, positionArb) {
   if (!symbol) return;
   const payload = {
     symbol: String(symbol).toUpperCase(),
     ts: Number.isFinite(ts) ? Math.trunc(ts) : Date.now(),
     open: Number.isFinite(openSpread) ? openSpread : null,
-    close: Number.isFinite(closeSpread) ? closeSpread : null
+    close: Number.isFinite(closeSpread) ? closeSpread : null,
+    openVolumes: Array.isArray(openVolumes) && openVolumes.length ? JSON.stringify(openVolumes) : null,
+    closeVolumes: Array.isArray(closeVolumes) && closeVolumes.length ? JSON.stringify(closeVolumes) : null,
+    positionArb: Number.isFinite(positionArb) ? positionArb : null
   };
   insertSpreadSnapshotStmt.run(payload);
 }
