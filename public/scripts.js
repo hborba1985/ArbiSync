@@ -46,32 +46,35 @@ function renderMexcBalance(b) {
   };
 
   const assets = (b.assets && typeof b.assets === 'object') ? b.assets : {};
-  const lines = [];
-
-  const pushLine = (currency, availableRaw, lockedRaw, source) => {
-    if (!currency) return;
+  const buildLine = (currency, availableRaw, lockedRaw, source) => {
+    if (!currency) return null;
     const available = fmt(availableRaw);
     const locked = fmt(lockedRaw);
     let line = `${currency}: disponível ${available} | em ordem ${locked}`;
     if (source && source !== 'api') line += ` (${source === 'estimado' ? 'estimado' : source})`;
-    lines.push(line);
+    return line;
   };
 
   const baseCurrency = (b.base?.currency || '').toString().toUpperCase();
+  let baseLine = null;
   if (baseCurrency) {
     const assetEntry = assets[baseCurrency] || {};
     const availableRaw = (b.base?.available != null) ? b.base.available : assetEntry.available;
     const lockedRaw = (b.base?.locked != null) ? b.base.locked : assetEntry.locked;
     const source = b.base?.source || ((assetEntry.available != null || assetEntry.locked != null) ? 'api' : null);
-    pushLine(baseCurrency, availableRaw, lockedRaw, source);
+    baseLine = buildLine(baseCurrency, availableRaw, lockedRaw, source);
   }
 
   const usdtAsset = assets.USDT || {};
   const usdtAvailableRaw = (b.availableUSDT != null) ? b.availableUSDT : usdtAsset.available;
   const usdtLockedRaw = usdtAsset.locked;
-  if (usdtAvailableRaw != null || usdtLockedRaw != null) {
-    pushLine('USDT', usdtAvailableRaw, usdtLockedRaw, null);
-  }
+  const usdtLine = (usdtAvailableRaw != null || usdtLockedRaw != null)
+    ? buildLine('USDT', usdtAvailableRaw, usdtLockedRaw, null)
+    : null;
+
+  const lines = [];
+  if (usdtLine) lines.push(usdtLine);
+  if (baseLine) lines.push(baseLine);
 
   if (!lines.length) return 'Saldo da moeda base indisponível.';
   return lines.join('\n');
@@ -243,6 +246,29 @@ let spreadChart = null;
 let spreadPoints = [];
 let spreadFilter = 'all';
 let lastSpreadFetch = 0;
+const SPREAD_RANGE_WINDOWS = {
+  '5min': 5 * 60 * 1000,
+  '15min': 15 * 60 * 1000,
+  '30min': 30 * 60 * 1000,
+  '1H': 60 * 60 * 1000,
+  '4H': 4 * 60 * 60 * 1000,
+  '6H': 6 * 60 * 60 * 1000,
+  '12H': 12 * 60 * 60 * 1000,
+  '24H': 24 * 60 * 60 * 1000
+};
+let spreadRange = localStorage.getItem('spreadRange') || 'all';
+if (spreadRange !== 'all' && !SPREAD_RANGE_WINDOWS[spreadRange]) {
+  spreadRange = 'all';
+}
+
+try {
+  if (typeof window !== 'undefined' && typeof Chart !== 'undefined' && typeof Chart.register === 'function') {
+    const zoomPlugin = window['chartjs-plugin-zoom'] || window.ChartZoom || window.ChartZoomPlugin || window.zoomPlugin;
+    if (zoomPlugin) {
+      Chart.register(zoomPlugin);
+    }
+  }
+} catch {}
 
 if (Number.isFinite(alertMin)) {
   const el = document.getElementById('alertMin');
@@ -671,6 +697,28 @@ function ensureSpreadChart() {
               return `${prefix}${formatted}${time ? ` às ${time}` : ''}`;
             }
           }
+        },
+        zoom: {
+          limits: {
+            x: { min: 'original', max: 'original' },
+            y: { min: 'original', max: 'original' }
+          },
+          pan: {
+            enabled: true,
+            mode: 'x',
+            modifierKey: 'ctrl'
+          },
+          zoom: {
+            wheel: { enabled: true },
+            pinch: { enabled: true },
+            drag: {
+              enabled: true,
+              backgroundColor: 'rgba(0, 102, 204, 0.15)',
+              borderColor: '#0066cc',
+              borderWidth: 1
+            },
+            mode: 'x'
+          }
         }
       }
     }
@@ -747,21 +795,72 @@ function updateSpreadStats(extremes) {
   if (closeMinEl) closeMinEl.textContent = formatSpreadStat(close.min);
 }
 
+function getFilteredSpreadPoints() {
+  if (!Array.isArray(spreadPoints) || !spreadPoints.length) return [];
+  const rangeKey = spreadRange || 'all';
+  if (rangeKey === 'all') return spreadPoints.slice();
+  const windowMs = SPREAD_RANGE_WINDOWS[rangeKey];
+  if (!windowMs) return spreadPoints.slice();
+  const lastEntry = spreadPoints[spreadPoints.length - 1];
+  const refTs = Number(lastEntry?.ts);
+  const reference = Number.isFinite(refTs) ? refTs : Date.now();
+  const minTs = reference - windowMs;
+  return spreadPoints.filter((entry) => Number(entry?.ts) >= minTs);
+}
+
+function calculateSpreadExtremes(points) {
+  if (!Array.isArray(points) || !points.length) return null;
+  const result = { open: { min: null, max: null }, close: { min: null, max: null } };
+  for (const entry of points) {
+    if (!entry || typeof entry !== 'object') continue;
+    const ts = Number(entry.ts);
+    const tsValue = Number.isFinite(ts) ? ts : null;
+    const openRaw = entry.open;
+    if (openRaw !== null && openRaw !== undefined) {
+      const openVal = Number(openRaw);
+      if (Number.isFinite(openVal)) {
+        if (!result.open.min || openVal < result.open.min.value) {
+          result.open.min = { value: openVal, ts: tsValue };
+        }
+        if (!result.open.max || openVal > result.open.max.value) {
+          result.open.max = { value: openVal, ts: tsValue };
+        }
+      }
+    }
+    const closeRaw = entry.close;
+    if (closeRaw !== null && closeRaw !== undefined) {
+      const closeVal = Number(closeRaw);
+      if (Number.isFinite(closeVal)) {
+        if (!result.close.min || closeVal < result.close.min.value) {
+          result.close.min = { value: closeVal, ts: tsValue };
+        }
+        if (!result.close.max || closeVal > result.close.max.value) {
+          result.close.max = { value: closeVal, ts: tsValue };
+        }
+      }
+    }
+  }
+  if (!result.open.min && !result.open.max && !result.close.min && !result.close.max) return null;
+  return result;
+}
+
 function renderSpreadChart() {
   const chart = ensureSpreadChart();
   if (!chart) return;
+  const filteredPoints = getFilteredSpreadPoints();
   const openData = [];
   const closeData = [];
-  for (const entry of spreadPoints) {
+  for (const entry of filteredPoints) {
     if (Number.isFinite(entry.open)) openData.push({ x: entry.ts, y: entry.open });
     if (Number.isFinite(entry.close)) closeData.push({ x: entry.ts, y: entry.close });
   }
-  const crossData = computeSpreadCrossings(spreadPoints);
+  const crossData = computeSpreadCrossings(filteredPoints);
   const datasetById = new Map(chart.data.datasets.map((d) => [d.id, d]));
   if (datasetById.has('open')) datasetById.get('open').data = openData;
   if (datasetById.has('close')) datasetById.get('close').data = closeData;
   if (datasetById.has('cross')) datasetById.get('cross').data = crossData;
   applySpreadFilter(chart);
+  updateSpreadStats(calculateSpreadExtremes(filteredPoints));
   chart.update('none');
 }
 
@@ -788,13 +887,12 @@ async function fetchSpreadData(force = false) {
         close: (closeRaw === null || closeRaw === undefined || !Number.isFinite(closeNum)) ? null : closeNum
       };
     });
-    updateSpreadStats(data.extremes || null);
+    spreadPoints.sort((a, b) => Number(a.ts) - Number(b.ts));
     renderSpreadChart();
   } catch (e) {
     console.warn('Falha ao carregar spreads:', e?.message || e);
     if (force) {
       spreadPoints = [];
-      updateSpreadStats(null);
       renderSpreadChart();
     }
   }
@@ -822,6 +920,37 @@ spreadFilterButtons.forEach((btn) => {
     renderSpreadChart();
   });
 });
+
+const spreadRangeButtons = document.querySelectorAll('[data-spread-range]');
+function syncSpreadRangeButtons() {
+  spreadRangeButtons.forEach((btn) => {
+    const key = btn.dataset.spreadRange || 'all';
+    btn.classList.toggle('active', key === spreadRange);
+  });
+}
+spreadRangeButtons.forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const key = btn.dataset.spreadRange || 'all';
+    spreadRange = key;
+    if (spreadRange !== 'all' && !SPREAD_RANGE_WINDOWS[spreadRange]) {
+      spreadRange = 'all';
+    }
+    try { localStorage.setItem('spreadRange', spreadRange); } catch {}
+    syncSpreadRangeButtons();
+    renderSpreadChart();
+  });
+});
+syncSpreadRangeButtons();
+
+const resetSpreadZoomBtn = document.getElementById('resetSpreadZoom');
+if (resetSpreadZoomBtn) {
+  resetSpreadZoomBtn.addEventListener('click', () => {
+    const chart = ensureSpreadChart();
+    if (chart && typeof chart.resetZoom === 'function') {
+      chart.resetZoom();
+    }
+  });
+}
 
 const toggleSpreadCardBtn = document.getElementById('toggleSpreadCard');
 if (toggleSpreadCardBtn) {
@@ -1035,10 +1164,64 @@ function collectPositionFormState() {
 }
 
 function formatSummaryNumber(value, decimals) {
+  if (value === null || value === undefined) return '-';
   const num = Number(value);
   if (!Number.isFinite(num)) return '-';
   if (typeof decimals === 'number') return num.toFixed(decimals);
   return String(num);
+}
+
+function computePositionSummaryMetrics(state) {
+  const trades = Array.isArray(state?.trades) ? state.trades : [];
+  let openQty = 0;
+  let openGateValue = 0;
+  let closeQty = 0;
+  let closeGateValue = 0;
+  let tradesPnl = 0;
+  let hasTradesPnl = false;
+
+  for (const trade of trades) {
+    if (!trade || typeof trade !== 'object') continue;
+    const qty = Number(trade.qty);
+    if (!Number.isFinite(qty) || qty <= 0) continue;
+    const gatePrice = Number(trade.gatePrice);
+    const pnl = Number(trade.pnlUsd);
+    if (Number.isFinite(pnl)) {
+      tradesPnl += pnl;
+      hasTradesPnl = true;
+    }
+    if (trade.mode === 'close') {
+      if (Number.isFinite(gatePrice)) closeGateValue += gatePrice * qty;
+      closeQty += qty;
+    } else {
+      if (Number.isFinite(gatePrice)) openGateValue += gatePrice * qty;
+      openQty += qty;
+    }
+  }
+
+  const avgOpenGate = openQty > 0 ? openGateValue / openQty : null;
+  const avgCloseGate = closeQty > 0 ? closeGateValue / closeQty : null;
+
+  let totalPnl = Number(state?.pnlUsd);
+  if (!Number.isFinite(totalPnl)) totalPnl = null;
+  if (hasTradesPnl) totalPnl = tradesPnl;
+
+  const costBasis = openGateValue > 0 ? openGateValue : (closeGateValue > 0 ? closeGateValue : null);
+  let arbPctFinal = null;
+  if (costBasis && totalPnl !== null) {
+    arbPctFinal = (totalPnl / costBasis) * 100;
+  } else if (Number.isFinite(state?.arbPctAvg)) {
+    arbPctFinal = Number(state.arbPctAvg);
+  }
+
+  return {
+    avgOpenGate,
+    avgCloseGate,
+    arbPctFinal,
+    pnlUsd: totalPnl,
+    openQty,
+    closeQty
+  };
 }
 
 function renderPositionSummaries(list) {
@@ -1049,7 +1232,12 @@ function renderPositionSummaries(list) {
     const state = item?.summary?.state || {};
     const gate = state.gate || {};
     const mexc = state.mexc || {};
+    const metrics = computePositionSummaryMetrics(state);
     const tr = document.createElement('tr');
+    const avgOpenPrice = metrics?.avgOpenGate;
+    const avgClosePrice = metrics?.avgCloseGate;
+    const finalArbPct = metrics?.arbPctFinal != null ? metrics.arbPctFinal : state.arbPctAvg;
+    const finalPnl = metrics?.pnlUsd != null ? metrics.pnlUsd : state.pnlUsd;
     const cells = [
       item?.id ?? '-',
       item?.createdAt ? new Date(item.createdAt).toLocaleString('pt-BR') : '-',
@@ -1057,8 +1245,10 @@ function renderPositionSummaries(list) {
       `${formatSummaryNumber(gate.filledQty)} @ ${formatSummaryNumber(gate.avgPrice)}`,
       `${formatSummaryNumber(mexc.filledQty)} @ ${formatSummaryNumber(mexc.avgPrice)}`,
       formatSummaryNumber(state.filledQty),
-      formatSummaryNumber(state.arbPctAvg, 6),
-      formatSummaryNumber(state.pnlUsd, 6),
+      formatSummaryNumber(avgOpenPrice, 8),
+      formatSummaryNumber(avgClosePrice, 8),
+      formatSummaryNumber(finalArbPct, 4),
+      formatSummaryNumber(finalPnl, 6),
       item?.note || item?.summary?.note || '-'
     ];
     cells.forEach((text) => {
