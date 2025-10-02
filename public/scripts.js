@@ -10,8 +10,23 @@ function safeJson(res) {
   return res.text().then(t => { throw new Error(`Resposta não-JSON (${res.status}): ${t.slice(0,120)}...`); });
 }
 
+let currentSymbol = null;
+let currentBaseSymbol = null;
+
+function setCurrentSymbol(sym) {
+  if (!sym) return;
+  currentSymbol = sym;
+  const base = String(sym).split('_')[0] || '';
+  const normalized = base ? base.toUpperCase() : null;
+  if (normalized) currentBaseSymbol = normalized;
+  updateBaseSymbolUI();
+}
+
 async function getSymbol() {
-  const r = await fetch('/api/symbol'); return (await r.json()).symbol;
+  const r = await fetch('/api/symbol');
+  const sym = (await r.json()).symbol;
+  if (sym) setCurrentSymbol(sym);
+  return sym;
 }
 async function setSymbol(sym) {
   const r = await fetch('/api/symbol', {
@@ -19,79 +34,214 @@ async function setSymbol(sym) {
     body: JSON.stringify({symbol: sym})
   });
   const out = await safeJson(r);
-  return out.symbol;
+  const normalized = out.symbol || sym;
+  if (normalized) setCurrentSymbol(normalized);
+  return normalized;
 }
 
-function renderGateBalance(b) {
-  if (!b || typeof b !== 'object') return '—';
-  if (b.error) return `Erro: ${JSON.stringify(b.error)}`;
-  const keys = Object.keys(b).sort();
-  if (!keys.length) return '—';
-  return keys.map(k => `${k}: disponível ${b[k].available} | em ordem ${b[k].locked}`).join('\n');
+function getCurrentBaseSymbol() {
+  if (currentBaseSymbol) return currentBaseSymbol;
+  const input = document.getElementById('symbolInput');
+  const raw = input ? input.value : '';
+  const base = raw && raw.includes('_') ? raw.split('_')[0] : raw;
+  return base ? base.toUpperCase() : 'BASE';
 }
-function renderMexcBalance(b) {
-  if (!b) return '—';
-  if (b.unknown) {
-    return (b.reason === 'client_not_initialized' || b.reason === 'no_web_token')
+
+function updateBaseSymbolUI() {
+  const baseDefault = getCurrentBaseSymbol();
+  const gateLabel = document.getElementById('gateBaseLabel');
+  if (gateLabel) gateLabel.textContent = lastBalanceData.gate.baseLabel || baseDefault;
+  const mexcLabel = document.getElementById('mexcBaseLabel');
+  if (mexcLabel) mexcLabel.textContent = lastBalanceData.mexc.baseLabel || baseDefault;
+}
+
+const lastBalanceData = {
+  gate: { usdtAvailable: null, usdtLocked: null, baseAvailable: null, baseLocked: null, message: null },
+  mexc: { usdtAvailable: null, usdtLocked: null, baseAvailable: null, baseLocked: null, message: null }
+};
+const lastReferencePrices = { gate: null, mexc: null };
+const lastMaxBaseVolumes = { gate: null, mexc: null };
+let useScientificNotation = false;
+
+function toNumberOrNull(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function formatTwoDecimals(value) {
+  if (!Number.isFinite(value)) return '—';
+  return value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+function setBalanceValue(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = formatTwoDecimals(value);
+}
+
+function applyBalanceDisplay(prefix) {
+  const data = lastBalanceData[prefix] || {};
+  setBalanceValue(`${prefix}UsdtAvailable`, data.usdtAvailable);
+  setBalanceValue(`${prefix}UsdtLocked`, data.usdtLocked);
+  setBalanceValue(`${prefix}BaseAvailable`, data.baseAvailable);
+  setBalanceValue(`${prefix}BaseLocked`, data.baseLocked);
+  const messageEl = document.getElementById(`${prefix}BalanceMessage`);
+  if (messageEl) messageEl.textContent = data.message || '';
+}
+
+function parseGateBalance(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return { usdtAvailable: null, usdtLocked: null, baseAvailable: null, baseLocked: null, message: 'Saldo indisponível.', baseLabel: null };
+  }
+  if (raw.error) {
+    const msg = typeof raw.error === 'string' ? raw.error : JSON.stringify(raw.error);
+    return { usdtAvailable: null, usdtLocked: null, baseAvailable: null, baseLocked: null, message: `Erro: ${msg}`, baseLabel: null };
+  }
+  const baseSymbol = getCurrentBaseSymbol();
+  const usdtEntry = raw.USDT || {};
+  const baseEntry = raw[baseSymbol] || {};
+  const usdtAvailable = toNumberOrNull(usdtEntry.available);
+  const usdtLocked = toNumberOrNull(usdtEntry.locked);
+  const baseAvailable = toNumberOrNull(baseEntry.available);
+  const baseLocked = toNumberOrNull(baseEntry.locked);
+  let message = null;
+  if (!Number.isFinite(baseAvailable) && !Number.isFinite(baseLocked)) {
+    message = 'Saldo da moeda base indisponível.';
+  }
+  return { usdtAvailable, usdtLocked, baseAvailable, baseLocked, message, baseLabel: baseSymbol };
+}
+
+function parseMexcBalance(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return { usdtAvailable: null, usdtLocked: null, baseAvailable: null, baseLocked: null, message: 'Saldo indisponível.', baseLabel: null };
+  }
+  if (raw.unknown) {
+    const msg = raw.reason === 'no_web_token'
       ? 'Token/chaves não configurados (config.mexc).'
       : 'Saldo indisponível via API.';
+    return { usdtAvailable: null, usdtLocked: null, baseAvailable: null, baseLocked: null, message: msg, baseLabel: null };
   }
-  if (b.error) return `Erro: ${JSON.stringify(b.error)}`;
-  if (b.reason === 'unexpected_assets_shape') return 'Saldo indisponível (formato inesperado).';
-
-  const fmt = (v) => {
-    if (v == null) return '—';
-    const n = Number(v);
-    return Number.isFinite(n) ? n : v;
-  };
-
-  const assets = (b.assets && typeof b.assets === 'object') ? b.assets : {};
-  const buildLine = (currency, availableRaw, lockedRaw, source) => {
-    if (!currency) return null;
-    const available = fmt(availableRaw);
-    const locked = fmt(lockedRaw);
-    let line = `${currency}: disponível ${available} | em ordem ${locked}`;
-    if (source && source !== 'api') line += ` (${source === 'estimado' ? 'estimado' : source})`;
-    return line;
-  };
-
-  const baseCurrency = (b.base?.currency || '').toString().toUpperCase();
-  let baseLine = null;
-  if (baseCurrency) {
-    const assetEntry = assets[baseCurrency] || {};
-    const availableRaw = (b.base?.available != null) ? b.base.available : assetEntry.available;
-    const lockedRaw = (b.base?.locked != null) ? b.base.locked : assetEntry.locked;
-    const source = b.base?.source || ((assetEntry.available != null || assetEntry.locked != null) ? 'api' : null);
-    baseLine = buildLine(baseCurrency, availableRaw, lockedRaw, source);
+  if (raw.error) {
+    const msg = typeof raw.error === 'string' ? raw.error : JSON.stringify(raw.error);
+    return { usdtAvailable: null, usdtLocked: null, baseAvailable: null, baseLocked: null, message: `Erro: ${msg}`, baseLabel: null };
+  }
+  if (raw.reason === 'unexpected_assets_shape') {
+    return { usdtAvailable: null, usdtLocked: null, baseAvailable: null, baseLocked: null, message: 'Saldo indisponível (formato inesperado).', baseLabel: null };
   }
 
-  const usdtAsset = assets.USDT || {};
-  const usdtAvailableRaw = (b.availableUSDT != null) ? b.availableUSDT : usdtAsset.available;
-  const usdtLockedRaw = usdtAsset.locked;
-  const usdtLine = (usdtAvailableRaw != null || usdtLockedRaw != null)
-    ? buildLine('USDT', usdtAvailableRaw, usdtLockedRaw, null)
-    : null;
+  const baseSymbol = getCurrentBaseSymbol();
+  const assets = raw.assets && typeof raw.assets === 'object' ? raw.assets : {};
+  const usdtEntry = assets.USDT || {};
+  const usdtAvailable = raw.availableUSDT != null ? toNumberOrNull(raw.availableUSDT) : toNumberOrNull(usdtEntry.available);
+  const usdtLocked = toNumberOrNull(usdtEntry.locked);
+  const baseInfo = raw.base || assets[baseSymbol] || {};
+  const baseAvailable = toNumberOrNull(baseInfo.available);
+  const baseLocked = toNumberOrNull(baseInfo.locked);
+  let message = null;
+  if (!Number.isFinite(baseAvailable) && !Number.isFinite(baseLocked)) {
+    message = 'Saldo da moeda base indisponível.';
+  }
+  const source = (raw.base && raw.base.source) || baseInfo.source || null;
+  const baseLabel = source && source !== 'api' && source !== 'sem dados'
+    ? `${baseSymbol} (${source})`
+    : baseSymbol;
+  return { usdtAvailable, usdtLocked, baseAvailable, baseLocked, message, baseLabel };
+}
 
-  const lines = [];
-  if (usdtLine) lines.push(usdtLine);
-  if (baseLine) lines.push(baseLine);
+function computeMaxBaseVolume(usdtAvailable, price) {
+  if (!Number.isFinite(usdtAvailable) || !Number.isFinite(price) || price <= 0) return null;
+  return usdtAvailable / price;
+}
 
-  if (!lines.length) return 'Saldo da moeda base indisponível.';
-  return lines.join('\n');
+function updateMaxBaseDisplays() {
+  const baseSymbol = getCurrentBaseSymbol();
+  const apply = (prefix, price) => {
+    const usdtAvailable = lastBalanceData[prefix]?.usdtAvailable;
+    const maxBase = computeMaxBaseVolume(usdtAvailable, price);
+    lastMaxBaseVolumes[prefix] = Number.isFinite(maxBase) ? maxBase : null;
+    const valueEl = document.getElementById(`${prefix}MaxBaseValue`);
+    if (valueEl) {
+      valueEl.textContent = Number.isFinite(maxBase)
+        ? `Max: ${formatTwoDecimals(maxBase)} ${baseSymbol}`
+        : 'Max: —';
+    }
+    const btn = document.getElementById(`${prefix}MaxBaseBtn`);
+    if (btn) {
+      const enabled = Number.isFinite(maxBase) && maxBase > 0;
+      btn.disabled = !enabled;
+      btn.dataset.targetQty = enabled ? String(maxBase) : '';
+    }
+  };
+  apply('gate', lastReferencePrices.gate);
+  apply('mexc', lastReferencePrices.mexc);
 }
 
 async function refreshBalances() {
   try {
     const r = await fetch('/api/balances');
     const d = await r.json();
-    document.getElementById('gateBalText').textContent = renderGateBalance(d.gate);
-    document.getElementById('mexcBalText').textContent = renderMexcBalance(d.mexc);
-  } catch {
-    document.getElementById('gateBalText').textContent = 'erro';
-    document.getElementById('mexcBalText').textContent = 'erro';
+    lastBalanceData.gate = parseGateBalance(d.gate);
+    lastBalanceData.mexc = parseMexcBalance(d.mexc);
+    updateBaseSymbolUI();
+    applyBalanceDisplay('gate');
+    applyBalanceDisplay('mexc');
+    updateMaxBaseDisplays();
+  } catch (err) {
+    lastBalanceData.gate = { usdtAvailable: null, usdtLocked: null, baseAvailable: null, baseLocked: null, message: 'Erro ao carregar saldos.', baseLabel: null };
+    lastBalanceData.mexc = { usdtAvailable: null, usdtLocked: null, baseAvailable: null, baseLocked: null, message: 'Erro ao carregar saldos.', baseLabel: null };
+    updateBaseSymbolUI();
+    applyBalanceDisplay('gate');
+    applyBalanceDisplay('mexc');
+    updateMaxBaseDisplays();
+    console.warn('refreshBalances falhou:', err);
   }
 }
-document.getElementById('refreshBalances').addEventListener('click', refreshBalances);
+
+const refreshBalancesBtn = document.getElementById('refreshBalances');
+if (refreshBalancesBtn) refreshBalancesBtn.addEventListener('click', refreshBalances);
+
+function setupCardToggles() {
+  const cards = document.querySelectorAll('.card');
+  cards.forEach((card) => {
+    const header = card.querySelector('h3');
+    if (!header) return;
+    let btn = header.querySelector('.card-toggle');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'card-toggle';
+      btn.textContent = 'Ocultar';
+      header.appendChild(btn);
+    }
+    if (btn.dataset.toggleBound === '1') return;
+    btn.dataset.toggleBound = '1';
+    btn.addEventListener('click', () => {
+      card.classList.toggle('collapsed');
+      const collapsed = card.classList.contains('collapsed');
+      btn.textContent = collapsed ? 'Mostrar' : 'Ocultar';
+      if (!collapsed && card.id === 'spreadCard') {
+        renderSpreadChart();
+      }
+    });
+  });
+}
+
+function updateProgressBar(targetQty, filledQty) {
+  const fillEl = document.getElementById('positionProgressFill');
+  const labelEl = document.getElementById('positionProgressLabel');
+  const target = Number(targetQty);
+  const filled = Number(filledQty);
+  let pct = 0;
+  if (Number.isFinite(target) && target > 0 && Number.isFinite(filled) && filled >= 0) {
+    pct = (filled / target) * 100;
+  } else if (Number.isFinite(filled) && filled > 0 && (!Number.isFinite(target) || target <= 0)) {
+    pct = 100;
+  }
+  const validPct = Number.isFinite(pct) ? pct : 0;
+  const clamped = Math.max(0, Math.min(validPct, 100));
+  if (fillEl) fillEl.style.width = `${clamped}%`;
+  if (labelEl) labelEl.textContent = Number.isFinite(validPct) ? `${validPct.toFixed(1)}%` : '0%';
+}
 
 // ======== Meta UI
 function fillOverridesUI(merged) {
@@ -135,6 +285,8 @@ document.getElementById('applySymbol').addEventListener('click', async () => {
   localStorage.setItem('lastSymbol', sym);
   document.getElementById('titleSymbol').textContent = sym;
   await refreshMetaUI(sym);
+  await refreshBalances();
+  await fetchData();
   await fetchSpreadData(true);
 });
 
@@ -278,6 +430,7 @@ if (Number.isFinite(alertMax)) {
   const el = document.getElementById('alertMax');
   if (el) el.value = alertMax;
 }
+useScientificNotation = localStorage.getItem('quotesScientific') === '1';
 const soundToggleEl = document.getElementById('soundToggle');
 if (soundToggleEl) soundToggleEl.checked = soundEnabled;
 const telegramToggleEl = document.getElementById('telegramToggle');
@@ -290,6 +443,8 @@ const telegramIncludeDiffEl = document.getElementById('telegramIncludeDiff');
 if (telegramIncludeDiffEl) telegramIncludeDiffEl.checked = telegramIncludeDiff;
 const telegramIncludeVolumesEl = document.getElementById('telegramIncludeVolumes');
 if (telegramIncludeVolumesEl) telegramIncludeVolumesEl.checked = telegramIncludeVolumes;
+const scientificToggleEl = document.getElementById('scientificToggle');
+if (scientificToggleEl) scientificToggleEl.checked = useScientificNotation;
 
 function playBeep() {
   try {
@@ -439,6 +594,11 @@ telegramIncludeVolumesEl?.addEventListener('change', e => {
   telegramIncludeVolumes = e.target.checked;
   localStorage.setItem('tgIncludeVolumes', telegramIncludeVolumes ? '1' : '0');
 });
+scientificToggleEl?.addEventListener('change', e => {
+  useScientificNotation = e.target.checked;
+  try { localStorage.setItem('quotesScientific', useScientificNotation ? '1' : '0'); } catch {}
+  renderQuotes();
+});
 
 function persistSelections() {
   localStorage.setItem('levels_open', JSON.stringify(Array.from(levelSelections.open).sort((a, b) => a - b)));
@@ -458,23 +618,53 @@ function syncSelectionWithLevels(mode, maxLevels) {
   if (changed) persistSelections();
 }
 
+function shouldUseScientific(num) {
+  if (!useScientificNotation) return false;
+  const str = num.toString().toLowerCase();
+  if (str.includes('e')) return true;
+  const parts = str.split('.');
+  if (parts.length !== 2) return false;
+  const decimals = parts[1].replace(/0+$/, '');
+  return decimals.length > 6;
+}
+
 function formatNumberValue(value, digits = 6) {
   const num = Number(value);
-  if (!Number.isFinite(num)) return '-';
+  if (!Number.isFinite(num)) return '—';
+  if (shouldUseScientific(num)) {
+    return num.toExponential(2);
+  }
   return num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: digits });
 }
 
 function formatVolumeValue(value, digits, unit) {
   const num = Number(value);
-  if (!Number.isFinite(num)) return '-';
-  const base = num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: digits });
+  if (!Number.isFinite(num)) return '—';
+  const base = shouldUseScientific(num)
+    ? num.toExponential(2)
+    : num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: digits });
   return unit ? `${base} ${unit}` : base;
 }
 
-function formatDiffValue(value) {
+function formatDiffValue(value, digits = 2) {
   const num = Number(value);
   if (!Number.isFinite(num)) return '-%';
-  return `${num.toFixed(6)}%`;
+  return `${num.toFixed(digits)}%`;
+}
+
+function updateReferencePrices(openLevels, closeLevels) {
+  const pickPrice = (levels, extractor) => {
+    for (const lvl of levels) {
+      const val = Number(extractor(lvl));
+      if (Number.isFinite(val) && val > 0) return val;
+    }
+    return null;
+  };
+  const gatePrice = pickPrice(openLevels, lvl => lvl?.gate?.price) ?? pickPrice(closeLevels, lvl => lvl?.gate?.price);
+  const mexcPrice = pickPrice(openLevels, lvl => lvl?.mexc?.price) ?? pickPrice(closeLevels, lvl => lvl?.mexc?.price);
+  lastReferencePrices.gate = Number.isFinite(gatePrice) ? gatePrice : null;
+  lastReferencePrices.mexc = Number.isFinite(mexcPrice) ? mexcPrice : null;
+  updateMaxBaseDisplays();
 }
 
 function renderLevelsTable(mode, levels, baseSymbol, tbodyId) {
@@ -583,6 +773,13 @@ function getSelectedLevelsPayload() {
 
 function renderQuotes() {
   if (!lastQuotes) return;
+  if (lastQuotes.baseSymbol) {
+    const normalized = String(lastQuotes.baseSymbol).toUpperCase();
+    if (normalized && normalized !== currentBaseSymbol) {
+      currentBaseSymbol = normalized;
+      updateBaseSymbolUI();
+    }
+  }
   const baseSymbol = lastQuotes.baseSymbol || (lastQuotes.symbol ? String(lastQuotes.symbol).split('_')[0] : 'BASE');
   const openLevels = lastQuotes.open?.levels || [];
   const closeLevels = lastQuotes.close?.levels || [];
@@ -592,6 +789,8 @@ function renderQuotes() {
 
   renderLevelsTable('open', openLevels, baseSymbol, 'openQuotesBody');
   renderLevelsTable('close', closeLevels, baseSymbol, 'closeQuotesBody');
+
+  updateReferencePrices(openLevels, closeLevels);
 
   const openStats = computeSelectionStats('open');
   const closeStats = computeSelectionStats('close');
@@ -1096,6 +1295,7 @@ async function fetchData() {
     const r = await fetch('/api/data');
     const d = await r.json();
     lastQuotes = d;
+    if (d.symbol) setCurrentSymbol(d.symbol);
     document.getElementById('titleSymbol').textContent = d.symbol || '-';
     renderQuotes();
     fetchSpreadData();
@@ -1142,18 +1342,6 @@ if (resetSpreadZoomBtn) {
     if (chart && typeof chart.resetZoom === 'function') {
       chart.resetZoom();
     }
-  });
-}
-
-const toggleSpreadCardBtn = document.getElementById('toggleSpreadCard');
-if (toggleSpreadCardBtn) {
-  toggleSpreadCardBtn.addEventListener('click', () => {
-    const card = document.getElementById('spreadCard');
-    if (!card) return;
-    card.classList.toggle('collapsed');
-    const collapsed = card.classList.contains('collapsed');
-    toggleSpreadCardBtn.textContent = collapsed ? 'Mostrar' : 'Ocultar';
-    if (!collapsed) renderSpreadChart();
   });
 }
 
@@ -1537,14 +1725,35 @@ async function refreshPosition() {
     const s = payload?.state || payload || {};
     const g = s.gate || {};
     const m = s.mexc || {};
-    document.getElementById('ppTarget').textContent = s.targetQty || 0;
-    document.getElementById('ppGateFilled').textContent = g.filledQty || 0;
-    document.getElementById('ppGateAvg').textContent = (g.avgPrice || 0).toFixed ? g.avgPrice.toFixed(11) : g.avgPrice;
-    document.getElementById('ppMexcFilled').textContent = m.filledQty || 0;
-    document.getElementById('ppMexcAvg').textContent = (m.avgPrice || 0).toFixed ? m.avgPrice.toFixed(11) : m.avgPrice;
-    document.getElementById('ppArb').textContent = (s.arbPctAvg || 0).toFixed ? s.arbPctAvg.toFixed(6) : s.arbPctAvg;
-    document.getElementById('ppPnl').textContent = (s.pnlUsd || 0).toFixed ? s.pnlUsd.toFixed(6) : s.pnlUsd;
-    drawProgressChart(s.series || []);
+    const baseSymbol = getCurrentBaseSymbol();
+    const targetQty = toNumberOrNull(s.targetQty);
+    const gateFilled = toNumberOrNull(g.filledQty);
+    const gateAvg = toNumberOrNull(g.avgPrice);
+    const mexcFilled = toNumberOrNull(m.filledQty);
+    const mexcAvg = toNumberOrNull(m.avgPrice);
+    const arbPct = toNumberOrNull(s.arbPctAvg);
+    const pnl = toNumberOrNull(s.pnlUsd);
+    const totalFilledRaw = toNumberOrNull(s.filledQty);
+    const totalFilled = Number.isFinite(totalFilledRaw)
+      ? totalFilledRaw
+      : Math.max(gateFilled ?? 0, mexcFilled ?? 0);
+
+    const targetEl = document.getElementById('ppTarget');
+    if (targetEl) targetEl.textContent = formatVolumeValue(targetQty, 6, baseSymbol);
+    const gateFilledEl = document.getElementById('ppGateFilled');
+    if (gateFilledEl) gateFilledEl.textContent = formatVolumeValue(gateFilled, 6, baseSymbol);
+    const gateAvgEl = document.getElementById('ppGateAvg');
+    if (gateAvgEl) gateAvgEl.textContent = formatNumberValue(gateAvg, 8);
+    const mexcFilledEl = document.getElementById('ppMexcFilled');
+    if (mexcFilledEl) mexcFilledEl.textContent = formatVolumeValue(mexcFilled, 6, baseSymbol);
+    const mexcAvgEl = document.getElementById('ppMexcAvg');
+    if (mexcAvgEl) mexcAvgEl.textContent = formatNumberValue(mexcAvg, 8);
+    const arbEl = document.getElementById('ppArb');
+    if (arbEl) arbEl.textContent = formatDiffValue(arbPct, 4);
+    const pnlEl = document.getElementById('ppPnl');
+    if (pnlEl) pnlEl.textContent = formatTwoDecimals(pnl);
+
+    updateProgressBar(targetQty, totalFilled);
     fillPositionForm(s);
     renderPositionSummaries(payload?.summaries || []);
   } catch {}
@@ -1614,22 +1823,56 @@ document.getElementById('executeTrade').addEventListener('click', async () => {
 });
 
 // [FIX] handler "Definir meta"
-document.getElementById('setTarget').addEventListener('click', async () => {
-  const val = Number(document.getElementById('targetQty').value);
-  if (!Number.isFinite(val) || val < 0) { alert('Valor inválido para a meta.'); return; }
-  try {
-    const resp = await fetch('/api/position-target', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetQty: val })
-    });
-    const out = await safeJson(resp);
-    if (!resp.ok || !out.ok) { alert('Falha ao definir meta.'); return; }
-    document.getElementById('ppTarget').textContent = out.targetQty ?? val;
-  } catch (e) {
-    alert('Erro ao definir meta: ' + (e.message || e));
-  }
-});
+async function submitTargetQty(val) {
+  const num = Number(val);
+  if (!Number.isFinite(num) || num < 0) throw new Error('Valor inválido para a meta.');
+  const resp = await fetch('/api/position-target', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targetQty: num })
+  });
+  const out = await safeJson(resp);
+  if (!resp.ok || !out.ok) throw new Error('Falha ao definir meta.');
+  const final = out.targetQty ?? num;
+  const targetEl = document.getElementById('ppTarget');
+  if (targetEl) targetEl.textContent = formatVolumeValue(final, 6, getCurrentBaseSymbol());
+  return final;
+}
+
+const setTargetBtn = document.getElementById('setTarget');
+if (setTargetBtn) {
+  setTargetBtn.addEventListener('click', async () => {
+    const input = document.getElementById('targetQty');
+    const val = input ? Number(input.value) : NaN;
+    try {
+      const final = await submitTargetQty(val);
+      if (input) input.value = final;
+      await refreshPosition();
+    } catch (e) {
+      alert('Erro ao definir meta: ' + (e.message || e));
+    }
+  });
+}
+
+function bindMaxTargetButton(id) {
+  const btn = document.getElementById(id);
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const raw = Number(btn.dataset.targetQty);
+    if (!Number.isFinite(raw) || raw <= 0) return;
+    const input = document.getElementById('targetQty');
+    if (input) input.value = raw;
+    try {
+      await submitTargetQty(raw);
+      await refreshPosition();
+    } catch (e) {
+      alert('Erro ao definir meta: ' + (e.message || e));
+    }
+  });
+}
+
+bindMaxTargetButton('gateMaxBaseBtn');
+bindMaxTargetButton('mexcMaxBaseBtn');
 
 const positionSaveBtn = document.getElementById('positionSaveBtn');
 if (positionSaveBtn) {
@@ -1684,32 +1927,12 @@ if (positionDismantleBtn) {
 }
 
 // ======== Gráfico simples
-function drawProgressChart(series) {
-  const canvas = document.getElementById('progressChart');
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  ctx.clearRect(0,0,W,H);
-  ctx.beginPath(); ctx.moveTo(40,H-30); ctx.lineTo(W-10,H-30); ctx.moveTo(40,H-30); ctx.lineTo(40,10); ctx.stroke();
-  if (!series.length) { ctx.fillText('Sem dados de preenchimento ainda', 60, H/2); return; }
-  const filledOf = p => {
-    if (typeof p.filledQty === 'number') return p.filledQty;
-    if (p.gate && typeof p.gate.filledQty === 'number') return p.gate.filledQty;
-    if (p.mexc && typeof p.mexc.filledQty === 'number') return p.mexc.filledQty;
-    return 0;
-  };
-  const xs = series.map(p=>p.t), ys = series.map(p=>filledOf(p));
-  const minX = Math.min(...xs), maxX = Math.max(...xs), maxY = Math.max(...ys)||1;
-  const x = (t)=> 40 + (t-minX)*(W-60)/(maxX-minX || 1);
-  const y = (v)=> (H-30) - v*(H-50)/(maxY || 1);
-  ctx.beginPath(); series.forEach((p,i)=>{ const X=x(p.t), Y=y(filledOf(p)); if(!i) ctx.moveTo(X,Y); else ctx.lineTo(X,Y); }); ctx.stroke();
-  series.forEach(p=>{ const X=x(p.t), Y=y(filledOf(p)); ctx.beginPath(); ctx.arc(X,Y,2,0,Math.PI*2); ctx.fill(); });
-}
-
 // ======== Init
 (async function init() {
   const last = localStorage.getItem('lastSymbol');
   const serverSym = await getSymbol();
   const sym = last || serverSym || 'BASE_USDT';
+  setupCardToggles();
   document.getElementById('symbolInput').value = sym;
   document.getElementById('titleSymbol').textContent = sym;
   await setSymbol(sym);
