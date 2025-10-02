@@ -230,12 +230,6 @@
         <label>Meta total
           <input id="posEditTarget" type="number" step="any" class="mono" />
         </label>
-        <label>Total preenchido
-          <input id="posEditFilled" type="number" step="any" class="mono" />
-        </label>
-        <label>Preço médio geral
-          <input id="posEditAvg" type="number" step="any" class="mono" />
-        </label>
         <label>Arb média (%)
           <input id="posEditArb" type="number" step="any" class="mono" />
         </label>
@@ -260,9 +254,6 @@
         <label>Preço médio
           <input id="posEditMexcAvg" type="number" step="any" class="mono" />
         </label>
-        <label>Position ID
-          <input id="posEditMexcId" type="text" class="mono" />
-        </label>
       </div>
     </div>
     <div class="position-edit-actions">
@@ -278,13 +269,17 @@
         <thead>
           <tr>
             <th>ID</th>
-            <th>Data</th>
+            <th>Ativo</th>
+            <th>Data/Hora Abertura</th>
+            <th>Data/Hora Fechamento</th>
+            <th>Tempo Total da posição</th>
             <th>Meta</th>
             <th>Gate</th>
             <th>MEXC</th>
-            <th>Preenchido</th>
-            <th>Preço médio de abertura</th>
-            <th>Preço médio de fechamento</th>
+            <th>Gate Abertura</th>
+            <th>MEXC Abertura</th>
+            <th>Gate Fechamento</th>
+            <th>MEXC Fechamento</th>
             <th>Arb final (%)</th>
             <th>PnL</th>
             <th>Nota</th>
@@ -367,6 +362,10 @@
         <div>
           <span class="label">Fechamento mín</span>
           <span id="spreadCloseMin">-</span>
+        </div>
+        <div>
+          <span class="label">Arbitragem final (diferença)</span>
+          <span id="spreadFinalArb">-</span>
         </div>
       </div>
     </div>

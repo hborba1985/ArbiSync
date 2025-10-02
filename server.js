@@ -30,6 +30,7 @@ const POSITION_SUMMARY_LIMIT = 50;
 
 function createEmptyPositionState() {
   return {
+    symbol: currentSymbol || null,
     targetQty: 0,
     filledQty: 0,
     avgPrice: 0,
@@ -106,6 +107,39 @@ function sanitizeTrades(trades) {
   return cleaned.length > TRADES_LIMIT ? cleaned.slice(-TRADES_LIMIT) : cleaned;
 }
 
+function recalcPositionAggregates(state) {
+  if (!state || typeof state !== 'object') return state;
+  if (!state.symbol && currentSymbol) state.symbol = currentSymbol;
+  if (!state.gate || typeof state.gate !== 'object') state.gate = { filledQty: 0, avgPrice: 0 };
+  if (!state.mexc || typeof state.mexc !== 'object') state.mexc = { filledQty: 0, avgPrice: 0 };
+
+  const gateQty = Number(state.gate.filledQty);
+  const mexcQty = Number(state.mexc.filledQty);
+  if (Number.isFinite(gateQty)) {
+    state.filledQty = gateQty;
+  } else if (Number.isFinite(mexcQty)) {
+    state.filledQty = mexcQty;
+  } else if (!Number.isFinite(Number(state.filledQty))) {
+    state.filledQty = 0;
+  }
+
+  const gateAvg = Number(state.gate.avgPrice);
+  const mexcAvg = Number(state.mexc.avgPrice);
+  if (Number.isFinite(gateAvg) && gateAvg > 0) {
+    state.avgPrice = gateAvg;
+  }
+
+  if (Number.isFinite(gateAvg) && gateAvg !== 0 && Number.isFinite(mexcAvg) && Number.isFinite(state.filledQty)) {
+    const diff = mexcAvg - gateAvg;
+    const arb = (diff / gateAvg) * 100;
+    if (Number.isFinite(arb)) state.arbPctAvg = arb;
+    const pnl = diff * state.filledQty;
+    if (Number.isFinite(pnl)) state.pnlUsd = pnl;
+  }
+
+  return state;
+}
+
 function applyPositionStatePatch(base, patch) {
   const out = {
     ...base,
@@ -164,7 +198,7 @@ function applyPositionStatePatch(base, patch) {
     }
   }
 
-  return out;
+  return recalcPositionAggregates(out);
 }
 
 function clonePositionState(src) {
@@ -919,10 +953,35 @@ app.get('/api/data', async (_req, res) => {
     const nowTs = Date.now();
     const openSpread = Number(openLevels[0]?.diffPct);
     const closeSpread = Number(closeLevels[0]?.diffPct);
+    const normalizeVolumeSnapshot = (levels) => {
+      const snapshot = [];
+      for (let i = 0; i < 3; i++) {
+        const level = levels[i];
+        if (!level) { snapshot.push(null); continue; }
+        const gateUsd = Number(level.gate?.usdtVolume);
+        const mexcUsd = Number(level.mexc?.usdtVolume);
+        if (Number.isFinite(gateUsd) && Number.isFinite(mexcUsd)) {
+          snapshot.push(Math.min(gateUsd, mexcUsd));
+        } else if (Number.isFinite(gateUsd)) {
+          snapshot.push(gateUsd);
+        } else if (Number.isFinite(mexcUsd)) {
+          snapshot.push(mexcUsd);
+        } else {
+          snapshot.push(null);
+        }
+      }
+      return snapshot;
+    };
+    const openVolumesSnapshot = normalizeVolumeSnapshot(openLevels);
+    const closeVolumesSnapshot = normalizeVolumeSnapshot(closeLevels);
+    const positionArbSnapshot = Number(positionState?.arbPctAvg);
     try {
       db.saveSpreadSnapshot(symbol, nowTs,
         Number.isFinite(openSpread) ? openSpread : null,
-        Number.isFinite(closeSpread) ? closeSpread : null
+        Number.isFinite(closeSpread) ? closeSpread : null,
+        openVolumesSnapshot,
+        closeVolumesSnapshot,
+        Number.isFinite(positionArbSnapshot) ? positionArbSnapshot : null
       );
       db.pruneSpreadSnapshots(symbol, nowTs - SPREAD_WINDOW_MS);
     } catch (err) {
@@ -956,10 +1015,37 @@ app.get('/api/spreads', (req, res) => {
     return res.status(500).json({ error: 'Erro ao carregar spreads.' });
   }
 
+  const parseVolumeColumn = (value) => {
+    if (!value) return [];
+    if (Array.isArray(value)) {
+      return value.map((v) => {
+        if (v === null || v === undefined) return null;
+        const num = Number(v);
+        return Number.isFinite(num) ? num : null;
+      });
+    }
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) {
+          return parsed.map((v) => {
+            if (v === null || v === undefined) return null;
+            const num = Number(v);
+            return Number.isFinite(num) ? num : null;
+          });
+        }
+      } catch {}
+    }
+    return [];
+  };
+
   const points = rows.map((row) => ({
     ts: Number(row.ts) || nowTs,
     open: row.open == null ? null : Number(row.open),
-    close: row.close == null ? null : Number(row.close)
+    close: row.close == null ? null : Number(row.close),
+    openVolumes: parseVolumeColumn(row.openVolumes),
+    closeVolumes: parseVolumeColumn(row.closeVolumes),
+    positionArb: row.positionArb == null ? null : Number(row.positionArb)
   }));
 
   const computeExtrema = (key) => {
@@ -1117,6 +1203,7 @@ app.post('/api/notify-telegram', async (req, res) => {
     const payload = req.body || {};
     const symbolRaw = typeof payload.symbol === 'string' ? payload.symbol.trim() : '';
     const symbol = symbolRaw ? symbolRaw.toUpperCase() : currentSymbol;
+    const mode = payload.mode === 'close' ? 'close' : 'open';
     const options = payload.options || {};
     const includeSymbol = options.includeSymbol !== false;
     const includeDiff = options.includeDiff !== false;
@@ -1149,6 +1236,7 @@ app.post('/api/notify-telegram', async (req, res) => {
     }
 
     const lines = ['Alerta de arbitragem'];
+    lines.push(`Spread: ${mode === 'close' ? 'Fechamento' : 'Abertura'}`);
     if (includeSymbol && symbol) lines.push(`Ativo: ${symbol}`);
     const diffRaw = Number(payload.diff);
     const diffVal = Number.isFinite(diffRaw) ? diffRaw : (Number.isFinite(stats.diffPct) ? stats.diffPct : null);
@@ -1213,8 +1301,10 @@ app.post('/api/position-dismantle', (req, res) => {
     const snapshot = clonePositionState(positionState);
     snapshot.series = sanitizeSeries(snapshot.series);
     snapshot.trades = sanitizeTrades(snapshot.trades);
+    if (!snapshot.symbol && currentSymbol) snapshot.symbol = currentSymbol;
     const summaryPayload = {
       note: note || undefined,
+      symbol: snapshot.symbol,
       state: snapshot
     };
     const info = db.savePositionSummary(summaryPayload);
@@ -1240,6 +1330,8 @@ app.post('/api/position-dismantle', (req, res) => {
 
 function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
   const meta = item?.metaUsed || {};
+  if (item?.symbol) positionState.symbol = item.symbol;
+  else if (!positionState.symbol && currentSymbol) positionState.symbol = currentSymbol;
   const gateQty = Number(gFilled || 0);
   const mexcContracts = Number(mFilled || 0);
 
