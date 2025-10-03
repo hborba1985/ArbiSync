@@ -74,12 +74,75 @@
     .balance-message { font-size: 12px; color: #b00; }
     .balance-actions { margin-top: 10px; display:flex; justify-content:flex-end; }
     .quotes-card .quote-controls { margin-top: 12px; }
+    .execution-logs { display: flex; flex-direction: column; gap: 12px; }
+    .log-block { border: 1px solid #e0e0e0; border-radius: 6px; background: #fafafa; }
+    .log-block > summary { cursor: pointer; padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-weight: 600; font-size: 14px; }
+    .log-block > summary span.meta { font-weight: 400; font-size: 12px; color: #444; margin-left: auto; }
+    .log-block-content { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
+    .log-metrics { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: #333; }
+    .log-metrics span { background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 4px 6px; }
+    .log-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+    .log-step { border-left: 3px solid #bbb; padding-left: 10px; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+    .log-step.system { border-color: #2ca02c; }
+    .log-step.calc { border-color: #9467bd; }
+    .log-step.network { border-color: #ff7f0e; }
+    .log-step.gate { border-color: #1f77b4; }
+    .log-step.mexc { border-color: #d62728; }
+    .log-step.error { border-color: #b00020; }
+    .log-step-header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-weight: 600; }
+    .log-step-header span.times { font-weight: 400; color: #555; }
+    .log-step-body { color: #333; display: flex; flex-wrap: wrap; gap: 6px; }
+    .log-step-body span { background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 2px 4px; }
+    .log-empty { font-size: 13px; color: #666; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"></script>
 </head>
 <body>
   <h1>Arbitragem Gate.io x MEXC — <span id="titleSymbol">BASE_USDT</span></h1>
+
+  <div class="card top" id="configCard">
+    <h3>Par &amp; Configurações</h3>
+    <div class="card-body">
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <label class="inline" for="symbolInput">Par (BASE_QUOTE):</label>
+        <input id="symbolInput" type="text" value="BASE_USDT" class="mono" />
+        <button id="applySymbol">Usar</button>
+        <button id="autoCfg">Auto-configurar</button>
+        <span id="metaBadge" class="mono muted">meta: —</span>
+      </div>
+
+      <details style="margin-top:10px;">
+        <summary>Overrides manuais (opcional)</summary>
+        <div style="display:grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap:10px; margin-top:10px;">
+          <div>
+            <div class="muted" style="margin-bottom:6px;"><strong>Gate</strong></div>
+            <label>priceScale <input id="ov_gate_price" type="number" step="1" class="mono" /></label><br/>
+            <label>qtyScale <input id="ov_gate_qty" type="number" step="1" class="mono" /></label><br/>
+            <label>minQty <input id="ov_gate_minqty" type="number" step="any" class="mono" /></label><br/>
+            <label>minQuote <input id="ov_gate_minquote" type="number" step="any" class="mono" /></label>
+          </div>
+          <div>
+            <div class="muted" style="margin-bottom:6px;"><strong>MEXC</strong></div>
+            <label>priceScale <input id="ov_mexc_price" type="number" step="1" class="mono" /></label><br/>
+            <label>volPrecision <input id="ov_mexc_volp" type="number" step="1" class="mono" /></label><br/>
+            <label>contractSize <input id="ov_mexc_cs" type="number" step="any" class="mono" /></label><br/>
+            <label>minContracts <input id="ov_mexc_minc" type="number" step="1" class="mono" /></label>
+          </div>
+          <div>
+            <div class="muted" style="margin-bottom:6px;"><strong>Settings</strong></div>
+            <label>margem (%) <input id="ov_set_margin" type="number" step="any" class="mono" /></label><br/>
+            <label>leverage <input id="ov_set_lev" type="number" step="any" class="mono" /></label><br/>
+            <label>Gate extra (%) <input id="ov_set_gate_extra" type="number" step="any" class="mono" /></label>
+          </div>
+        </div>
+        <div style="margin-top:10px;">
+          <button id="saveOverride">Salvar override</button>
+        </div>
+        <pre id="metaText" class="mono" style="margin-top:10px;">(meta não carregada)</pre>
+      </details>
+    </div>
+  </div>
 
   <div class="card" id="spreadCard">
     <h3>Gráfico de Spreads</h3>
@@ -128,49 +191,6 @@
           <span id="spreadFinalArb">-</span>
         </div>
       </div>
-    </div>
-  </div>
-
-  <div class="card top" id="configCard">
-    <h3>Par &amp; Configurações</h3>
-    <div class="card-body">
-      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-        <label class="inline" for="symbolInput">Par (BASE_QUOTE):</label>
-        <input id="symbolInput" type="text" value="BASE_USDT" class="mono" />
-        <button id="applySymbol">Usar</button>
-        <button id="autoCfg">Auto-configurar</button>
-        <span id="metaBadge" class="mono muted">meta: —</span>
-      </div>
-
-      <details style="margin-top:10px;">
-        <summary>Overrides manuais (opcional)</summary>
-        <div style="display:grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap:10px; margin-top:10px;">
-          <div>
-            <div class="muted" style="margin-bottom:6px;"><strong>Gate</strong></div>
-            <label>priceScale <input id="ov_gate_price" type="number" step="1" class="mono" /></label><br/>
-            <label>qtyScale <input id="ov_gate_qty" type="number" step="1" class="mono" /></label><br/>
-            <label>minQty <input id="ov_gate_minqty" type="number" step="any" class="mono" /></label><br/>
-            <label>minQuote <input id="ov_gate_minquote" type="number" step="any" class="mono" /></label>
-          </div>
-          <div>
-            <div class="muted" style="margin-bottom:6px;"><strong>MEXC</strong></div>
-            <label>priceScale <input id="ov_mexc_price" type="number" step="1" class="mono" /></label><br/>
-            <label>volPrecision <input id="ov_mexc_volp" type="number" step="1" class="mono" /></label><br/>
-            <label>contractSize <input id="ov_mexc_cs" type="number" step="any" class="mono" /></label><br/>
-            <label>minContracts <input id="ov_mexc_minc" type="number" step="1" class="mono" /></label>
-          </div>
-          <div>
-            <div class="muted" style="margin-bottom:6px;"><strong>Settings</strong></div>
-            <label>margem (%) <input id="ov_set_margin" type="number" step="any" class="mono" /></label><br/>
-            <label>leverage <input id="ov_set_lev" type="number" step="any" class="mono" /></label><br/>
-            <label>Gate extra (%) <input id="ov_set_gate_extra" type="number" step="any" class="mono" /></label>
-          </div>
-        </div>
-        <div style="margin-top:10px;">
-          <button id="saveOverride">Salvar override</button>
-        </div>
-        <pre id="metaText" class="mono" style="margin-top:10px;">(meta não carregada)</pre>
-      </details>
     </div>
   </div>
 
@@ -352,6 +372,13 @@
           <button id="refreshBalances">Atualizar saldos</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div class="card" id="executionLogsCard">
+    <h3>Logs de execução de ordens</h3>
+    <div class="card-body">
+      <div id="executionLogs" class="execution-logs"></div>
     </div>
   </div>
 
