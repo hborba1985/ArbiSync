@@ -8,9 +8,11 @@
     body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 16px; color: #111; }
     h1 { margin: 0 0 16px 0; font-size: 22px; }
     .row { display: flex; gap: 16px; flex-wrap: wrap; }
-    .card { border: 1px solid #ddd; border-radius: 6px; padding: 14px; background: #fff; }
-    .card h3 { margin: 0 0 10px 0; font-size: 18px; display:flex; align-items:center; justify-content: space-between; gap:12px; }
+    .card { border: 1px solid #ddd; border-radius: 6px; padding: 14px; background: #fff; position: relative; }
+    .card h3 { margin: 0; font-size: 18px; display:flex; align-items:center; justify-content: space-between; gap:12px; }
+    .card-body { margin-top: 10px; }
     .w33 { flex: 1 1 360px; }
+    .w66 { flex: 2 1 360px; }
     label.inline { display: inline-block; margin-right: 8px; }
     input[type="text"], input[type="number"] { padding: 4px 6px; }
     button { padding: 6px 10px; cursor: pointer; }
@@ -54,6 +56,24 @@
     .spread-stats span.label { display:block; color:#555; font-size:12px; text-transform:uppercase; letter-spacing:0.04em; }
     .spread-chart-wrapper { position: relative; width: 100%; max-width: 100%; height: 320px; }
     .spread-chart-wrapper canvas { width: 100% !important; height: 100% !important; display: block; }
+    .progress-section { display: flex; flex-direction: column; gap: 8px; }
+    .progress-bar { position: relative; width: 100%; height: 20px; background: #f0f0f0; border-radius: 10px; overflow: hidden; border: 1px solid #ddd; }
+    .progress-bar-fill { height: 100%; background: linear-gradient(90deg, #2ca02c, #1f77b4); width: 0%; display:flex; align-items:center; justify-content:flex-end; color:#fff; font-size: 12px; font-weight:600; padding-right:6px; transition: width 0.3s ease; }
+    .progress-bar-label { position: absolute; top: 0; left: 50%; transform: translateX(-50%); font-size: 12px; font-weight: 600; color: #111; line-height: 20px; }
+    .progress-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; font-size: 13px; }
+    .progress-metrics span.label { display:block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color:#555; }
+    .balance-section { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 14px; }
+    .balance-column { border: 1px solid #eee; border-radius: 6px; padding: 10px; background: #fafafa; display:flex; flex-direction:column; gap:8px; }
+    .balance-column h4 { margin: 0; font-size: 15px; }
+    .balance-line { display:flex; flex-direction:column; gap:4px; font-size: 13px; }
+    .balance-line .balance-label { font-weight: 600; }
+    .balance-values { display:flex; gap:6px; flex-wrap:wrap; }
+    .balance-max { display:flex; align-items:center; gap:6px; font-size: 12px; color:#333; }
+    .balance-target-button { padding: 2px 6px; font-size: 12px; cursor: pointer; }
+    .balance-target-button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .balance-message { font-size: 12px; color: #b00; }
+    .balance-actions { margin-top: 10px; display:flex; justify-content:flex-end; }
+    .quotes-card .quote-controls { margin-top: 12px; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"></script>
@@ -61,288 +81,28 @@
 <body>
   <h1>Arbitragem Gate.io x MEXC — <span id="titleSymbol">BASE_USDT</span></h1>
 
-  <!-- Par & Configurações (no topo, como no layout original) -->
-  <div class="card top">
-    <h3>Par &amp; Configurações</h3>
-    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-      <label class="inline" for="symbolInput">Par (BASE_QUOTE):</label>
-      <input id="symbolInput" type="text" value="BASE_USDT" class="mono" />
-      <button id="applySymbol">Usar</button>
-      <button id="autoCfg">Auto-configurar</button>
-      <span id="metaBadge" class="mono muted">meta: —</span>
-    </div>
-
-    <details style="margin-top:10px;">
-      <summary>Overrides manuais (opcional)</summary>
-      <div style="display:grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap:10px; margin-top:10px;">
-        <div>
-          <div class="muted" style="margin-bottom:6px;"><strong>Gate</strong></div>
-          <label>priceScale <input id="ov_gate_price" type="number" step="1" class="mono" /></label><br/>
-          <label>qtyScale <input id="ov_gate_qty" type="number" step="1" class="mono" /></label><br/>
-          <label>minQty <input id="ov_gate_minqty" type="number" step="any" class="mono" /></label><br/>
-          <label>minQuote <input id="ov_gate_minquote" type="number" step="any" class="mono" /></label>
-        </div>
-        <div>
-          <div class="muted" style="margin-bottom:6px;"><strong>MEXC</strong></div>
-          <label>priceScale <input id="ov_mexc_price" type="number" step="1" class="mono" /></label><br/>
-          <label>volPrecision <input id="ov_mexc_volp" type="number" step="1" class="mono" /></label><br/>
-          <label>contractSize <input id="ov_mexc_cs" type="number" step="any" class="mono" /></label><br/>
-          <label>minContracts <input id="ov_mexc_minc" type="number" step="1" class="mono" /></label>
-        </div>
-        <div>
-          <div class="muted" style="margin-bottom:6px;"><strong>Settings</strong></div>
-          <label>margem (%) <input id="ov_set_margin" type="number" step="any" class="mono" /></label><br/>
-          <label>leverage <input id="ov_set_lev" type="number" step="any" class="mono" /></label><br/>
-          <label>Gate extra (%) <input id="ov_set_gate_extra" type="number" step="any" class="mono" /></label>
-        </div>
-      </div>
-      <div style="margin-top:10px;">
-        <button id="saveOverride">Salvar override</button>
-      </div>
-      <pre id="metaText" class="mono" style="margin-top:10px;">(meta não carregada)</pre>
-    </details>
-  </div>
-
-  <div class="row">
-    <!-- Cotações -->
-    <div class="card w33 quotes-card">
-      <h3>Cotações</h3>
-
-      <div class="quote-summary">
-        <div><strong>Modo atual:</strong> <span id="quoteModeLabel">Abrir</span></div>
-        <div><strong>Diferença selecionada:</strong> <span id="diff">-%</span></div>
-      </div>
-      <div class="quote-summary">
-        <div>Open selecionado: <span id="openSummary">-</span></div>
-        <div>Close selecionado: <span id="closeSummary">-</span></div>
-      </div>
-
-      <div class="quotes-section">
-        <h4>Open — Gate (asks) vs MEXC (bids)</h4>
-        <table class="quotes-table">
-          <thead>
-            <tr>
-              <th class="col-check">Usar</th>
-              <th>Nível</th>
-              <th>Gate preço</th>
-              <th>Gate base</th>
-              <th>Gate USDT</th>
-              <th>MEXC preço</th>
-              <th>MEXC base</th>
-              <th>MEXC USDT</th>
-              <th>Dif.%</th>
-            </tr>
-          </thead>
-          <tbody id="openQuotesBody"></tbody>
-        </table>
-      </div>
-
-      <div class="quotes-section">
-        <h4>Close — Gate (bids) vs MEXC (asks)</h4>
-        <table class="quotes-table">
-          <thead>
-            <tr>
-              <th class="col-check">Usar</th>
-              <th>Nível</th>
-              <th>Gate preço</th>
-              <th>Gate base</th>
-              <th>Gate USDT</th>
-              <th>MEXC preço</th>
-              <th>MEXC base</th>
-              <th>MEXC USDT</th>
-              <th>Dif.%</th>
-            </tr>
-          </thead>
-          <tbody id="closeQuotesBody"></tbody>
-        </table>
-      </div>
-
-      <div class="quote-controls">
-        <div class="quote-control-row">
-          <label><input type="checkbox" id="modeClose" /> Fechar posições (inverter lógica)</label>
-        </div>
-        <div class="quote-control-row">
-          <span>Alerta de dif. (%):</span>
-          <input id="alertMin" type="number" step="any" class="mono" placeholder="min" />
-          <input id="alertMax" type="number" step="any" class="mono" placeholder="max" />
-          <label><input type="checkbox" id="soundToggle" /> Som</label>
-          <label><input type="checkbox" id="telegramToggle" /> Telegram</label>
-        </div>
-        <div class="quote-control-row telegram-template-row">
-          <label><input type="checkbox" id="telegramVolumeGuard" /> Somente se volume ≥ mínimos</label>
-          <label><input type="checkbox" id="telegramIncludeSymbol" checked /> Nome do ativo</label>
-          <label><input type="checkbox" id="telegramIncludeDiff" checked /> Diferença (%)</label>
-          <label><input type="checkbox" id="telegramIncludeVolumes" /> Volumes (3 níveis)</label>
-        </div>
-        <div class="quote-actions">
-          <button id="executeTrade">Executar Ordem Simultânea</button>
-        </div>
-      </div>
-      <pre id="status" class="mono status" style="margin-top:10px;"></pre>
-    </div>
-
-    <!-- Saldos -->
-    <div class="card w33">
-      <h3>Saldos</h3>
-
-      <div><b>Gate:</b></div>
-      <pre id="gateBalText" class="mono">—</pre>
-
-      <div style="margin-top:6px;"><b>MEXC:</b></div>
-      <pre id="mexcBalText" class="mono">—</pre>
-
-      <div style="margin-top:10px;">
-        <button id="refreshBalances">Atualizar saldos</button>
-      </div>
-    </div>
-
-    <!-- Meta & Progresso da Posição -->
-    <div class="card w33">
-      <h3>Meta &amp; Progresso da Posição</h3>
-      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-        <label for="targetQty">Meta (qtd total moeda base):</label>
-        <input id="targetQty" type="number" step="1" min="0" class="mono" />
-        <button id="setTarget">Definir meta</button>
-      </div>
-
-      <div class="mono" style="margin-top:10px;">
-        <div>Alvo: <span id="ppTarget">0</span></div>
-        <div style="margin-top:6px;"><strong>Gate</strong></div>
-        <div>Preenchido: <span id="ppGateFilled">0</span></div>
-        <div>Preço Médio: <span id="ppGateAvg">0</span></div>
-        <div style="margin-top:6px;"><strong>MEXC</strong></div>
-        <div>Preenchido: <span id="ppMexcFilled">0</span></div>
-        <div>Preço Médio: <span id="ppMexcAvg">0</span></div>
-        <div style="margin-top:6px;">Arb. Média (%): <span id="ppArb">0</span></div>
-        <div>PnL Geral (USDT): <span id="ppPnl">0</span></div>
-      </div>
-
-      <div style="margin-top:10px;">
-        <canvas id="progressChart" width="600" height="260"></canvas>
-      </div>
-    </div>
-  </div>
-
-  <div class="card" style="margin-top:16px;">
-    <h3>Editar estado da posição</h3>
-    <div class="position-edit-grid">
-      <div>
-        <label>Meta total
-          <input id="posEditTarget" type="number" step="any" class="mono" />
-        </label>
-        <label>Arb média (%)
-          <input id="posEditArb" type="number" step="any" class="mono" />
-        </label>
-        <label>PnL acumulado (USDT)
-          <input id="posEditPnl" type="number" step="any" class="mono" />
-        </label>
-      </div>
-      <div>
-        <div class="muted" style="margin-bottom:4px;"><strong>Gate</strong></div>
-        <label>Preenchido
-          <input id="posEditGateFilled" type="number" step="any" class="mono" />
-        </label>
-        <label>Preço médio
-          <input id="posEditGateAvg" type="number" step="any" class="mono" />
-        </label>
-      </div>
-      <div>
-        <div class="muted" style="margin-bottom:4px;"><strong>MEXC</strong></div>
-        <label>Preenchido
-          <input id="posEditMexcFilled" type="number" step="any" class="mono" />
-        </label>
-        <label>Preço médio
-          <input id="posEditMexcAvg" type="number" step="any" class="mono" />
-        </label>
-      </div>
-    </div>
-    <div class="position-edit-actions">
-      <textarea id="positionNote" placeholder="Anotação (opcional, usada ao desmontar)"></textarea>
-      <div class="position-edit-buttons">
-        <button id="positionSaveBtn">Salvar posição</button>
-        <button id="positionDismantleBtn">Desmontar posição</button>
-      </div>
-    </div>
-    <div class="position-summaries">
-      <h4>Resumos recentes</h4>
-      <table>
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Ativo</th>
-            <th>Data/Hora Abertura</th>
-            <th>Data/Hora Fechamento</th>
-            <th>Tempo Total da posição</th>
-            <th>Meta</th>
-            <th>Gate</th>
-            <th>MEXC</th>
-            <th>Gate Abertura</th>
-            <th>MEXC Abertura</th>
-            <th>Gate Fechamento</th>
-            <th>MEXC Fechamento</th>
-            <th>Arb final (%)</th>
-            <th>PnL</th>
-            <th>Nota</th>
-          </tr>
-        </thead>
-        <tbody id="positionSummariesBody"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Histórico -->
-  <div class="card" style="margin-top:16px;">
-    <h3>Histórico (ordens criadas pelo sistema)</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Local ID</th>
-          <th>Hora</th>
-          <th>Sentido</th>
-          <th>Gate Price</th>
-          <th>MEXC Price</th>
-          <th>Volume (moeda base)</th>
-          <th>%Arb</th>
-          <th>$PnL</th>
-          <th>Gate Order ID</th>
-          <th>Gate Status</th>
-          <th>GRO</th>
-          <th>MEXC Order ID</th>
-          <th>MEXC Status</th>
-          <th>MRO</th>
-          <th>Status</th>
-          <th>Ações</th>
-        </tr>
-      </thead>
-      <tbody id="historyBody"></tbody>
-    </table>
-  </div>
-
   <div class="card" id="spreadCard">
-    <h3>
-      Gráfico de Spreads
-      <button id="toggleSpreadCard" class="card-toggle">Ocultar</button>
-    </h3>
+    <h3>Gráfico de Spreads</h3>
     <div class="card-body">
       <div class="spread-controls">
         <strong>Mostrar:</strong>
         <button data-spread-filter="all" class="active">Todos</button>
-      <button data-spread-filter="open">Abertura</button>
-      <button data-spread-filter="close">Fechamento</button>
-      <button data-spread-filter="cross">Cruzamentos</button>
-      <strong style="margin-left:12px;">Intervalo:</strong>
-      <button data-spread-range="all" class="active">Tudo</button>
-      <button data-spread-range="5min">5min</button>
-      <button data-spread-range="15min">15min</button>
-      <button data-spread-range="30min">30min</button>
-      <button data-spread-range="1H">1H</button>
-      <button data-spread-range="4H">4H</button>
-      <button data-spread-range="6H">6H</button>
-      <button data-spread-range="12H">12H</button>
-      <button data-spread-range="24H">24H</button>
-      <button id="resetSpreadZoom" style="margin-left:auto;">Resetar zoom</button>
-      <button id="clearSpreadData">Limpar dados do ativo</button>
-    </div>
+        <button data-spread-filter="open">Abertura</button>
+        <button data-spread-filter="close">Fechamento</button>
+        <button data-spread-filter="cross">Cruzamentos</button>
+        <strong style="margin-left:12px;">Intervalo:</strong>
+        <button data-spread-range="all" class="active">Tudo</button>
+        <button data-spread-range="5min">5min</button>
+        <button data-spread-range="15min">15min</button>
+        <button data-spread-range="30min">30min</button>
+        <button data-spread-range="1H">1H</button>
+        <button data-spread-range="4H">4H</button>
+        <button data-spread-range="6H">6H</button>
+        <button data-spread-range="12H">12H</button>
+        <button data-spread-range="24H">24H</button>
+        <button id="resetSpreadZoom" style="margin-left:auto;">Resetar zoom</button>
+        <button id="clearSpreadData">Limpar dados do ativo</button>
+      </div>
       <div class="spread-chart-wrapper">
         <canvas id="spreadChart"></canvas>
       </div>
@@ -367,6 +127,328 @@
           <span class="label">Arbitragem final (diferença)</span>
           <span id="spreadFinalArb">-</span>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card top" id="configCard">
+    <h3>Par &amp; Configurações</h3>
+    <div class="card-body">
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <label class="inline" for="symbolInput">Par (BASE_QUOTE):</label>
+        <input id="symbolInput" type="text" value="BASE_USDT" class="mono" />
+        <button id="applySymbol">Usar</button>
+        <button id="autoCfg">Auto-configurar</button>
+        <span id="metaBadge" class="mono muted">meta: —</span>
+      </div>
+
+      <details style="margin-top:10px;">
+        <summary>Overrides manuais (opcional)</summary>
+        <div style="display:grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap:10px; margin-top:10px;">
+          <div>
+            <div class="muted" style="margin-bottom:6px;"><strong>Gate</strong></div>
+            <label>priceScale <input id="ov_gate_price" type="number" step="1" class="mono" /></label><br/>
+            <label>qtyScale <input id="ov_gate_qty" type="number" step="1" class="mono" /></label><br/>
+            <label>minQty <input id="ov_gate_minqty" type="number" step="any" class="mono" /></label><br/>
+            <label>minQuote <input id="ov_gate_minquote" type="number" step="any" class="mono" /></label>
+          </div>
+          <div>
+            <div class="muted" style="margin-bottom:6px;"><strong>MEXC</strong></div>
+            <label>priceScale <input id="ov_mexc_price" type="number" step="1" class="mono" /></label><br/>
+            <label>volPrecision <input id="ov_mexc_volp" type="number" step="1" class="mono" /></label><br/>
+            <label>contractSize <input id="ov_mexc_cs" type="number" step="any" class="mono" /></label><br/>
+            <label>minContracts <input id="ov_mexc_minc" type="number" step="1" class="mono" /></label>
+          </div>
+          <div>
+            <div class="muted" style="margin-bottom:6px;"><strong>Settings</strong></div>
+            <label>margem (%) <input id="ov_set_margin" type="number" step="any" class="mono" /></label><br/>
+            <label>leverage <input id="ov_set_lev" type="number" step="any" class="mono" /></label><br/>
+            <label>Gate extra (%) <input id="ov_set_gate_extra" type="number" step="any" class="mono" /></label>
+          </div>
+        </div>
+        <div style="margin-top:10px;">
+          <button id="saveOverride">Salvar override</button>
+        </div>
+        <pre id="metaText" class="mono" style="margin-top:10px;">(meta não carregada)</pre>
+      </details>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card w33 quotes-card" id="quotesCard">
+      <h3>Cotações</h3>
+      <div class="card-body">
+        <div class="quote-summary">
+          <div><strong>Modo atual:</strong> <span id="quoteModeLabel">Abrir</span></div>
+          <div><strong>Diferença selecionada:</strong> <span id="diff">-%</span></div>
+        </div>
+        <div class="quote-summary">
+          <div>Open selecionado: <span id="openSummary">-</span></div>
+          <div>Close selecionado: <span id="closeSummary">-</span></div>
+        </div>
+
+        <div class="quotes-section">
+          <h4>Open — Gate (asks) vs MEXC (bids)</h4>
+          <table class="quotes-table">
+            <thead>
+              <tr>
+                <th class="col-check">Usar</th>
+                <th>Nível</th>
+                <th>Gate preço</th>
+                <th>Gate base</th>
+                <th>Gate USDT</th>
+                <th>MEXC preço</th>
+                <th>MEXC base</th>
+                <th>MEXC USDT</th>
+                <th>Dif.%</th>
+              </tr>
+            </thead>
+            <tbody id="openQuotesBody"></tbody>
+          </table>
+        </div>
+
+        <div class="quotes-section">
+          <h4>Close — Gate (bids) vs MEXC (asks)</h4>
+          <table class="quotes-table">
+            <thead>
+              <tr>
+                <th class="col-check">Usar</th>
+                <th>Nível</th>
+                <th>Gate preço</th>
+                <th>Gate base</th>
+                <th>Gate USDT</th>
+                <th>MEXC preço</th>
+                <th>MEXC base</th>
+                <th>MEXC USDT</th>
+                <th>Dif.%</th>
+              </tr>
+            </thead>
+            <tbody id="closeQuotesBody"></tbody>
+          </table>
+        </div>
+
+        <div class="quote-controls">
+          <div class="quote-control-row">
+            <label><input type="checkbox" id="modeClose" /> Fechar posições (inverter lógica)</label>
+          </div>
+          <div class="quote-control-row">
+            <label><input type="checkbox" id="scientificToggle" /> Notação científica (&gt;6 decimais)</label>
+          </div>
+          <div class="quote-control-row">
+            <span>Alerta de dif. (%):</span>
+            <input id="alertMin" type="number" step="any" class="mono" placeholder="min" />
+            <input id="alertMax" type="number" step="any" class="mono" placeholder="max" />
+            <label><input type="checkbox" id="soundToggle" /> Som</label>
+            <label><input type="checkbox" id="telegramToggle" /> Telegram</label>
+          </div>
+          <div class="quote-control-row telegram-template-row">
+            <label><input type="checkbox" id="telegramVolumeGuard" /> Somente se volume ≥ mínimos</label>
+            <label><input type="checkbox" id="telegramIncludeSymbol" checked /> Nome do ativo</label>
+            <label><input type="checkbox" id="telegramIncludeDiff" checked /> Diferença (%)</label>
+            <label><input type="checkbox" id="telegramIncludeVolumes" /> Volumes (3 níveis)</label>
+          </div>
+          <div class="quote-actions">
+            <button id="executeTrade">Executar Ordem Simultânea</button>
+          </div>
+        </div>
+        <pre id="status" class="mono status" style="margin-top:10px;"></pre>
+      </div>
+    </div>
+
+    <div class="card w66" id="positionCard">
+      <h3>Meta, Progresso &amp; Saldos</h3>
+      <div class="card-body">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <label for="targetQty">Meta (qtd total moeda base):</label>
+          <input id="targetQty" type="number" step="1" min="0" class="mono" />
+          <button id="setTarget">Definir meta</button>
+        </div>
+
+        <div class="progress-section" style="margin-top:12px;">
+          <div class="progress-bar">
+            <div class="progress-bar-fill" id="positionProgressFill"></div>
+            <div class="progress-bar-label" id="positionProgressLabel">0%</div>
+          </div>
+          <div class="progress-metrics">
+            <div>
+              <span class="label">Meta</span>
+              <span id="ppTarget">0</span>
+            </div>
+            <div>
+              <span class="label">Preenchido Gate</span>
+              <span id="ppGateFilled">0</span>
+            </div>
+            <div>
+              <span class="label">Preço médio Gate</span>
+              <span id="ppGateAvg">0</span>
+            </div>
+            <div>
+              <span class="label">Preenchido MEXC</span>
+              <span id="ppMexcFilled">0</span>
+            </div>
+            <div>
+              <span class="label">Preço médio MEXC</span>
+              <span id="ppMexcAvg">0</span>
+            </div>
+            <div>
+              <span class="label">Arb. média (%)</span>
+              <span id="ppArb">0</span>
+            </div>
+            <div>
+              <span class="label">PnL geral (USDT)</span>
+              <span id="ppPnl">0</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="balance-section">
+          <div class="balance-column">
+            <h4>Gate</h4>
+            <div class="balance-line">
+              <span class="balance-label">USDT</span>
+              <div class="balance-values">
+                <span>disp <span id="gateUsdtAvailable">—</span></span>
+                <span>ordem <span id="gateUsdtLocked">—</span></span>
+              </div>
+              <div class="balance-max">
+                <span id="gateMaxBaseValue">Max: —</span>
+                <button type="button" class="balance-target-button" id="gateMaxBaseBtn" title="Definir meta com este volume">&gt;</button>
+              </div>
+            </div>
+            <div class="balance-line">
+              <span class="balance-label" id="gateBaseLabel">BASE</span>
+              <div class="balance-values">
+                <span>disp <span id="gateBaseAvailable">—</span></span>
+                <span>ordem <span id="gateBaseLocked">—</span></span>
+              </div>
+            </div>
+            <div class="balance-message" id="gateBalanceMessage"></div>
+          </div>
+          <div class="balance-column">
+            <h4>MEXC</h4>
+            <div class="balance-line">
+              <span class="balance-label">USDT</span>
+              <div class="balance-values">
+                <span>disp <span id="mexcUsdtAvailable">—</span></span>
+                <span>ordem <span id="mexcUsdtLocked">—</span></span>
+              </div>
+              <div class="balance-max">
+                <span id="mexcMaxBaseValue">Max: —</span>
+                <button type="button" class="balance-target-button" id="mexcMaxBaseBtn" title="Definir meta com este volume">&gt;</button>
+              </div>
+            </div>
+            <div class="balance-line">
+              <span class="balance-label" id="mexcBaseLabel">BASE</span>
+              <div class="balance-values">
+                <span>disp <span id="mexcBaseAvailable">—</span></span>
+                <span>ordem <span id="mexcBaseLocked">—</span></span>
+              </div>
+            </div>
+            <div class="balance-message" id="mexcBalanceMessage"></div>
+          </div>
+        </div>
+
+        <div class="balance-actions">
+          <button id="refreshBalances">Atualizar saldos</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="historyCard">
+    <h3>Histórico (ordens criadas pelo sistema)</h3>
+    <div class="card-body">
+      <table>
+        <thead>
+          <tr>
+            <th>Local ID</th>
+            <th>Hora</th>
+            <th>Sentido</th>
+            <th>Gate Price</th>
+            <th>MEXC Price</th>
+            <th>Volume (moeda base)</th>
+            <th>%Arb</th>
+            <th>$PnL</th>
+            <th>Gate Order ID</th>
+            <th>Gate Status</th>
+            <th>GRO</th>
+            <th>MEXC Order ID</th>
+            <th>MEXC Status</th>
+            <th>MRO</th>
+            <th>Status</th>
+            <th>Ações</th>
+          </tr>
+        </thead>
+        <tbody id="historyBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" id="positionEditCard">
+    <h3>Editar estado da posição</h3>
+    <div class="card-body">
+      <div class="position-edit-grid">
+        <div>
+          <label>Meta total
+            <input id="posEditTarget" type="number" step="any" class="mono" />
+          </label>
+          <label>Arb média (%)
+            <input id="posEditArb" type="number" step="any" class="mono" />
+          </label>
+          <label>PnL acumulado (USDT)
+            <input id="posEditPnl" type="number" step="any" class="mono" />
+          </label>
+        </div>
+        <div>
+          <div class="muted" style="margin-bottom:4px;"><strong>Gate</strong></div>
+          <label>Preenchido
+            <input id="posEditGateFilled" type="number" step="any" class="mono" />
+          </label>
+          <label>Preço médio
+            <input id="posEditGateAvg" type="number" step="any" class="mono" />
+          </label>
+        </div>
+        <div>
+          <div class="muted" style="margin-bottom:4px;"><strong>MEXC</strong></div>
+          <label>Preenchido
+            <input id="posEditMexcFilled" type="number" step="any" class="mono" />
+          </label>
+          <label>Preço médio
+            <input id="posEditMexcAvg" type="number" step="any" class="mono" />
+          </label>
+        </div>
+      </div>
+      <div class="position-edit-actions">
+        <textarea id="positionNote" placeholder="Anotação (opcional, usada ao desmontar)"></textarea>
+        <div class="position-edit-buttons">
+          <button id="positionSaveBtn">Salvar posição</button>
+          <button id="positionDismantleBtn">Desmontar posição</button>
+        </div>
+      </div>
+      <div class="position-summaries">
+        <h4>Resumos recentes</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Ativo</th>
+              <th>Data/Hora Abertura</th>
+              <th>Data/Hora Fechamento</th>
+              <th>Tempo Total da posição</th>
+              <th>Meta</th>
+              <th>Gate</th>
+              <th>MEXC</th>
+              <th>Gate Abertura</th>
+              <th>MEXC Abertura</th>
+              <th>Gate Fechamento</th>
+              <th>MEXC Fechamento</th>
+              <th>Arb final (%)</th>
+              <th>PnL</th>
+              <th>Nota</th>
+            </tr>
+          </thead>
+          <tbody id="positionSummariesBody"></tbody>
+        </table>
       </div>
     </div>
   </div>
