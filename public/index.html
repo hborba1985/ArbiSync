@@ -133,7 +133,10 @@
             <div class="muted" style="margin-bottom:6px;"><strong>Settings</strong></div>
             <label>margem (%) <input id="ov_set_margin" type="number" step="any" class="mono" /></label><br/>
             <label>leverage <input id="ov_set_lev" type="number" step="any" class="mono" /></label><br/>
-            <label>Gate extra (%) <input id="ov_set_gate_extra" type="number" step="any" class="mono" /></label>
+            <label>Gate extra (%) <input id="ov_set_gate_extra" type="number" step="any" class="mono" /></label><br/>
+            <label>Saldo mínimo p/ fechar (USDT)
+              <input id="ov_set_min_residual" type="number" step="any" class="mono" />
+            </label>
           </div>
         </div>
         <div style="margin-top:10px;">
@@ -385,6 +388,37 @@
   <div class="card" id="historyCard">
     <h3>Histórico (ordens criadas pelo sistema)</h3>
     <div class="card-body">
+      <details id="manualHistoryDetails" class="manual-history">
+        <summary>Adicionar/editar ordem manual</summary>
+        <div class="manual-history-form">
+          <div class="manual-history-grid">
+            <label>Modo
+              <select id="manualHistoryMode" class="mono">
+                <option value="open">Open</option>
+                <option value="close">Close</option>
+              </select>
+            </label>
+            <label>Volume (base)
+              <input id="manualHistoryVolume" type="number" step="any" class="mono" />
+            </label>
+            <label>Gate preço
+              <input id="manualHistoryGatePrice" type="number" step="any" class="mono" />
+            </label>
+            <label>MEXC preço
+              <input id="manualHistoryMexcPrice" type="number" step="any" class="mono" />
+            </label>
+            <label>Data/Hora (opcional)
+              <input id="manualHistoryCreatedAt" type="text" class="mono" placeholder="Ex.: 01/01/2024 10:00:00" />
+            </label>
+          </div>
+          <div id="manualHistoryEditingLabel" class="manual-history-editing"></div>
+          <div class="manual-history-actions">
+            <button id="manualHistorySave">Salvar ordem manual</button>
+            <button type="button" id="manualHistoryCancel">Cancelar edição</button>
+          </div>
+          <div id="manualHistoryStatus" class="manual-history-status"></div>
+        </div>
+      </details>
       <table>
         <thead>
           <tr>
