@@ -73,6 +73,186 @@ function formatTwoDecimals(value) {
   return value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
+function formatDuration(ms) {
+  const num = Number(ms);
+  if (!Number.isFinite(num) || num < 0) return '—';
+  if (num < 1) return `${(num * 1000).toFixed(0)} µs`;
+  if (num < 1000) return `${num.toFixed(0)} ms`;
+  const seconds = num / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 2 : 1)} s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds - minutes * 60;
+  if (minutes < 60) return `${minutes}m ${remainingSeconds.toFixed(1)}s`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m ${Math.round(remainingSeconds)}s`;
+}
+
+function formatLogValue(value) {
+  if (value === undefined || value === null) return '—';
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return String(value);
+    const abs = Math.abs(value);
+    if (abs === 0) return '0';
+    if (abs >= 1000) return value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    if (abs >= 1) return value.toFixed(2);
+    if (abs >= 0.01) return value.toFixed(4);
+    return value.toExponential(2);
+  }
+  if (typeof value === 'boolean') return value ? 'sim' : 'não';
+  if (Array.isArray(value)) return value.map(formatLogValue).join(', ');
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'object') {
+    try { return JSON.stringify(value); }
+    catch { return String(value); }
+  }
+  return String(value);
+}
+
+function resolveTimelineTimestamp(entry) {
+  if (!entry) return NaN;
+  if (Number.isFinite(entry.ts)) return Number(entry.ts);
+  if (Number.isFinite(entry.timestamp)) return Number(entry.timestamp);
+  if (entry.iso) {
+    const parsed = Date.parse(entry.iso);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return NaN;
+}
+
+function renderExecutionLogs(historyItems) {
+  const container = document.getElementById('executionLogs');
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (!Array.isArray(historyItems) || historyItems.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'log-empty';
+    empty.textContent = 'Nenhuma execução registrada ainda.';
+    container.appendChild(empty);
+    return;
+  }
+
+  const maxItems = Math.min(historyItems.length, 6);
+  for (let i = 0; i < maxItems; i += 1) {
+    const item = historyItems[i];
+    const timeline = Array.isArray(item?.timeline) ? item.timeline : [];
+    const startMsRaw = Number(item?.timelineMeta?.startMs);
+    const firstTs = resolveTimelineTimestamp(timeline[0]);
+    const startMs = Number.isFinite(startMsRaw) ? startMsRaw : firstTs;
+    const endTs = resolveTimelineTimestamp(timeline[timeline.length - 1]);
+    const totalMs = Number.isFinite(startMs) && Number.isFinite(endTs) ? Math.max(0, endTs - startMs) : null;
+    const clientLatency = Number(item?.timelineMeta?.clientLatencyMs ?? timeline[0]?.details?.clientLatencyMs);
+
+    const gateApiEntry = timeline.find((entry) => entry?.category === 'gate' && entry?.details && entry.details.durationMs != null && /resposta/i.test(entry.label || ''));
+    const mexcApiEntry = timeline.find((entry) => entry?.category === 'mexc' && entry?.details && entry.details.durationMs != null && /resposta/i.test(entry.label || ''));
+    const gateFillEntry = timeline.find((entry) => entry?.category === 'gate' && /preenchida/i.test(entry?.label || ''));
+    const mexcFillEntry = timeline.find((entry) => entry?.category === 'mexc' && /preenchida/i.test(entry?.label || ''));
+
+    const gateFillMs = Number.isFinite(startMs) && gateFillEntry ? Math.max(0, resolveTimelineTimestamp(gateFillEntry) - startMs) : null;
+    const mexcFillMs = Number.isFinite(startMs) && mexcFillEntry ? Math.max(0, resolveTimelineTimestamp(mexcFillEntry) - startMs) : null;
+
+    const detailsEl = document.createElement('details');
+    detailsEl.className = 'log-block';
+    if (i === 0) detailsEl.open = true;
+
+    const summary = document.createElement('summary');
+    const summaryTitle = document.createElement('span');
+    summaryTitle.textContent = `${item?.localId || '-'} • ${item?.sentido || item?.mode || '-'} • ${item?.status || '-'}`;
+    summary.appendChild(summaryTitle);
+    const summaryMeta = document.createElement('span');
+    summaryMeta.className = 'meta';
+    summaryMeta.textContent = totalMs != null ? `Total ${formatDuration(totalMs)}` : 'Total —';
+    summary.appendChild(summaryMeta);
+    detailsEl.appendChild(summary);
+
+    const content = document.createElement('div');
+    content.className = 'log-block-content';
+
+    const metrics = document.createElement('div');
+    metrics.className = 'log-metrics';
+    const metricsData = [
+      ['Início', item?.createdAt || '-'],
+      ['Gate ID', item?.gateOrderId || '-'],
+      ['MEXC ID', item?.mexcOrderId || '-'],
+      ['Latência clique → servidor', Number.isFinite(clientLatency) ? formatDuration(clientLatency) : '—'],
+      ['Tempo total', totalMs != null ? formatDuration(totalMs) : '—'],
+      ['Gate API', gateApiEntry?.details?.durationMs != null ? formatDuration(gateApiEntry.details.durationMs) : '—'],
+      ['MEXC API', mexcApiEntry?.details?.durationMs != null ? formatDuration(mexcApiEntry.details.durationMs) : '—'],
+      ['Gate preenchida', gateFillMs != null ? formatDuration(gateFillMs) : '—'],
+      ['MEXC preenchida', mexcFillMs != null ? formatDuration(mexcFillMs) : '—']
+    ];
+    metricsData.forEach(([label, value]) => {
+      const span = document.createElement('span');
+      span.textContent = `${label}: ${value}`;
+      metrics.appendChild(span);
+    });
+    content.appendChild(metrics);
+
+    const list = document.createElement('ol');
+    list.className = 'log-timeline';
+
+    if (!timeline.length) {
+      const emptyStep = document.createElement('div');
+      emptyStep.className = 'log-empty';
+      emptyStep.textContent = 'Nenhum evento registrado.';
+      content.appendChild(emptyStep);
+    } else {
+      timeline.forEach((entry, idx) => {
+        const ts = resolveTimelineTimestamp(entry);
+        const prevTs = idx === 0 ? startMs : resolveTimelineTimestamp(timeline[idx - 1]);
+        const elapsed = Number.isFinite(startMs) && Number.isFinite(ts) ? Math.max(0, ts - startMs) : null;
+        const delta = Number.isFinite(prevTs) && Number.isFinite(ts) ? Math.max(0, ts - prevTs) : null;
+
+        const li = document.createElement('li');
+        li.className = 'log-step';
+        const cat = entry?.category || 'system';
+        li.classList.add(cat);
+        if (cat === 'error') li.classList.add('error');
+
+        const header = document.createElement('div');
+        header.className = 'log-step-header';
+        const labelSpan = document.createElement('span');
+        labelSpan.textContent = entry?.label || '(sem descrição)';
+        header.appendChild(labelSpan);
+        const timesSpan = document.createElement('span');
+        timesSpan.className = 'times';
+        const elapsedText = elapsed != null ? formatDuration(elapsed) : '—';
+        const deltaText = delta != null ? formatDuration(delta) : '—';
+        timesSpan.textContent = `${elapsedText} (Δ ${deltaText})`;
+        header.appendChild(timesSpan);
+        li.appendChild(header);
+
+        const body = document.createElement('div');
+        body.className = 'log-step-body';
+        const details = entry?.details;
+        if (details && typeof details === 'object' && Object.keys(details).length) {
+          Object.entries(details).forEach(([key, value]) => {
+            const span = document.createElement('span');
+            span.textContent = `${key}: ${formatLogValue(value)}`;
+            body.appendChild(span);
+          });
+        } else if (details != null) {
+          const span = document.createElement('span');
+          span.textContent = formatLogValue(details);
+          body.appendChild(span);
+        }
+        if (!body.childNodes.length) {
+          const span = document.createElement('span');
+          span.textContent = 'Sem detalhes adicionais';
+          body.appendChild(span);
+        }
+        li.appendChild(body);
+        list.appendChild(li);
+      });
+      content.appendChild(list);
+    }
+
+    detailsEl.appendChild(content);
+    container.appendChild(detailsEl);
+  }
+}
+
 function setBalanceValue(id, value) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -1475,6 +1655,7 @@ async function refreshHistory() {
 
       tbody.appendChild(tr);
     });
+    renderExecutionLogs(hist);
   } catch {}
 }
 setInterval(refreshHistory, 5000); refreshHistory();
@@ -1798,9 +1979,10 @@ document.getElementById('executeTrade').addEventListener('click', async () => {
     }
 
     document.getElementById('status').textContent = 'Executando...';
+    const executePayload = { mode, levels: getSelectedLevelsPayload(), clientSentAt: Date.now() };
     const r = await fetch('/api/execute-trade', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode, levels: getSelectedLevelsPayload() })
+      body: JSON.stringify(executePayload)
     });
     const out = await safeJson(r);
     if (r.ok) {

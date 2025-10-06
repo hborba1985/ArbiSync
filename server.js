@@ -28,6 +28,66 @@ const SERIES_LIMIT = 500;
 const TRADES_LIMIT = 500;
 const POSITION_SUMMARY_LIMIT = 50;
 
+function normalizeTimelineDetails(details) {
+  if (details === undefined || details === null) return {};
+  if (typeof details !== 'object' || Array.isArray(details)) {
+    return { value: details };
+  }
+  const out = {};
+  for (const [key, value] of Object.entries(details)) {
+    if (value === undefined) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+function createTimelineRecorder(clientSentAt) {
+  const startMs = Date.now();
+  const entries = [];
+  const clientLatencyMs = Number.isFinite(clientSentAt) ? Math.max(0, startMs - clientSentAt) : null;
+  const push = (category, label, details) => {
+    const now = Date.now();
+    entries.push({
+      ts: now,
+      iso: new Date(now).toISOString(),
+      category,
+      label,
+      details: normalizeTimelineDetails(details)
+    });
+    return now;
+  };
+  return { startMs, entries, clientLatencyMs, push };
+}
+
+function attachTimeline(item, recorder) {
+  if (!item || !recorder) return;
+  item.timeline = recorder.entries;
+  item.timelineMeta = { startMs: recorder.startMs };
+  if (Number.isFinite(recorder.clientLatencyMs)) {
+    item.timelineMeta.clientLatencyMs = recorder.clientLatencyMs;
+  }
+}
+
+function appendTimelineEntry(item, category, label, details) {
+  if (!item) return null;
+  if (!Array.isArray(item.timeline)) item.timeline = [];
+  const now = Date.now();
+  item.timeline.push({
+    ts: now,
+    iso: new Date(now).toISOString(),
+    category,
+    label,
+    details: normalizeTimelineDetails(details)
+  });
+  if (!item.timelineMeta || typeof item.timelineMeta !== 'object') {
+    item.timelineMeta = { startMs: item.timeline[0]?.ts ?? now };
+  } else if (!Number.isFinite(Number(item.timelineMeta.startMs))) {
+    item.timelineMeta.startMs = item.timeline[0]?.ts ?? now;
+  }
+  item.timelineMeta.lastTs = now;
+  return now;
+}
+
 function createEmptyPositionState() {
   return {
     symbol: currentSymbol || null,
@@ -1586,37 +1646,128 @@ app.post('/api/precheck', async (req, res) => {
 
 // ===== Execução (respeita modo open/close)
 app.post('/api/execute-trade', async (req, res) => {
+  const timelineRecorder = createTimelineRecorder(Number(req.body?.clientSentAt));
   try {
     const mode = (req.body?.mode === 'close') ? 'close' : 'open';
     const symbol = currentSymbol;
+    const baseCurrency = symbol.split('_')[0] || null;
+    const requestedLevels = req.body?.levels || {};
+
+    const abort = (statusCode, payload, logDetails) => {
+      timelineRecorder.push('system', 'Execução abortada', logDetails || { reason: payload?.error || 'Erro' });
+      return res.status(statusCode).json(payload);
+    };
+
+    timelineRecorder.push('system', 'Solicitação recebida', {
+      mode,
+      symbol,
+      requestedLevels,
+      clientLatencyMs: timelineRecorder.clientLatencyMs
+    });
+
+    const metaStart = Date.now();
     const meta = await getMergedMeta(symbol);
+    timelineRecorder.push('calc', 'Metadados carregados', {
+      durationMs: Date.now() - metaStart,
+      gate: {
+        priceScale: meta?.gate?.priceScale,
+        qtyScale: meta?.gate?.qtyScale,
+        minQuote: meta?.gate?.minQuote
+      },
+      mexc: {
+        priceScale: meta?.mexc?.priceScale,
+        volPrecision: meta?.mexc?.volPrecision,
+        contractSize: meta?.mexc?.contractSize,
+        minContracts: meta?.mexc?.minContracts
+      },
+      settings: {
+        marginPct: meta?.settings?.marginPct,
+        leverage: meta?.settings?.leverage,
+        gateOpenExtraPct: meta?.settings?.gateOpenExtraPct
+      }
+    });
 
-    const g = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
-    const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
+    let gateAsks = [], gateBids = [];
+    const gateBookStart = Date.now();
+    timelineRecorder.push('network', 'Consultando livro de ordens Gate', { side: mode === 'open' ? 'asks' : 'bids' });
+    try {
+      const g = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
+      gateAsks = g.data?.asks || [];
+      gateBids = g.data?.bids || [];
+      timelineRecorder.push('gate', 'Livro Gate recebido', {
+        durationMs: Date.now() - gateBookStart,
+        asks: gateAsks.length,
+        bids: gateBids.length
+      });
+    } catch (err) {
+      timelineRecorder.push('error', 'Falha ao obter livro Gate', {
+        durationMs: Date.now() - gateBookStart,
+        message: err?.response?.data || err?.message || err
+      });
+      throw err;
+    }
 
-    const gateAsks = g.data?.asks || [];
-    const gateBids = g.data?.bids || [];
-    const mexcBids = m.data?.data?.bids || [];
-    const mexcAsks = m.data?.data?.asks || [];
+    let mexcBids = [], mexcAsks = [];
+    const mexcBookStart = Date.now();
+    timelineRecorder.push('network', 'Consultando livro de ordens MEXC', { side: mode === 'open' ? 'bids' : 'asks' });
+    try {
+      const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
+      mexcBids = m.data?.data?.bids || [];
+      mexcAsks = m.data?.data?.asks || [];
+      timelineRecorder.push('mexc', 'Livro MEXC recebido', {
+        durationMs: Date.now() - mexcBookStart,
+        bids: mexcBids.length,
+        asks: mexcAsks.length
+      });
+    } catch (err) {
+      timelineRecorder.push('error', 'Falha ao obter livro MEXC', {
+        durationMs: Date.now() - mexcBookStart,
+        message: err?.response?.data || err?.message || err
+      });
+      throw err;
+    }
 
-    const selections = req.body?.levels || {};
-    const openSelection = normalizeLevelSelection(selections.open, gateAsks.length, mexcBids.length);
-    const closeSelection = normalizeLevelSelection(selections.close, gateBids.length, mexcAsks.length);
+    const openSelection = normalizeLevelSelection(requestedLevels.open, gateAsks.length, mexcBids.length);
+    const closeSelection = normalizeLevelSelection(requestedLevels.close, gateBids.length, mexcAsks.length);
     const selectedLevels = mode === 'open' ? openSelection : closeSelection;
 
     const gateSide = mode === 'open' ? gateAsks : gateBids;
     const mexcSide = mode === 'open' ? mexcBids : mexcAsks;
 
+    timelineRecorder.push('calc', 'Seleções normalizadas', {
+      mode,
+      selectedLevels,
+      rawSelections: requestedLevels,
+      gateDepth: gateSide.length,
+      mexcDepth: mexcSide.length
+    });
+
     if (!selectedLevels.length || !gateSide.length || !mexcSide.length) {
-      return res.status(400).json({ error: 'Profundidade insuficiente para as seleções escolhidas.' });
+      return abort(400, { error: 'Profundidade insuficiente para as seleções escolhidas.' }, {
+        reason: 'Profundidade insuficiente',
+        selectedLevels
+      });
     }
 
     const gateAgg = aggregateGateLevels(selectedLevels, gateSide);
     const mexcAgg = aggregateMexcLevels(selectedLevels, mexcSide, meta.mexc.contractSize);
 
     if (gateAgg.totalBase <= 0 || mexcAgg.totalBase <= 0 || mexcAgg.totalContracts <= 0) {
-      return res.status(400).json({ error: 'Profundidade insuficiente para as seleções escolhidas.' });
+      return abort(400, { error: 'Profundidade insuficiente para as seleções escolhidas.' }, {
+        reason: 'Agregação sem volume',
+        gateTotalBase: gateAgg.totalBase,
+        mexcTotalBase: mexcAgg.totalBase,
+        mexcContracts: mexcAgg.totalContracts
+      });
     }
+
+    timelineRecorder.push('calc', 'Agregação concluída', {
+      gateAvgPrice: gateAgg.avgPrice,
+      gateTotalBase: gateAgg.totalBase,
+      mexcAvgPrice: mexcAgg.avgPrice,
+      mexcTotalBase: mexcAgg.totalBase,
+      mexcContracts: mexcAgg.totalContracts
+    });
 
     const marginPct = Number(meta.settings.marginPct || 0);
     const baseGate = gateAgg.avgPrice;
@@ -1628,6 +1779,14 @@ app.post('/api/execute-trade', async (req, res) => {
     let mexcPrice = (mode === 'open')
       ? baseMexc * (1 + (marginPct / 100))
       : baseMexc * (1 - (marginPct / 100));
+
+    timelineRecorder.push('calc', 'Preços ajustados', {
+      gateBase: baseGate,
+      mexcBase: baseMexc,
+      gatePrice,
+      mexcPrice,
+      marginPct
+    });
 
     let gateBaseAvail = gateAgg.totalBase;
     const mexcContractsAvail = mexcAgg.totalContracts;
@@ -1650,8 +1809,22 @@ app.post('/api/execute-trade', async (req, res) => {
     let gateBalances = null;
     let availableToClose = null;
     if (mode === 'close') {
-      gateBalances = await getGateBalances(symbol);
-      const baseCurrency = symbol.split('_')[0];
+      const closeBalStart = Date.now();
+      timelineRecorder.push('network', 'Consultando saldo Gate para fechamento', { currency: baseCurrency });
+      try {
+        gateBalances = await getGateBalances(symbol);
+        timelineRecorder.push('gate', 'Saldo Gate obtido para fechamento', {
+          durationMs: Date.now() - closeBalStart,
+          baseAvailable: baseCurrency ? Number(gateBalances?.[baseCurrency]?.available ?? 0) : null,
+          usdtAvailable: Number(gateBalances?.USDT?.available ?? 0)
+        });
+      } catch (err) {
+        timelineRecorder.push('error', 'Falha ao consultar saldo Gate para fechamento', {
+          durationMs: Date.now() - closeBalStart,
+          message: err?.response?.data || err?.message || err
+        });
+        throw err;
+      }
       const baseAvail = Number(gateBalances?.[baseCurrency]?.available || 0);
       const remQty = Math.min(baseAvail, positionState.gate.filledQty);
       availableToClose = remQty;
@@ -1660,40 +1833,47 @@ app.post('/api/execute-trade', async (req, res) => {
 
     let maxBaseQty = Math.min(gateBaseAvail, mexcBaseAvail);
     if (!Number.isFinite(maxBaseQty) || maxBaseQty <= 0) {
-      return res.status(400).json({ error: 'Profundidade insuficiente após ajustes.' });
+      return abort(400, { error: 'Profundidade insuficiente após ajustes.' }, {
+        reason: 'maxBaseQty inválido',
+        maxBaseQty
+      });
     }
 
     let contracts = Math.min(mexcContractsAvail, maxBaseQty / cs);
     contracts = normalizeContracts(floorContracts(contracts));
 
     if (contracts <= 0) {
-      return res.status(400).json({ error: 'Contratos indisponíveis nas seleções escolhidas.' });
+      return abort(400, { error: 'Contratos indisponíveis nas seleções escolhidas.' }, { reason: 'contracts <= 0' });
     }
 
     if (mode === 'open' && positionState.targetQty > 0) {
       const remainingBase = Math.max(positionState.targetQty - positionState.gate.filledQty, 0);
       const remainingContracts = normalizeContracts(floorContracts(remainingBase / cs));
       if (remainingContracts <= 0) {
-        return res.status(400).json({ error: 'Meta de posição já atingida.' });
+        return abort(400, { error: 'Meta de posição já atingida.' }, { reason: 'target_reached' });
       }
       if (contracts > remainingContracts) contracts = remainingContracts;
     } else if (mode === 'close') {
       const remainingContracts = normalizeContracts(floorContracts(positionState.gate.filledQty / cs));
       if (remainingContracts <= 0 || (availableToClose != null && availableToClose <= 0)) {
-        return res.status(400).json({ error: 'Sem quantidade disponível para fechar.' });
+        return abort(400, { error: 'Sem quantidade disponível para fechar.' }, { reason: 'no_position' });
       }
       if (contracts > remainingContracts) contracts = remainingContracts;
     }
 
     if (contracts < minContracts) {
-      return res.status(400).json({ error: `Volume abaixo do mínimo de contratos (${minContracts}).` });
+      return abort(400, { error: `Volume abaixo do mínimo de contratos (${minContracts}).` }, {
+        reason: 'min_contracts',
+        contracts,
+        minContracts
+      });
     }
 
     let finalBaseQtyRaw = contracts * cs;
     let rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
     let adjustedContracts = normalizeContracts(floorContracts(rounded.q / cs));
     if (adjustedContracts <= 0) {
-      return res.status(400).json({ error: 'Quantidade arredondada resultou em zero.' });
+      return abort(400, { error: 'Quantidade arredondada resultou em zero.' }, { reason: 'rounded_zero' });
     }
     if (adjustedContracts < contracts) {
       contracts = adjustedContracts;
@@ -1703,20 +1883,80 @@ app.post('/api/execute-trade', async (req, res) => {
     contracts = normalizeContracts(contracts);
 
     if (minContracts > 0 && contracts < minContracts) {
-      return res.status(400).json({ error: `Volume abaixo do mínimo de contratos (${minContracts}).` });
+      return abort(400, { error: `Volume abaixo do mínimo de contratos (${minContracts}).` }, {
+        reason: 'min_contracts_post_round',
+        contracts,
+        minContracts
+      });
     }
 
     const gateOrderBaseQty = computeGateOrderQty(rounded.q, meta, mode);
 
+    timelineRecorder.push('calc', 'Quantidades calculadas', {
+      contracts,
+      contractSize: cs,
+      finalBaseQty: rounded.q,
+      gateOrderBaseQty,
+      gatePrice: rounded.pg,
+      mexcPrice: rounded.pm
+    });
+
     const minQuote = Number(meta.gate.minQuote || 0);
     if (minQuote > 0 && gateOrderBaseQty * rounded.pg < minQuote) {
-      return res.status(400).json({ error: `Mínimo da Gate não atendido (>= ${minQuote} USDT). Tente aumentar contratos.` });
+      return abort(400, { error: `Mínimo da Gate não atendido (>= ${minQuote} USDT). Tente aumentar contratos.` }, {
+        reason: 'min_quote',
+        minQuote,
+        gateQuote: gateOrderBaseQty * rounded.pg
+      });
     }
 
-    const [gateBalancesFinal, mexcBal] = await Promise.all([
-      gateBalances ? Promise.resolve(gateBalances) : getGateBalances(symbol),
-      getMexcAvailableUSDT(symbol)
-    ]);
+    const gateBalancePromise = (async () => {
+      if (gateBalances) {
+        timelineRecorder.push('gate', 'Saldo Gate reutilizado', {
+          usdtAvailable: Number(gateBalances?.USDT?.available ?? 0),
+          baseAvailable: baseCurrency ? Number(gateBalances?.[baseCurrency]?.available ?? 0) : null
+        });
+        return gateBalances;
+      }
+      const start = Date.now();
+      timelineRecorder.push('network', 'Consultando saldo Gate', { currency: baseCurrency });
+      try {
+        const result = await getGateBalances(symbol);
+        timelineRecorder.push('gate', 'Saldo Gate obtido', {
+          durationMs: Date.now() - start,
+          usdtAvailable: Number(result?.USDT?.available ?? 0),
+          baseAvailable: baseCurrency ? Number(result?.[baseCurrency]?.available ?? 0) : null
+        });
+        return result;
+      } catch (err) {
+        timelineRecorder.push('error', 'Falha ao consultar saldo Gate', {
+          durationMs: Date.now() - start,
+          message: err?.response?.data || err?.message || err
+        });
+        throw err;
+      }
+    })();
+
+    const mexcBalancePromise = (async () => {
+      const start = Date.now();
+      timelineRecorder.push('network', 'Consultando saldo MEXC', {});
+      try {
+        const result = await getMexcAvailableUSDT(symbol);
+        timelineRecorder.push('mexc', 'Saldo MEXC obtido', {
+          durationMs: Date.now() - start,
+          availableUSDT: result?.availableUSDT ?? null
+        });
+        return result;
+      } catch (err) {
+        timelineRecorder.push('error', 'Falha ao consultar saldo MEXC', {
+          durationMs: Date.now() - start,
+          message: err?.response?.data || err?.message || err
+        });
+        throw err;
+      }
+    })();
+
+    const [gateBalancesFinal, mexcBal] = await Promise.all([gateBalancePromise, mexcBalancePromise]);
     gateBalances = gateBalancesFinal;
 
     const leverage = Number(meta.settings.leverage) || 1;
@@ -1727,35 +1967,54 @@ app.post('/api/execute-trade', async (req, res) => {
 
     if (mode === 'open') {
       if (mexcBal.availableUSDT == null || mexcBal.availableUSDT < requiredMexcUSDT) {
-        return res.status(400).json({
+        return abort(400, {
           error: 'Saldo MEXC insuficiente',
           requiredUSDT: Number(requiredMexcUSDT.toFixed(6)),
+          availableUSDT: mexcBal.availableUSDT
+        }, {
+          reason: 'mexc_balance',
+          requiredUSDT: requiredMexcUSDT,
           availableUSDT: mexcBal.availableUSDT
         });
       }
     }
 
+    let neededGateUSDT = null;
     if (mode === 'open') {
-      const neededGateUSDT = rounded.pg * gateOrderBaseQty;
+      neededGateUSDT = rounded.pg * gateOrderBaseQty;
       const gateUSDTAvail = Number(gateBalances?.USDT?.available || 0);
       if (gateUSDTAvail < neededGateUSDT) {
-        return res.status(400).json({
+        return abort(400, {
           error: 'Saldo Gate USDT insuficiente',
           requiredUSDT: Number(neededGateUSDT.toFixed(6)),
+          availableUSDT: gateUSDTAvail
+        }, {
+          reason: 'gate_usdt_insuficiente',
+          requiredUSDT: neededGateUSDT,
           availableUSDT: gateUSDTAvail
         });
       }
     } else {
-      const baseCurrency = symbol.split('_')[0];
       const gateBaseAvailable = Number(gateBalances?.[baseCurrency]?.available || 0);
       if (gateBaseAvailable < gateOrderBaseQty) {
-        return res.status(400).json({
+        return abort(400, {
           error: `Saldo Gate ${baseCurrency} insuficiente`,
           requiredBase: Number(gateOrderBaseQty.toFixed(meta.gate.qtyScale)),
+          availableBase: gateBaseAvailable
+        }, {
+          reason: 'gate_base_insuficiente',
+          requiredBase: gateOrderBaseQty,
           availableBase: gateBaseAvailable
         });
       }
     }
+
+    timelineRecorder.push('calc', 'Checagens de saldo concluídas', {
+      requiredMexcUSDT,
+      mexcAvailableUSDT: mexcBal.availableUSDT,
+      neededGateUSDT,
+      mode
+    });
 
     console.log('[EXECUTAR] Modo:', mode);
     console.log('[EXECUTAR] Preço Gate:', rounded.pg);
@@ -1782,37 +2041,69 @@ app.post('/api/execute-trade', async (req, res) => {
       gateStatus: 'creating', mexcStatus: 'creating',
       status: 'creating'
     };
+
+    attachTimeline(histItem, timelineRecorder);
+    timelineRecorder.push('system', 'Histórico criado', {
+      localId,
+      volume: Number(histItem.volume),
+      contracts,
+      gateOrderBaseQty
+    });
+
     orderHistory.unshift(histItem);
     try { db.saveHistoryItem(histItem); } catch (e) { console.warn('[SQLite] save history (create):', e?.message || e); }
 
     // Gate: open=buy | close=sell
     let gateOk = false;
+    const gateSideType = (mode === 'open') ? 'buy' : 'sell';
+    const gatePriceStr = String(rounded.pg.toFixed(meta.gate.priceScale));
+    const gateQtyStr = String(gateOrderBaseQty.toFixed(meta.gate.qtyScale));
+    timelineRecorder.push('gate', 'Enviando ordem Gate', {
+      side: gateSideType,
+      price: Number(gatePriceStr),
+      amount: Number(gateQtyStr)
+    });
+    const gateSendStart = Date.now();
     try {
-      const side = (mode === 'open') ? 'buy' : 'sell';
       const go = await placeGateOrderSdk(
         symbol,
-        side,
-        String(rounded.pg.toFixed(meta.gate.priceScale)),
-        String(gateOrderBaseQty.toFixed(meta.gate.qtyScale))
+        gateSideType,
+        gatePriceStr,
+        gateQtyStr
       );
       histItem.gateOrderId = (go?.id != null) ? String(go.id) : null;
-      const gateQtyStr = String(gateOrderBaseQty.toFixed(meta.gate.qtyScale));
       histItem.gateOrderVolume = gateQtyStr;
       histItem.gateOrderBaseQty = Number(gateQtyStr);
       gateOk = !!histItem.gateOrderId;
       histItem.gateStatus = gateOk ? 'open' : 'error';
+      timelineRecorder.push('gate', 'Resposta Gate', {
+        durationMs: Date.now() - gateSendStart,
+        orderId: histItem.gateOrderId,
+        success: gateOk
+      });
     } catch (e) {
       console.error('[ERRO AO ENVIAR GATE]:', e.response?.data || e.message);
       histItem.gateStatus = 'error';
+      timelineRecorder.push('error', 'Erro ao enviar ordem Gate', {
+        durationMs: Date.now() - gateSendStart,
+        message: e.response?.data || e.message || e
+      });
     }
 
     // MEXC: open=3 | close=2
     let mexcOk = false;
+    const sideCode = (mode === 'open') ? 3 : 2;
+    const mexcPriceNum = Number(rounded.pm.toFixed(meta.mexc.priceScale));
+    timelineRecorder.push('mexc', 'Enviando ordem MEXC', {
+      sideCode,
+      price: mexcPriceNum,
+      contracts
+    });
+    const mexcSendStart = Date.now();
     try {
-      const sideCode = (mode === 'open') ? 3 : 2;
       const mres = await mexcSubmitOrder(
         symbol,
-        Number(rounded.pm.toFixed(meta.mexc.priceScale)),
+        mexcPriceNum,
         contracts,
         meta.settings.leverage,
         sideCode,
@@ -1825,13 +2116,33 @@ app.post('/api/execute-trade', async (req, res) => {
         console.error('[MEXC SDK] falhou:', mres?.error || mres);
       }
       histItem.mexcStatus = mexcOk ? 'open' : 'error';
+      timelineRecorder.push('mexc', 'Resposta MEXC', {
+        durationMs: Date.now() - mexcSendStart,
+        orderId: histItem.mexcOrderId,
+        success: mexcOk
+      });
     } catch (e) {
       console.error('[ERRO AO ENVIAR MEXC]:', e?.message || e);
       histItem.mexcStatus = 'error';
+      timelineRecorder.push('error', 'Erro ao enviar ordem MEXC', {
+        durationMs: Date.now() - mexcSendStart,
+        message: e?.message || e
+      });
     }
 
     histItem.status = gateOk && mexcOk ? 'open' : gateOk && !mexcOk ? 'mexc_error' : !gateOk && mexcOk ? 'gate_error' : 'error';
+    timelineRecorder.push('system', 'Status após criação', {
+      status: histItem.status,
+      gateStatus: histItem.gateStatus,
+      mexcStatus: histItem.mexcStatus
+    });
+
     histItem.executedAt = nowBR();
+    timelineRecorder.push('system', 'Execução finalizada', {
+      status: histItem.status,
+      totalDurationMs: Date.now() - timelineRecorder.startMs
+    });
+
     try { db.saveHistoryItem(histItem); } catch (e) { console.warn('[SQLite] save history (update):', e?.message || e); }
 
     res.json({
@@ -1846,6 +2157,9 @@ app.post('/api/execute-trade', async (req, res) => {
       status: histItem.status
     });
   } catch (e) {
+    timelineRecorder.push('error', 'Falha na execução', {
+      message: e?.response?.data || e?.message || e
+    });
     console.error('[ERRO /api/execute-trade]:', e.response?.data || e.message);
     res.status(500).json({ error: 'Erro ao executar ordens.' });
   }
@@ -2151,6 +2465,15 @@ async function pollOpenOrders() {
     if (mIsFilled) item.mexcStatus = 'filled';
     else if (item.mexcStatus === 'creating') item.mexcStatus = 'open';
 
+    if (item.timeline) {
+      if (prevGateStatus === 'creating' && item.gateStatus === 'open') {
+        appendTimelineEntry(item, 'gate', 'Ordem Gate confirmada', { status: item.gateStatus });
+      }
+      if (prevMexcStatus === 'creating' && item.mexcStatus === 'open') {
+        appendTimelineEntry(item, 'mexc', 'Ordem MEXC confirmada', { status: item.mexcStatus });
+      }
+    }
+
     if (gIsFilled && mIsFilled) {
       item.status = 'filled';
       item.filledAt = nowBR();
@@ -2174,6 +2497,32 @@ async function pollOpenOrders() {
       item.status = 'mexc_filled';
     } else {
       item.status = 'open';
+    }
+
+    if (item.timeline) {
+      if (item.gateStatus === 'filled' && prevGateStatus !== 'filled') {
+        appendTimelineEntry(item, 'gate', 'Ordem Gate preenchida', {
+          filledQty: totalGateFilled || Number(item.volume),
+          avgPrice: gAvg,
+          status: item.gateStatus
+        });
+      }
+      if (item.mexcStatus === 'filled' && prevMexcStatus !== 'filled') {
+        const contractSize = Number(item.metaUsed?.mexc?.contractSize || 1);
+        appendTimelineEntry(item, 'mexc', 'Ordem MEXC preenchida', {
+          filledContracts: totalMexcFilled || Number(item.mexcOrderContracts ?? 0),
+          baseFilled: contractSize * (totalMexcFilled || Number(item.mexcOrderContracts ?? 0)),
+          avgPrice: mAvg,
+          status: item.mexcStatus
+        });
+      }
+      if (item.status === 'filled' && prevStatus !== 'filled') {
+        appendTimelineEntry(item, 'system', 'Execução simultânea concluída', { status: item.status });
+      } else if (item.status === 'gate_filled' && prevStatus !== 'gate_filled') {
+        appendTimelineEntry(item, 'system', 'Aguardando preenchimento MEXC', { status: item.status });
+      } else if (item.status === 'mexc_filled' && prevStatus !== 'mexc_filled') {
+        appendTimelineEntry(item, 'system', 'Aguardando preenchimento Gate', { status: item.status });
+      }
     }
 
     if (
