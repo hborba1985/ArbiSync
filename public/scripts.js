@@ -949,6 +949,111 @@ function formatDiffValue(value, digits = 2) {
   return `${num.toFixed(digits)}%`;
 }
 
+function extractMaxContractsFromInfo(info) {
+  if (!info || typeof info !== 'object') return null;
+  const tryNumber = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
+  const directKeys = ['maxContracts', 'mexcMaxContracts', 'amount', 'limit', 'max', 'value'];
+  for (const key of directKeys) {
+    const val = tryNumber(info[key]);
+    if (val != null) return val;
+  }
+  if (info._extend && typeof info._extend === 'object') {
+    for (const val of Object.values(info._extend)) {
+      const num = tryNumber(val);
+      if (num != null) return num;
+    }
+  }
+  if (info.extend && typeof info.extend === 'object') {
+    for (const val of Object.values(info.extend)) {
+      const num = tryNumber(val);
+      if (num != null) return num;
+    }
+  }
+  if (info.response && typeof info.response === 'object') {
+    const nested = extractMaxContractsFromInfo(info.response);
+    if (nested != null) return nested;
+  }
+  if (info.translated && typeof info.translated === 'object') {
+    const nested = extractMaxContractsFromInfo(info.translated);
+    if (nested != null) return nested;
+  }
+  return null;
+}
+
+function handleExecuteTradeError(out, statusCode) {
+  const statusEl = document.getElementById('status');
+  if (!out || typeof out !== 'object') {
+    statusEl.textContent = `Erro: falha inesperada (HTTP ${statusCode})`;
+    return;
+  }
+
+  const lines = [];
+  const baseMessage = out.message || out.error || `Falha ao executar ordens (HTTP ${statusCode})`;
+  lines.push(baseMessage);
+
+  let popupShown = false;
+  const limitInfo = out.mexcLimitError || out.mexcError?.translated || out.mexcError || (out.code === 'mexc_risk_limit' ? out : null);
+  const maxContracts = extractMaxContractsFromInfo(limitInfo);
+  if ((out.errorCode === 'mexc_risk_limit' || out.code === 'mexc_risk_limit' || limitInfo?.code === 'MEXC_RISK_LIMIT') && !popupShown) {
+    const contractsText = maxContracts != null ? `${maxContracts} contrato${maxContracts === 1 ? '' : 's'}` : 'volume máximo permitido';
+    alert(`MEXC: Excedido número de contratos permitidos do par.\nMáximo permitido: ${contractsText}.`);
+    popupShown = true;
+    lines.push(`Limite MEXC: ${contractsText}.`);
+  }
+
+  if (out.mexcError && out.mexcError.message) {
+    lines.push(`Detalhe MEXC: ${out.mexcError.message}`);
+  }
+
+  const baseSymbol = getCurrentBaseSymbol();
+  if (out.gateAutoAction) {
+    const auto = out.gateAutoAction;
+    if (auto.cancelled) lines.push('Gate: ordem cancelada automaticamente.');
+    if (auto.error) lines.push(`Gate: falha ao cancelar automaticamente (${auto.error}).`);
+
+    const flatten = auto.flatten;
+    if (flatten?.success) {
+      const qty = Number(flatten.filledQty ?? flatten.qty ?? auto.flattenedQty ?? auto.filledQty);
+      const qtyText = Number.isFinite(qty) && qty > 0
+        ? formatVolumeValue(qty, 6, baseSymbol)
+        : 'volume solicitado';
+      lines.push(`Gate: posição zerada automaticamente (${qtyText}).`);
+    } else {
+      if (flatten?.attempted) {
+        const filled = Number(flatten.filledQty);
+        if (Number.isFinite(filled) && filled > 0) {
+          lines.push(`Gate: zeragem automática parcial (${formatVolumeValue(filled, 6, baseSymbol)} executados).`);
+        }
+        const errMsg = auto.flattenError || flatten.error || flatten.reason || auto.flattenErrorRaw;
+        if (errMsg) {
+          lines.push(`Gate: falha ao zerar automaticamente (${errMsg}).`);
+        }
+      } else if (auto.flattenError || auto.flattenErrorRaw) {
+        const errMsg = auto.flattenError || auto.flattenErrorRaw;
+        lines.push(`Gate: falha ao zerar automaticamente (${errMsg}).`);
+      }
+
+      if (auto.needsManualClose) {
+        const qty = Number(auto.filledQty);
+        if (Number.isFinite(qty) && qty > 0) {
+          lines.push(`Gate: preenchido ${formatVolumeValue(qty, 6, baseSymbol)} — verifique manualmente para neutralizar.`);
+        } else {
+          lines.push('Gate: verifique manualmente se há exposição residual na Gate.');
+        }
+      }
+    }
+  }
+
+  if (out.riskLimitCheck && !out.riskLimitCheck.available) {
+    lines.push('Aviso: limite de risco MEXC não pôde ser verificado automaticamente.');
+  }
+
+  statusEl.textContent = lines.join('\n');
+}
+
 function updateReferencePrices(openLevels, closeLevels) {
   const pickPrice = (levels, extractor) => {
     for (const lvl of levels) {
@@ -2099,6 +2204,13 @@ document.getElementById('executeTrade').addEventListener('click', async () => {
     }
 
     const d = preOut.details || {};
+    if (d.riskLimitCheck) {
+      if (d.riskLimitCheck.available && d.riskLimitCheck.maxContracts != null) {
+        document.getElementById('status').textContent = `Checando... Limite MEXC estimado: ${d.riskLimitCheck.maxContracts} contrato${d.riskLimitCheck.maxContracts === 1 ? '' : 's'}.`;
+      } else if (!d.riskLimitCheck.available) {
+        document.getElementById('status').textContent = 'Checando... (limite de risco MEXC não pôde ser consultado automaticamente)';
+      }
+    }
     if (preOut.needConfirm) {
       const ok = confirm(
         `Saldo possivelmente insuficiente na MEXC.\n` +
@@ -2120,16 +2232,24 @@ document.getElementById('executeTrade').addEventListener('click', async () => {
     });
     const out = await safeJson(r);
     if (r.ok) {
-      document.getElementById('status').textContent =
-        `OK. localId=${out.localId}\n` +
-        `Gate: ${out.gate.id || '-'} @ ${out.gate.price}\n` +
-        (out.gate.extraPct && Number(out.gate.extraPct) > 0 ? `Gate extra aplicado: +${out.gate.extraPct}%\n` : '') +
-        `MEXC: ${out.mexc.id || '-'} @ ${out.mexc.price}\n` +
-        (out.mexc.displayBaseQty ? `Moeda base final: ${out.mexc.displayBaseQty}\n` : '') +
-        `Status: ${out.status}`;
+      const statusLines = [
+        `OK. localId=${out.localId}`,
+        `Gate: ${out.gate.id || '-'} @ ${out.gate.price}`
+      ];
+      if (out.gate.extraPct && Number(out.gate.extraPct) > 0) statusLines.push(`Gate extra aplicado: +${out.gate.extraPct}%`);
+      statusLines.push(`MEXC: ${out.mexc.id || '-'} @ ${out.mexc.price}`);
+      if (out.mexc.displayBaseQty) statusLines.push(`Moeda base final: ${out.mexc.displayBaseQty}`);
+      statusLines.push(`Status: ${out.status}`);
+      if (out.riskLimitCheck && out.riskLimitCheck.available && out.riskLimitCheck.maxContracts != null) {
+        statusLines.push(`Limite MEXC estimado: ${out.riskLimitCheck.maxContracts} contratos (nível ${out.riskLimitCheck.level ?? '?'})`);
+      } else if (out.riskLimitCheck && !out.riskLimitCheck.available) {
+        statusLines.push('Aviso: limite de risco MEXC não pôde ser verificado automaticamente.');
+      }
+      document.getElementById('status').textContent = statusLines.join('\n');
       await refreshHistory(); await refreshPosition(); await refreshBalances();
     } else {
-      document.getElementById('status').textContent = 'Erro: ' + JSON.stringify(out);
+      handleExecuteTradeError(out, r.status);
+      await refreshHistory(); await refreshPosition(); await refreshBalances();
     }
   } catch (e) {
     document.getElementById('status').textContent = 'Erro: ' + (e.message || e);

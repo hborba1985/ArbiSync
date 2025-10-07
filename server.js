@@ -341,8 +341,23 @@ if (config.gate?.apiKey && config.gate?.apiSecret) {
 }
 const gateSpotApi = new GateApi.SpotApi(gateClient);
 
-async function placeGateOrderSdk(symbol, side, priceStr, amountStr) {
-  const order = { currencyPair: symbol, type: 'limit', account: 'spot', side, price: String(priceStr), amount: String(amountStr) };
+async function placeGateOrderSdk(symbol, side, priceStr, amountStr, extraOptions = null) {
+  const order = {
+    currencyPair: symbol,
+    type: 'limit',
+    account: 'spot',
+    side,
+    price: String(priceStr),
+    amount: String(amountStr)
+  };
+  if (extraOptions && typeof extraOptions === 'object') {
+    for (const [key, value] of Object.entries(extraOptions)) {
+      if (value === undefined || value === null) continue;
+      order[key] = value;
+      if (key === 'timeInForce' && order.time_in_force == null) order.time_in_force = value;
+      if (key === 'time_in_force' && order.timeInForce == null) order.timeInForce = value;
+    }
+  }
   console.log('[GATE] Enviando ordem SDK:', order);
   const resp = await gateSpotApi.createOrder(order);
   const body = resp.body || resp;
@@ -435,6 +450,114 @@ async function fetchGateOrderDetailWithStatus(symbol, id) {
     return { detail: null, notFound: false, error: err };
   }
 }
+
+async function fetchGateAggressivePrice(symbol, side) {
+  try {
+    const { data } = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
+    if (!data) return { price: null, source: 'empty_book' };
+    const levels = side === 'sell' ? data.bids : data.asks;
+    if (!Array.isArray(levels) || !levels.length) {
+      return { price: null, source: 'empty_side' };
+    }
+    const best = Number(levels[0]?.[0]);
+    if (!Number.isFinite(best) || best <= 0) {
+      return { price: null, source: 'invalid_price' };
+    }
+    return { price: best, source: 'book' };
+  } catch (err) {
+    return { price: null, source: 'error', error: err?.message || err };
+  }
+}
+
+async function placeGateFlattenOrder(symbol, side, qty, meta, fallbackPrice = null) {
+  const qtyScale = Number(meta?.gate?.qtyScale ?? 6);
+  const priceScale = Number(meta?.gate?.priceScale ?? 6);
+  const qtyRounded = roundDownTo(qty, qtyScale);
+  if (!Number.isFinite(qtyRounded) || qtyRounded <= 0) {
+    return { attempted: false, reason: 'qty_rounding' };
+  }
+
+  const { price: bookPrice } = await fetchGateAggressivePrice(symbol, side);
+  const reference = Number.isFinite(bookPrice) && bookPrice > 0
+    ? bookPrice
+    : Number(fallbackPrice);
+  if (!Number.isFinite(reference) || reference <= 0) {
+    return { attempted: false, reason: 'no_reference_price' };
+  }
+
+  const bufferPct = Number(config.execution?.gateFlattenBufferPct ?? 0.35);
+  const adjust = bufferPct / 100;
+  let adjustedPrice = reference;
+  if (side === 'sell') {
+    adjustedPrice = reference * (1 - adjust);
+  } else {
+    adjustedPrice = reference * (1 + adjust);
+  }
+
+  const priceRounded = Number(roundTo(adjustedPrice, priceScale));
+  if (!Number.isFinite(priceRounded) || priceRounded <= 0) {
+    return { attempted: false, reason: 'invalid_price' };
+  }
+
+  const extra = { timeInForce: 'ioc', time_in_force: 'ioc' };
+  const amountStr = qtyRounded.toFixed(Math.max(qtyScale, 0));
+  const priceStr = priceRounded.toFixed(Math.max(priceScale, 0));
+  const orderInfo = { qtyRounded: Number(amountStr), priceRounded: Number(priceStr) };
+
+  try {
+    const placed = await placeGateOrderSdk(symbol, side, priceStr, amountStr, extra);
+    const flatten = {
+      attempted: true,
+      orderId: placed?.id ? String(placed.id) : null,
+      qty: orderInfo.qtyRounded,
+      price: orderInfo.priceRounded,
+      side,
+      success: false
+    };
+    if (!flatten.orderId) {
+      flatten.error = 'sem_id';
+      return flatten;
+    }
+
+    const lookup = await fetchGateOrderDetailWithStatus(symbol, flatten.orderId);
+    if (lookup?.detail) {
+      const parsed = parseGateOrderDetail(lookup.detail, orderInfo.qtyRounded, orderInfo.priceRounded);
+      flatten.detail = parsed;
+      flatten.filledQty = parsed.filled;
+      flatten.remainingQty = parsed.remaining;
+      flatten.success = parsed.remaining <= 0 || parsed.isFilled;
+      flatten.partial = !flatten.success && parsed.filled > 0;
+    } else if (lookup?.notFound) {
+      flatten.notFound = true;
+      flatten.filledQty = orderInfo.qtyRounded;
+      flatten.success = true;
+    } else if (lookup?.error) {
+      flatten.detailError = lookup.error?.message || lookup.error;
+    }
+    return flatten;
+  } catch (err) {
+    return {
+      attempted: true,
+      side,
+      qty: orderInfo.qtyRounded,
+      price: orderInfo.priceRounded,
+      success: false,
+      error: err?.response?.data || err?.message || err
+    };
+  }
+}
+
+function describeFlattenError(reason) {
+  if (!reason) return null;
+  const normalized = String(reason).toLowerCase();
+  const map = {
+    qty_rounding: 'volume abaixo do mínimo permitido na Gate',
+    no_reference_price: 'não foi possível obter preço de referência na Gate',
+    invalid_price: 'preço inválido ao gerar ordem de zeragem',
+    sem_id: 'resposta sem ID ao criar ordem de zeragem'
+  };
+  return map[normalized] || reason;
+}
 async function getGateBalances(symbol) {
   try {
     const [base, quote] = symbol.split('_');
@@ -477,9 +600,14 @@ async function mexcSubmitOrder(symbol, price, contracts, leverage, sideCode, pos
   if (positionId != null) payload.positionId = Number(positionId);
   console.log('[MEXC SDK] submitOrder payload:', payload);
   if (typeof mexcClient.submitOrder === 'function') {
-    const r = await mexcClient.submitOrder(payload);
-    const id = r?.data?.orderId || r?.orderId || r?.id || r?.data || null;
-    return id ? { id } : { error: r };
+    try {
+      const r = await mexcClient.submitOrder(payload);
+      const id = r?.data?.orderId || r?.orderId || r?.id || r?.data || null;
+      return id ? { id, raw: r } : { error: r };
+    } catch (err) {
+      const serialized = serializeMexcError(err);
+      return { error: serialized };
+    }
   }
   throw new Error('mexcClient.submitOrder não disponível no SDK.');
 }
@@ -763,6 +891,198 @@ async function getMergedMeta(symbol) {
   const ov = overridesBySymbol.get(symbol);
   return deepMerge(base, ov);
 }
+
+// ===== Limites de risco MEXC
+const mexcRiskLimitCache = { data: null, fetchedAt: 0, error: null };
+const MEXC_RISK_LIMIT_TTL_MS = 60 * 1000;
+
+const toNumberOrNull = (value) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+};
+
+async function loadMexcRiskLimitLevels() {
+  const now = Date.now();
+  if (mexcRiskLimitCache.data && (now - mexcRiskLimitCache.fetchedAt) < MEXC_RISK_LIMIT_TTL_MS) {
+    return mexcRiskLimitCache;
+  }
+  mexcRiskLimitCache.fetchedAt = now;
+  mexcRiskLimitCache.error = null;
+  mexcRiskLimitCache.data = null;
+  if (!mexcClient || typeof mexcClient.getRiskLimit !== 'function') {
+    mexcRiskLimitCache.error = 'unsupported';
+    return mexcRiskLimitCache;
+  }
+  try {
+    const resp = await mexcClient.getRiskLimit();
+    const arr = Array.isArray(resp?.data) ? resp.data : [];
+    mexcRiskLimitCache.data = arr.map((entry) => ({
+      symbol: String(entry?.symbol || '').toUpperCase(),
+      level: toNumberOrNull(entry?.level),
+      maxLeverage: toNumberOrNull(entry?.maxLeverage),
+      riskLimit: toNumberOrNull(entry?.riskLimit),
+      maintMarginRate: toNumberOrNull(entry?.maintMarginRate)
+    }));
+  } catch (err) {
+    mexcRiskLimitCache.error = err?.message || err;
+  }
+  return mexcRiskLimitCache;
+}
+
+function pickRiskLimitLevel(levels, symbol, leverage) {
+  if (!Array.isArray(levels) || !levels.length) return null;
+  const sym = String(symbol || '').toUpperCase();
+  const levNum = Number(leverage) || 1;
+  const candidates = levels.filter((entry) => entry && entry.symbol === sym);
+  if (!candidates.length) return null;
+  let chosen = null;
+  for (const entry of candidates) {
+    const maxLev = Number(entry?.maxLeverage);
+    if (Number.isFinite(maxLev) && maxLev < levNum) continue;
+    if (!chosen || Number(entry?.riskLimit || 0) > Number(chosen?.riskLimit || 0)) {
+      chosen = entry;
+    }
+  }
+  if (chosen) return chosen;
+  return candidates.reduce((best, current) => {
+    const bestVal = Number(best?.riskLimit || 0);
+    const curVal = Number(current?.riskLimit || 0);
+    return curVal > bestVal ? current : best;
+  }, null);
+}
+
+async function evaluateMexcRiskLimit(symbol, leverage, price, contractSize, floorFn, normalizeFn) {
+  const cache = await loadMexcRiskLimitLevels();
+  const response = {
+    available: false,
+    source: mexcRiskLimitCache.error ? 'error' : (mexcRiskLimitCache.data ? 'cache' : 'none'),
+    maxContracts: null,
+    rawContracts: null,
+    riskLimit: null,
+    level: null,
+    maxLeverage: null,
+    leverageUsed: Number(leverage) || 1,
+    cacheAgeMs: cache?.fetchedAt ? Date.now() - cache.fetchedAt : null,
+    error: cache?.error || null
+  };
+
+  if (!Array.isArray(cache?.data) || !cache.data.length) {
+    return response;
+  }
+
+  const level = pickRiskLimitLevel(cache.data, symbol, leverage);
+  if (!level) {
+    return response;
+  }
+
+  response.available = true;
+  response.level = level.level;
+  response.maxLeverage = level.maxLeverage;
+  response.riskLimit = level.riskLimit;
+
+  const riskLimitVal = Number(level?.riskLimit);
+  const priceNum = Number(price);
+  const cs = Number(contractSize) || 1;
+  if (!Number.isFinite(riskLimitVal) || riskLimitVal <= 0 || !Number.isFinite(priceNum) || priceNum <= 0 || !Number.isFinite(cs) || cs <= 0) {
+    return response;
+  }
+
+  const rawContracts = riskLimitVal / (priceNum * cs);
+  response.rawContracts = rawContracts;
+  let maxContracts = rawContracts;
+  if (floorFn && typeof floorFn === 'function' && normalizeFn && typeof normalizeFn === 'function') {
+    maxContracts = normalizeFn(floorFn(rawContracts));
+  } else {
+    maxContracts = Math.floor(rawContracts);
+  }
+  if (Number.isFinite(maxContracts) && maxContracts > 0) {
+    response.maxContracts = maxContracts;
+  }
+  return response;
+}
+
+function extractExtendObject(err) {
+  if (!err || typeof err !== 'object') return null;
+  if (err._extend && typeof err._extend === 'object') return err._extend;
+  if (err.extend && typeof err.extend === 'object') return err.extend;
+  if (err.response && typeof err.response === 'object') {
+    const nested = extractExtendObject(err.response);
+    if (nested) return nested;
+  }
+  if (err.data && typeof err.data === 'object') {
+    const nested = extractExtendObject(err.data);
+    if (nested) return nested;
+  }
+  if (err.responseData && typeof err.responseData === 'object') {
+    const nested = extractExtendObject(err.responseData);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function serializeMexcError(err) {
+  if (!err) return { message: 'Erro MEXC desconhecido' };
+  if (typeof err === 'string') return { message: err };
+  const out = {};
+  const message = err.message || err.msg || err.errorMessage || err.error || null;
+  if (message) out.message = message;
+  const code = err.code ?? err.statusCode ?? err.errorCode ?? err?.responseData?.code ?? err?.data?.code;
+  if (code !== undefined) out.code = code;
+  if (err.statusCode !== undefined) out.statusCode = err.statusCode;
+  if (err.responseData) out.response = err.responseData;
+  if (!out.response && err.data && typeof err.data === 'object') out.response = err.data;
+  const extend = extractExtendObject(err);
+  if (extend) out._extend = extend;
+  if (!out.message && out.response && typeof out.response.message === 'string') out.message = out.response.message;
+  if (!out.code && out.response && out.response.code !== undefined) out.code = out.response.code;
+  return out;
+}
+
+function translateMexcRiskLimitError(errorObj, meta, price) {
+  if (!errorObj || typeof errorObj !== 'object') return null;
+  const mexcCode = Number(errorObj.code ?? errorObj.statusCode ?? null);
+  const rawMessage = String(errorObj.message || errorObj.msg || errorObj.rawMessage || '').toLowerCase();
+  const extend = extractExtendObject(errorObj);
+
+  let amountValue = null;
+  if (extend) {
+    if (extend.amount !== undefined) amountValue = extend.amount;
+    else if (extend.maxAmount !== undefined) amountValue = extend.maxAmount;
+    else if (extend.limit !== undefined) amountValue = extend.limit;
+    else {
+      for (const val of Object.values(extend)) {
+        if (amountValue != null) break;
+        if (typeof val === 'string' || typeof val === 'number') amountValue = val;
+      }
+    }
+  }
+  const amountNum = Number(amountValue);
+  const cs = Number(meta?.mexc?.contractSize || 1);
+  const maxBaseQty = Number.isFinite(amountNum) && Number.isFinite(cs)
+    ? amountNum * cs
+    : null;
+
+  const isRiskError =
+    mexcCode === 8819 ||
+    rawMessage.includes('最高可持有上限张数') ||
+    rawMessage.includes('highest position limit') ||
+    rawMessage.includes('exceed position limit') ||
+    rawMessage.includes('exceed max position');
+
+  if (!isRiskError) return null;
+
+  return {
+    code: 'MEXC_RISK_LIMIT',
+    mexcCode: Number.isFinite(mexcCode) ? mexcCode : null,
+    message: 'Excedido número de contratos permitidos do par.',
+    rawMessage: errorObj.message || errorObj.msg || null,
+    maxContracts: Number.isFinite(amountNum) ? amountNum : null,
+    maxBaseQty: Number.isFinite(maxBaseQty) ? maxBaseQty : null,
+    extend: extend || null,
+    priceUsed: Number.isFinite(Number(price)) ? Number(price) : null
+  };
+}
+
 
 // ===== Conversões e arredondamentos
 function baseToContracts(qtyBase, meta) {
@@ -1682,6 +2002,28 @@ app.post('/api/precheck', async (req, res) => {
       return res.json({ ok: true, blocked: true, reason: 'min_contracts_not_met', minContracts, mode });
     }
 
+    const mexcRiskLimitInfo = await evaluateMexcRiskLimit(
+      symbol,
+      Number(meta.settings.leverage) || 1,
+      rounded.pm,
+      cs,
+      floorContracts,
+      normalizeContracts
+    );
+
+    if (mexcRiskLimitInfo.available && Number.isFinite(mexcRiskLimitInfo.maxContracts) && mexcRiskLimitInfo.maxContracts > 0) {
+      if (contracts > mexcRiskLimitInfo.maxContracts) {
+        return res.json({
+          ok: true,
+          blocked: true,
+          reason: 'mexc_risk_limit',
+          code: 'mexc_risk_limit',
+          mexcMaxContracts: mexcRiskLimitInfo.maxContracts,
+          mexcRiskLimit: mexcRiskLimitInfo
+        });
+      }
+    }
+
     if (mode === 'close') {
       const minResidualQuote = Number(meta?.settings?.minCloseResidualQuote || 0);
       const leftover = Number(positionState?.gate?.filledQty || 0) - Number(rounded.q || 0);
@@ -1727,7 +2069,8 @@ app.post('/api/precheck', async (req, res) => {
         gateOpenExtraPct: appliedGateExtraPct,
         minCloseResidualQuote: meta?.settings?.minCloseResidualQuote,
         requiredUSDT: Number(required.toFixed(6)),
-        levelsUsed: selectedLevels
+        levelsUsed: selectedLevels,
+        riskLimitCheck: mexcRiskLimitInfo
       };
       if (mexcBal.availableUSDT == null) return res.json({ ok: true, needConfirm: false, unknownBalance: true, details });
       details.availableUSDT = Number(mexcBal.availableUSDT.toFixed ? mexcBal.availableUSDT.toFixed(6) : mexcBal.availableUSDT);
@@ -1744,7 +2087,8 @@ app.post('/api/precheck', async (req, res) => {
         gateOpenExtraPct: appliedGateExtraPct,
         minCloseResidualQuote: meta?.settings?.minCloseResidualQuote,
         requiredUSDT: 0,
-        levelsUsed: selectedLevels
+        levelsUsed: selectedLevels,
+        riskLimitCheck: mexcRiskLimitInfo
       };
       return res.json({ ok: true, needConfirm: false, unknownBalance: false, details });
     }
@@ -1919,6 +2263,7 @@ app.post('/api/execute-trade', async (req, res) => {
 
     let gateBalances = null;
     let availableToClose = null;
+    let mexcRiskLimitInfo = null;
     if (mode === 'close') {
       const closeBalStart = Date.now();
       timelineRecorder.push('network', 'Consultando saldo Gate para fechamento', { currency: baseCurrency });
@@ -2015,6 +2360,42 @@ app.post('/api/execute-trade', async (req, res) => {
       rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
     }
     contracts = normalizeContracts(contracts);
+
+    mexcRiskLimitInfo = await evaluateMexcRiskLimit(
+      symbol,
+      Number(meta.settings.leverage) || 1,
+      rounded.pm,
+      cs,
+      floorContracts,
+      normalizeContracts
+    );
+
+    if (mexcRiskLimitInfo.available) {
+      timelineRecorder.push('mexc', 'Limite de risco MEXC consultado', {
+        level: mexcRiskLimitInfo.level,
+        riskLimit: mexcRiskLimitInfo.riskLimit,
+        maxContracts: mexcRiskLimitInfo.maxContracts,
+        leverage: mexcRiskLimitInfo.leverageUsed,
+        cacheAgeMs: mexcRiskLimitInfo.cacheAgeMs
+      });
+      if (Number.isFinite(mexcRiskLimitInfo.maxContracts) && mexcRiskLimitInfo.maxContracts > 0 && contracts > mexcRiskLimitInfo.maxContracts) {
+        return abort(400, {
+          error: `Volume excede o limite de risco da MEXC (${mexcRiskLimitInfo.maxContracts} contratos).`,
+          code: 'mexc_risk_limit',
+          mexcMaxContracts: mexcRiskLimitInfo.maxContracts,
+          mexcRiskLimit: mexcRiskLimitInfo
+        }, {
+          reason: 'mexc_risk_limit',
+          requestedContracts: contracts,
+          maxContracts: mexcRiskLimitInfo.maxContracts
+        });
+      }
+    } else {
+      timelineRecorder.push('warning', 'Limite de risco MEXC indisponível', {
+        error: mexcRiskLimitInfo?.error,
+        source: mexcRiskLimitInfo?.source
+      });
+    }
 
     if (minContracts > 0 && contracts < minContracts) {
       return abort(400, { error: `Volume abaixo do mínimo de contratos (${minContracts}).` }, {
@@ -2196,6 +2577,7 @@ app.post('/api/execute-trade', async (req, res) => {
       gateStatus: 'creating', mexcStatus: 'creating',
       status: 'creating'
     };
+    if (mexcRiskLimitInfo) histItem.mexcRiskLimit = mexcRiskLimitInfo;
 
     attachTimeline(histItem, timelineRecorder);
     timelineRecorder.push('system', 'Histórico criado', {
@@ -2247,6 +2629,9 @@ app.post('/api/execute-trade', async (req, res) => {
 
     // MEXC: open=3 | close=2
     let mexcOk = false;
+    let mexcErrorNormalized = null;
+    let mexcLimitError = null;
+    let gateAutoAction = null;
     const sideCode = (mode === 'open') ? 3 : 2;
     const mexcPriceNum = Number(rounded.pm.toFixed(meta.mexc.priceScale));
     timelineRecorder.push('mexc', 'Enviando ordem MEXC', {
@@ -2268,22 +2653,129 @@ app.post('/api/execute-trade', async (req, res) => {
         histItem.mexcOrderId = bnToStringMaybe(mres.id);
         mexcOk = true;
       } else {
-        console.error('[MEXC SDK] falhou:', mres?.error || mres);
+        mexcErrorNormalized = serializeMexcError(mres?.error || mres);
       }
       histItem.mexcStatus = mexcOk ? 'open' : 'error';
       timelineRecorder.push('mexc', 'Resposta MEXC', {
         durationMs: Date.now() - mexcSendStart,
         orderId: histItem.mexcOrderId,
-        success: mexcOk
+        success: mexcOk,
+        error: mexcOk ? undefined : mexcErrorNormalized
       });
     } catch (e) {
-      console.error('[ERRO AO ENVIAR MEXC]:', e?.message || e);
+      mexcErrorNormalized = serializeMexcError(e);
       histItem.mexcStatus = 'error';
       timelineRecorder.push('error', 'Erro ao enviar ordem MEXC', {
         durationMs: Date.now() - mexcSendStart,
-        message: e?.message || e
+        message: mexcErrorNormalized?.message || e?.message || e,
+        code: mexcErrorNormalized?.code
       });
     }
+
+    if (!mexcOk && mexcErrorNormalized) {
+      histItem.mexcError = mexcErrorNormalized;
+      mexcLimitError = translateMexcRiskLimitError(mexcErrorNormalized, meta, mexcPriceNum);
+      if (mexcLimitError) {
+        histItem.mexcError.translated = mexcLimitError;
+        timelineRecorder.push('error', 'Limite de risco MEXC atingido', {
+          mexcCode: mexcLimitError.mexcCode,
+          maxContracts: mexcLimitError.maxContracts,
+          message: mexcLimitError.message
+        });
+      } else {
+        console.error('[MEXC SDK] falhou:', mexcErrorNormalized);
+      }
+    }
+
+    if (!mexcOk && mexcLimitError && gateOk && histItem.gateOrderId) {
+      gateAutoAction = { attempted: true, orderId: histItem.gateOrderId };
+      try {
+        timelineRecorder.push('gate', 'Cancelando Gate após limite MEXC', { orderId: histItem.gateOrderId });
+        await cancelGateOrderSdk(symbol, histItem.gateOrderId);
+        gateAutoAction.cancelled = true;
+        histItem.gateStatus = 'cancelled';
+        timelineRecorder.push('gate', 'Gate cancelada após limite MEXC', { orderId: histItem.gateOrderId });
+      } catch (cancelErr) {
+        gateAutoAction.error = cancelErr?.response?.data || cancelErr?.message || cancelErr;
+        timelineRecorder.push('error', 'Falha ao cancelar Gate após limite MEXC', {
+          orderId: histItem.gateOrderId,
+          message: gateAutoAction.error
+        });
+      }
+
+      let parsedDetail = null;
+      let flattenQty = 0;
+      const lookup = await fetchGateOrderDetailWithStatus(symbol, histItem.gateOrderId);
+      if (lookup?.detail) {
+        parsedDetail = parseGateOrderDetail(lookup.detail, gateOrderBaseQty, rounded.pg);
+        gateAutoAction.detail = parsedDetail;
+        if (parsedDetail.filled > 0) {
+          gateAutoAction.filledQty = parsedDetail.filled;
+          gateAutoAction.remainingQty = parsedDetail.remaining;
+          flattenQty = parsedDetail.filled;
+          timelineRecorder.push('warning', 'Gate possivelmente preenchida durante erro MEXC', {
+            filled: parsedDetail.filled,
+            remaining: parsedDetail.remaining,
+            avgPrice: parsedDetail.avgPrice
+          });
+        }
+      } else if (lookup?.notFound) {
+        gateAutoAction.notFoundAfterCancel = true;
+        flattenQty = gateOrderBaseQty;
+        gateAutoAction.filledQty = gateOrderBaseQty;
+        gateAutoAction.remainingQty = 0;
+        timelineRecorder.push('warning', 'Gate retornou not found após cancelamento', {
+          orderId: histItem.gateOrderId,
+          assumedQty: gateOrderBaseQty
+        });
+      } else if (lookup?.error) {
+        gateAutoAction.detailError = lookup.error?.message || lookup.error;
+        timelineRecorder.push('warning', 'Não foi possível obter detalhe da Gate após erro MEXC', {
+          orderId: histItem.gateOrderId,
+          message: gateAutoAction.detailError
+        });
+      }
+
+      const flattenSide = (mode === 'open') ? 'sell' : 'buy';
+      if (flattenQty > 0) {
+        const fallbackPrice = parsedDetail?.avgPrice || rounded.pg;
+        const gateQtyScale = Number(meta?.gate?.qtyScale ?? 6);
+        timelineRecorder.push('gate', 'Tentando zerar Gate após limite MEXC', {
+          orderId: histItem.gateOrderId,
+          qty: roundTo(flattenQty, gateQtyScale),
+          side: flattenSide
+        });
+        const flattenResult = await placeGateFlattenOrder(symbol, flattenSide, flattenQty, meta, fallbackPrice);
+        gateAutoAction.flatten = flattenResult;
+        if (flattenResult.success) {
+          gateAutoAction.neutralized = true;
+          gateAutoAction.needsManualClose = false;
+          gateAutoAction.flattenedQty = flattenResult.filledQty ?? flattenResult.qty ?? flattenQty;
+          timelineRecorder.push('gate', 'Gate zerada automaticamente após limite MEXC', {
+            flattenOrderId: flattenResult.orderId,
+            filledQty: gateAutoAction.flattenedQty
+          });
+        } else {
+          gateAutoAction.needsManualClose = true;
+          const flattenErrorRaw = flattenResult.error || flattenResult.reason || null;
+          if (flattenErrorRaw) {
+            gateAutoAction.flattenErrorRaw = flattenErrorRaw;
+            gateAutoAction.flattenError = describeFlattenError(flattenErrorRaw);
+          }
+          timelineRecorder.push('warning', 'Falha ao zerar Gate após limite MEXC', {
+            flattenOrderId: flattenResult.orderId,
+            error: gateAutoAction.flattenError || flattenErrorRaw,
+            filledQty: flattenResult.filledQty,
+            remainingQty: flattenResult.remainingQty,
+            attempted: flattenResult.attempted,
+            reason: flattenResult.reason
+          });
+        }
+      } else if (gateAutoAction.filledQty > 0) {
+        gateAutoAction.needsManualClose = true;
+      }
+    }
+    if (gateAutoAction) histItem.gateAutoAction = gateAutoAction;
 
     histItem.status = gateOk && mexcOk ? 'open' : gateOk && !mexcOk ? 'mexc_error' : !gateOk && mexcOk ? 'gate_error' : 'error';
     timelineRecorder.push('system', 'Status após criação', {
@@ -2300,17 +2792,37 @@ app.post('/api/execute-trade', async (req, res) => {
 
     try { db.saveHistoryItem(histItem); } catch (e) { console.warn('[SQLite] save history (update):', e?.message || e); }
 
-    res.json({
-      ok: true, localId, mode,
+    const success = gateOk && mexcOk;
+    const responsePayload = {
+      ok: success,
+      localId,
+      mode,
+      status: histItem.status,
       gate: {
         id: histItem.gateOrderId,
         price: histItem.priceUsedGate,
         displayBaseQty: histItem.gateOrderVolume,
-        extraPct: appliedGateExtraPct
+        extraPct: appliedGateExtraPct,
+        status: histItem.gateStatus
       },
-      mexc: { id: histItem.mexcOrderId, price: histItem.priceUsedMexc, displayBaseQty: histItem.mexcDisplayVolume },
-      status: histItem.status
-    });
+      mexc: {
+        id: histItem.mexcOrderId,
+        price: histItem.priceUsedMexc,
+        displayBaseQty: histItem.mexcDisplayVolume,
+        status: histItem.mexcStatus
+      },
+      riskLimitCheck: mexcRiskLimitInfo || null
+    };
+    if (!success) {
+      responsePayload.ok = false;
+      responsePayload.error = histItem.status;
+    }
+    if (mexcErrorNormalized) responsePayload.mexcError = mexcErrorNormalized;
+    if (mexcLimitError) responsePayload.mexcLimitError = mexcLimitError;
+    if (gateAutoAction) responsePayload.gateAutoAction = gateAutoAction;
+
+    const statusCode = success ? 200 : 409;
+    res.status(statusCode).json(responsePayload);
   } catch (e) {
     timelineRecorder.push('error', 'Falha na execução', {
       message: e?.response?.data || e?.message || e
