@@ -36,6 +36,7 @@ module.exports = {
   execution: {
     marginPct: 10, // % de distância para evitar que a ordem seja consumida imediatamente
     gateOpenExtraPct: 0, // % adicional aplicado apenas às ordens de abertura enviadas para a Gate
-    minCloseResidualQuote: 4 // valor mínimo (USDT) a manter na posição ao fechar se não der para zerar tudo
+    minCloseResidualQuote: 4, // valor mínimo (USDT) a manter na posição ao fechar se não der para zerar tudo
+    gateFlattenBufferPct: 0.35 // agressividade (%) ao zerar posição automaticamente após falha na MEXC
   }
 };

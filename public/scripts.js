@@ -1010,10 +1010,40 @@ function handleExecuteTradeError(out, statusCode) {
 
   const baseSymbol = getCurrentBaseSymbol();
   if (out.gateAutoAction) {
-    if (out.gateAutoAction.cancelled) lines.push('Gate: ordem cancelada automaticamente.');
-    if (out.gateAutoAction.error) lines.push(`Gate: falha ao cancelar automaticamente (${out.gateAutoAction.error}).`);
-    if (Number.isFinite(out.gateAutoAction.filledQty) && out.gateAutoAction.filledQty > 0) {
-      lines.push(`Gate: preenchido ${formatVolumeValue(out.gateAutoAction.filledQty, 6, baseSymbol)} — feche manualmente para neutralizar.`);
+    const auto = out.gateAutoAction;
+    if (auto.cancelled) lines.push('Gate: ordem cancelada automaticamente.');
+    if (auto.error) lines.push(`Gate: falha ao cancelar automaticamente (${auto.error}).`);
+
+    const flatten = auto.flatten;
+    if (flatten?.success) {
+      const qty = Number(flatten.filledQty ?? flatten.qty ?? auto.flattenedQty ?? auto.filledQty);
+      const qtyText = Number.isFinite(qty) && qty > 0
+        ? formatVolumeValue(qty, 6, baseSymbol)
+        : 'volume solicitado';
+      lines.push(`Gate: posição zerada automaticamente (${qtyText}).`);
+    } else {
+      if (flatten?.attempted) {
+        const filled = Number(flatten.filledQty);
+        if (Number.isFinite(filled) && filled > 0) {
+          lines.push(`Gate: zeragem automática parcial (${formatVolumeValue(filled, 6, baseSymbol)} executados).`);
+        }
+        const errMsg = auto.flattenError || flatten.error || flatten.reason || auto.flattenErrorRaw;
+        if (errMsg) {
+          lines.push(`Gate: falha ao zerar automaticamente (${errMsg}).`);
+        }
+      } else if (auto.flattenError || auto.flattenErrorRaw) {
+        const errMsg = auto.flattenError || auto.flattenErrorRaw;
+        lines.push(`Gate: falha ao zerar automaticamente (${errMsg}).`);
+      }
+
+      if (auto.needsManualClose) {
+        const qty = Number(auto.filledQty);
+        if (Number.isFinite(qty) && qty > 0) {
+          lines.push(`Gate: preenchido ${formatVolumeValue(qty, 6, baseSymbol)} — verifique manualmente para neutralizar.`);
+        } else {
+          lines.push('Gate: verifique manualmente se há exposição residual na Gate.');
+        }
+      }
     }
   }
 

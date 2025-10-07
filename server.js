@@ -341,8 +341,23 @@ if (config.gate?.apiKey && config.gate?.apiSecret) {
 }
 const gateSpotApi = new GateApi.SpotApi(gateClient);
 
-async function placeGateOrderSdk(symbol, side, priceStr, amountStr) {
-  const order = { currencyPair: symbol, type: 'limit', account: 'spot', side, price: String(priceStr), amount: String(amountStr) };
+async function placeGateOrderSdk(symbol, side, priceStr, amountStr, extraOptions = null) {
+  const order = {
+    currencyPair: symbol,
+    type: 'limit',
+    account: 'spot',
+    side,
+    price: String(priceStr),
+    amount: String(amountStr)
+  };
+  if (extraOptions && typeof extraOptions === 'object') {
+    for (const [key, value] of Object.entries(extraOptions)) {
+      if (value === undefined || value === null) continue;
+      order[key] = value;
+      if (key === 'timeInForce' && order.time_in_force == null) order.time_in_force = value;
+      if (key === 'time_in_force' && order.timeInForce == null) order.timeInForce = value;
+    }
+  }
   console.log('[GATE] Enviando ordem SDK:', order);
   const resp = await gateSpotApi.createOrder(order);
   const body = resp.body || resp;
@@ -434,6 +449,114 @@ async function fetchGateOrderDetailWithStatus(symbol, id) {
     console.warn(`[GATE] failed to fetch order detail for reposition ${id} ${symbol}:`, payload || err?.message || err);
     return { detail: null, notFound: false, error: err };
   }
+}
+
+async function fetchGateAggressivePrice(symbol, side) {
+  try {
+    const { data } = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
+    if (!data) return { price: null, source: 'empty_book' };
+    const levels = side === 'sell' ? data.bids : data.asks;
+    if (!Array.isArray(levels) || !levels.length) {
+      return { price: null, source: 'empty_side' };
+    }
+    const best = Number(levels[0]?.[0]);
+    if (!Number.isFinite(best) || best <= 0) {
+      return { price: null, source: 'invalid_price' };
+    }
+    return { price: best, source: 'book' };
+  } catch (err) {
+    return { price: null, source: 'error', error: err?.message || err };
+  }
+}
+
+async function placeGateFlattenOrder(symbol, side, qty, meta, fallbackPrice = null) {
+  const qtyScale = Number(meta?.gate?.qtyScale ?? 6);
+  const priceScale = Number(meta?.gate?.priceScale ?? 6);
+  const qtyRounded = roundDownTo(qty, qtyScale);
+  if (!Number.isFinite(qtyRounded) || qtyRounded <= 0) {
+    return { attempted: false, reason: 'qty_rounding' };
+  }
+
+  const { price: bookPrice } = await fetchGateAggressivePrice(symbol, side);
+  const reference = Number.isFinite(bookPrice) && bookPrice > 0
+    ? bookPrice
+    : Number(fallbackPrice);
+  if (!Number.isFinite(reference) || reference <= 0) {
+    return { attempted: false, reason: 'no_reference_price' };
+  }
+
+  const bufferPct = Number(config.execution?.gateFlattenBufferPct ?? 0.35);
+  const adjust = bufferPct / 100;
+  let adjustedPrice = reference;
+  if (side === 'sell') {
+    adjustedPrice = reference * (1 - adjust);
+  } else {
+    adjustedPrice = reference * (1 + adjust);
+  }
+
+  const priceRounded = Number(roundTo(adjustedPrice, priceScale));
+  if (!Number.isFinite(priceRounded) || priceRounded <= 0) {
+    return { attempted: false, reason: 'invalid_price' };
+  }
+
+  const extra = { timeInForce: 'ioc', time_in_force: 'ioc' };
+  const amountStr = qtyRounded.toFixed(Math.max(qtyScale, 0));
+  const priceStr = priceRounded.toFixed(Math.max(priceScale, 0));
+  const orderInfo = { qtyRounded: Number(amountStr), priceRounded: Number(priceStr) };
+
+  try {
+    const placed = await placeGateOrderSdk(symbol, side, priceStr, amountStr, extra);
+    const flatten = {
+      attempted: true,
+      orderId: placed?.id ? String(placed.id) : null,
+      qty: orderInfo.qtyRounded,
+      price: orderInfo.priceRounded,
+      side,
+      success: false
+    };
+    if (!flatten.orderId) {
+      flatten.error = 'sem_id';
+      return flatten;
+    }
+
+    const lookup = await fetchGateOrderDetailWithStatus(symbol, flatten.orderId);
+    if (lookup?.detail) {
+      const parsed = parseGateOrderDetail(lookup.detail, orderInfo.qtyRounded, orderInfo.priceRounded);
+      flatten.detail = parsed;
+      flatten.filledQty = parsed.filled;
+      flatten.remainingQty = parsed.remaining;
+      flatten.success = parsed.remaining <= 0 || parsed.isFilled;
+      flatten.partial = !flatten.success && parsed.filled > 0;
+    } else if (lookup?.notFound) {
+      flatten.notFound = true;
+      flatten.filledQty = orderInfo.qtyRounded;
+      flatten.success = true;
+    } else if (lookup?.error) {
+      flatten.detailError = lookup.error?.message || lookup.error;
+    }
+    return flatten;
+  } catch (err) {
+    return {
+      attempted: true,
+      side,
+      qty: orderInfo.qtyRounded,
+      price: orderInfo.priceRounded,
+      success: false,
+      error: err?.response?.data || err?.message || err
+    };
+  }
+}
+
+function describeFlattenError(reason) {
+  if (!reason) return null;
+  const normalized = String(reason).toLowerCase();
+  const map = {
+    qty_rounding: 'volume abaixo do mínimo permitido na Gate',
+    no_reference_price: 'não foi possível obter preço de referência na Gate',
+    invalid_price: 'preço inválido ao gerar ordem de zeragem',
+    sem_id: 'resposta sem ID ao criar ordem de zeragem'
+  };
+  return map[normalized] || reason;
 }
 async function getGateBalances(symbol) {
   try {
@@ -2579,25 +2702,77 @@ app.post('/api/execute-trade', async (req, res) => {
           message: gateAutoAction.error
         });
       }
-      try {
-        const detail = await getGateOrderDetail(symbol, histItem.gateOrderId);
-        const parsed = parseGateOrderDetail(detail, gateOrderBaseQty, rounded.pg);
-        gateAutoAction.detail = parsed;
-        if (parsed.filled > 0) {
-          gateAutoAction.filledQty = parsed.filled;
-          gateAutoAction.needsManualClose = true;
+
+      let parsedDetail = null;
+      let flattenQty = 0;
+      const lookup = await fetchGateOrderDetailWithStatus(symbol, histItem.gateOrderId);
+      if (lookup?.detail) {
+        parsedDetail = parseGateOrderDetail(lookup.detail, gateOrderBaseQty, rounded.pg);
+        gateAutoAction.detail = parsedDetail;
+        if (parsedDetail.filled > 0) {
+          gateAutoAction.filledQty = parsedDetail.filled;
+          gateAutoAction.remainingQty = parsedDetail.remaining;
+          flattenQty = parsedDetail.filled;
           timelineRecorder.push('warning', 'Gate possivelmente preenchida durante erro MEXC', {
-            filled: parsed.filled,
-            remaining: parsed.remaining,
-            avgPrice: parsed.avgPrice
+            filled: parsedDetail.filled,
+            remaining: parsedDetail.remaining,
+            avgPrice: parsedDetail.avgPrice
           });
         }
-      } catch (detailErr) {
-        gateAutoAction.detailError = detailErr?.message || detailErr;
+      } else if (lookup?.notFound) {
+        gateAutoAction.notFoundAfterCancel = true;
+        flattenQty = gateOrderBaseQty;
+        gateAutoAction.filledQty = gateOrderBaseQty;
+        gateAutoAction.remainingQty = 0;
+        timelineRecorder.push('warning', 'Gate retornou not found após cancelamento', {
+          orderId: histItem.gateOrderId,
+          assumedQty: gateOrderBaseQty
+        });
+      } else if (lookup?.error) {
+        gateAutoAction.detailError = lookup.error?.message || lookup.error;
         timelineRecorder.push('warning', 'Não foi possível obter detalhe da Gate após erro MEXC', {
           orderId: histItem.gateOrderId,
           message: gateAutoAction.detailError
         });
+      }
+
+      const flattenSide = (mode === 'open') ? 'sell' : 'buy';
+      if (flattenQty > 0) {
+        const fallbackPrice = parsedDetail?.avgPrice || rounded.pg;
+        const gateQtyScale = Number(meta?.gate?.qtyScale ?? 6);
+        timelineRecorder.push('gate', 'Tentando zerar Gate após limite MEXC', {
+          orderId: histItem.gateOrderId,
+          qty: roundTo(flattenQty, gateQtyScale),
+          side: flattenSide
+        });
+        const flattenResult = await placeGateFlattenOrder(symbol, flattenSide, flattenQty, meta, fallbackPrice);
+        gateAutoAction.flatten = flattenResult;
+        if (flattenResult.success) {
+          gateAutoAction.neutralized = true;
+          gateAutoAction.needsManualClose = false;
+          gateAutoAction.flattenedQty = flattenResult.filledQty ?? flattenResult.qty ?? flattenQty;
+          timelineRecorder.push('gate', 'Gate zerada automaticamente após limite MEXC', {
+            flattenOrderId: flattenResult.orderId,
+            filledQty: gateAutoAction.flattenedQty
+          });
+        } else {
+          gateAutoAction.needsManualClose = true;
+          const flattenErrorRaw = flattenResult.error || flattenResult.reason || null;
+          if (flattenErrorRaw) {
+            gateAutoAction.flattenErrorRaw = flattenErrorRaw;
+            gateAutoAction.flattenError = describeFlattenError(flattenErrorRaw);
+          }
+          timelineRecorder.push('warning', 'Falha ao zerar Gate após limite MEXC', {
+            flattenOrderId: flattenResult.orderId,
+            error: gateAutoAction.flattenError || flattenErrorRaw,
+            filledQty: flattenResult.filledQty,
+            remainingQty: flattenResult.remainingQty,
+            attempted: flattenResult.attempted,
+            reason: flattenResult.reason
+          });
+        }
+      } else if (gateAutoAction.filledQty > 0) {
+        gateAutoAction.needsManualClose = true;
       }
     }
     if (gateAutoAction) histItem.gateAutoAction = gateAutoAction;
