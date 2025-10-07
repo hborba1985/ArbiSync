@@ -438,13 +438,16 @@ function fillOverridesUI(merged) {
   set('ov_set_margin', s.marginPct);
   set('ov_set_lev', s.leverage);
   set('ov_set_gate_extra', s.gateOpenExtraPct);
+  const minResidual = (s.minCloseResidualQuote != null) ? s.minCloseResidualQuote : 4;
+  set('ov_set_min_residual', minResidual);
 }
 function metaToText(label, meta) {
   const gateExtra = (meta.settings && meta.settings.gateOpenExtraPct != null) ? meta.settings.gateOpenExtraPct : 0;
+  const minResidual = meta.settings?.minCloseResidualQuote != null ? meta.settings.minCloseResidualQuote : 0;
   return `${label}
 Gate: priceScale=${meta.gate.priceScale}, qtyScale=${meta.gate.qtyScale}, minQty=${meta.gate.minQty}, minQuote=${meta.gate.minQuote}
 MEXC: priceScale=${meta.mexc.priceScale}, volPrecision=${meta.mexc.volPrecision}, contractSize=${meta.mexc.contractSize}, minContracts=${meta.mexc.minContracts}
-Settings: margem=${meta.settings.marginPct}%, lev=${meta.settings.leverage}, gateExtra=${gateExtra}%, parity=${meta.settings.parityVolumes}`;
+Settings: margem=${meta.settings.marginPct}%, lev=${meta.settings.leverage}, gateExtra=${gateExtra}%, minCloseResidualQuote=${minResidual}`;
 }
 async function refreshMetaUI(symbol) {
   const r = await fetch('/api/market-meta?symbol=' + encodeURIComponent(symbol));
@@ -496,6 +499,7 @@ document.getElementById('saveOverride').addEventListener('click', async () => {
       marginPct: numOrUndef('ov_set_margin'),
       leverage: numOrUndef('ov_set_lev'),
       gateOpenExtraPct: numOrUndef('ov_set_gate_extra'),
+      minCloseResidualQuote: numOrUndef('ov_set_min_residual'),
       parityVolumes: true
     }
   };
@@ -625,6 +629,59 @@ const telegramIncludeVolumesEl = document.getElementById('telegramIncludeVolumes
 if (telegramIncludeVolumesEl) telegramIncludeVolumesEl.checked = telegramIncludeVolumes;
 const scientificToggleEl = document.getElementById('scientificToggle');
 if (scientificToggleEl) scientificToggleEl.checked = useScientificNotation;
+
+const manualHistoryState = {
+  editingId: null,
+  elements: {
+    details: document.getElementById('manualHistoryDetails'),
+    mode: document.getElementById('manualHistoryMode'),
+    volume: document.getElementById('manualHistoryVolume'),
+    gatePrice: document.getElementById('manualHistoryGatePrice'),
+    mexcPrice: document.getElementById('manualHistoryMexcPrice'),
+    createdAt: document.getElementById('manualHistoryCreatedAt'),
+    status: document.getElementById('manualHistoryStatus'),
+    editingLabel: document.getElementById('manualHistoryEditingLabel'),
+    saveBtn: document.getElementById('manualHistorySave'),
+    cancelBtn: document.getElementById('manualHistoryCancel')
+  }
+};
+
+function setManualHistoryStatus(message, isError = false) {
+  const el = manualHistoryState.elements.status;
+  if (!el) return;
+  el.textContent = message || '';
+  el.style.color = isError ? '#c0392b' : '#2c3e50';
+}
+
+function resetManualHistoryForm() {
+  const { mode, volume, gatePrice, mexcPrice, createdAt, editingLabel } = manualHistoryState.elements;
+  manualHistoryState.editingId = null;
+  if (mode) mode.value = 'open';
+  if (volume) volume.value = '';
+  if (gatePrice) gatePrice.value = '';
+  if (mexcPrice) mexcPrice.value = '';
+  if (createdAt) createdAt.value = '';
+  if (editingLabel) editingLabel.textContent = '';
+  setManualHistoryStatus('');
+}
+
+function openManualHistoryForm(entry) {
+  const { details, mode, volume, gatePrice, mexcPrice, createdAt, editingLabel } = manualHistoryState.elements;
+  manualHistoryState.editingId = entry?.localId || null;
+  if (mode && entry?.mode) mode.value = entry.mode;
+  if (volume) volume.value = entry?.volume != null ? entry.volume : '';
+  if (gatePrice) gatePrice.value = entry?.priceUsedGate != null ? entry.priceUsedGate : '';
+  if (mexcPrice) mexcPrice.value = entry?.priceUsedMexc != null ? entry.priceUsedMexc : '';
+  if (createdAt) createdAt.value = entry?.createdAt || '';
+  if (editingLabel) {
+    editingLabel.textContent = entry?.localId ? `Editando ordem ${entry.localId}` : '';
+  }
+  setManualHistoryStatus('');
+  if (details) {
+    details.open = true;
+    try { details.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+  }
+}
 
 function playBeep() {
   try {
@@ -780,6 +837,66 @@ scientificToggleEl?.addEventListener('change', e => {
   renderQuotes();
 });
 
+manualHistoryState.elements.saveBtn?.addEventListener('click', async () => {
+  const { saveBtn, mode, volume, gatePrice, mexcPrice, createdAt } = manualHistoryState.elements;
+  if (!mode || !volume || !gatePrice || !mexcPrice || !saveBtn) return;
+  const modeValue = mode.value === 'close' ? 'close' : 'open';
+  const volNum = Number(volume.value);
+  if (!Number.isFinite(volNum) || volNum <= 0) { setManualHistoryStatus('Informe um volume válido.', true); return; }
+  const gatePriceNum = Number(gatePrice.value);
+  if (!Number.isFinite(gatePriceNum) || gatePriceNum <= 0) { setManualHistoryStatus('Informe um preço Gate válido.', true); return; }
+  const mexcPriceNum = Number(mexcPrice.value);
+  if (!Number.isFinite(mexcPriceNum) || mexcPriceNum <= 0) { setManualHistoryStatus('Informe um preço MEXC válido.', true); return; }
+  const entry = {
+    mode: modeValue,
+    volume: volNum,
+    gatePrice: gatePriceNum,
+    mexcPrice: mexcPriceNum,
+    symbol: currentSymbol
+  };
+  const createdRaw = createdAt?.value?.trim();
+  if (createdRaw) entry.createdAt = createdRaw;
+  if (manualHistoryState.editingId) entry.localId = manualHistoryState.editingId;
+
+  setManualHistoryStatus('Salvando ordem manual...');
+  saveBtn.disabled = true;
+  try {
+    const resp = await fetch('/api/history/manual', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entry })
+    });
+    const out = await safeJson(resp);
+    if (!resp.ok || out?.ok === false) {
+      const msg = typeof out?.error === 'string' ? out.error : 'Falha ao salvar ordem manual.';
+      setManualHistoryStatus(msg, true);
+      return;
+    }
+    resetManualHistoryForm();
+    setManualHistoryStatus('Ordem manual salva com sucesso.');
+    manualHistoryState.elements.details?.removeAttribute('open');
+    await refreshHistory();
+    await refreshPosition();
+  } catch (e) {
+    setManualHistoryStatus(`Erro ao salvar: ${e?.message || e}`, true);
+  } finally {
+    saveBtn.disabled = false;
+  }
+});
+
+manualHistoryState.elements.cancelBtn?.addEventListener('click', () => {
+  resetManualHistoryForm();
+  manualHistoryState.elements.details?.removeAttribute('open');
+});
+
+manualHistoryState.elements.details?.addEventListener('toggle', () => {
+  if (!manualHistoryState.elements.details.open) {
+    resetManualHistoryForm();
+  }
+});
+
+resetManualHistoryForm();
+
 function persistSelections() {
   localStorage.setItem('levels_open', JSON.stringify(Array.from(levelSelections.open).sort((a, b) => a - b)));
   localStorage.setItem('levels_close', JSON.stringify(Array.from(levelSelections.close).sort((a, b) => a - b)));
@@ -798,8 +915,8 @@ function syncSelectionWithLevels(mode, maxLevels) {
   if (changed) persistSelections();
 }
 
-function shouldUseScientific(num) {
-  if (!useScientificNotation) return false;
+function shouldUseScientific(num, allowScientific = false) {
+  if (!useScientificNotation || !allowScientific) return false;
   const str = num.toString().toLowerCase();
   if (str.includes('e')) return true;
   const parts = str.split('.');
@@ -808,10 +925,10 @@ function shouldUseScientific(num) {
   return decimals.length > 6;
 }
 
-function formatNumberValue(value, digits = 6) {
+function formatNumberValue(value, digits = 6, allowScientific = false) {
   const num = Number(value);
   if (!Number.isFinite(num)) return '—';
-  if (shouldUseScientific(num)) {
+  if (shouldUseScientific(num, allowScientific)) {
     return num.toExponential(2);
   }
   return num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: digits });
@@ -876,10 +993,10 @@ function renderLevelsTable(mode, levels, baseSymbol, tbodyId) {
       tr.appendChild(td);
     };
 
-    addCell(formatNumberValue(lvl.gate?.price));
+    addCell(formatNumberValue(lvl.gate?.price, 6, true));
     addCell(formatVolumeValue(lvl.gate?.baseVolume, 6, baseSymbol));
     addCell(formatVolumeValue(lvl.gate?.usdtVolume, 2, 'USDT'));
-    addCell(formatNumberValue(lvl.mexc?.price));
+    addCell(formatNumberValue(lvl.mexc?.price, 6, true));
     addCell(formatVolumeValue(lvl.mexc?.baseVolume, 6, baseSymbol));
     addCell(formatVolumeValue(lvl.mexc?.usdtVolume, 2, 'USDT'));
     addCell(formatDiffValue(lvl.diffPct));
@@ -1582,6 +1699,20 @@ async function refreshHistory() {
         }
       });
 
+      const editBtn = document.createElement('button');
+      editBtn.textContent = 'Editar';
+      editBtn.addEventListener('click', () => {
+        const clone = { ...h };
+        if (clone.volume != null && typeof clone.volume === 'number') clone.volume = clone.volume.toString();
+        if (clone.priceUsedGate != null && typeof clone.priceUsedGate === 'number') {
+          clone.priceUsedGate = clone.priceUsedGate.toString();
+        }
+        if (clone.priceUsedMexc != null && typeof clone.priceUsedMexc === 'number') {
+          clone.priceUsedMexc = clone.priceUsedMexc.toString();
+        }
+        openManualHistoryForm(clone);
+      });
+
       const groBtn = document.createElement('button');
       groBtn.textContent = 'Reposicionar';
       groBtn.disabled = !h.gateOrderId || h.gateStatus === 'filled' || h.gateStatus === 'cancelled';
@@ -1651,7 +1782,10 @@ async function refreshHistory() {
       tr.appendChild(td(h.mexcStatus || '-'));
       const mroTd = document.createElement('td'); mroTd.appendChild(mroBtn); tr.appendChild(mroTd);
       tr.appendChild(td(h.status || '-'));
-      const act = document.createElement('td'); act.appendChild(cancelBtn); tr.appendChild(act);
+      const act = document.createElement('td');
+      act.appendChild(editBtn);
+      act.appendChild(cancelBtn);
+      tr.appendChild(act);
 
       tbody.appendChild(tr);
     });

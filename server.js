@@ -742,7 +742,8 @@ async function autoDiscoverMeta(symbol) {
   const settings = {
     marginPct: Number(config.execution?.marginPct ?? 10),
     leverage: Number(config.mexc?.leverage ?? 1),
-    gateOpenExtraPct: Number(config.execution?.gateOpenExtraPct ?? 0)
+    gateOpenExtraPct: Number(config.execution?.gateOpenExtraPct ?? 0),
+    minCloseResidualQuote: Number(config.execution?.minCloseResidualQuote ?? 4)
   };
   return { symbolSpot: symbol, symbolFut: symbol, gate, mexc, settings };
 }
@@ -801,6 +802,44 @@ function computeGateOrderQty(baseQty, meta, mode) {
     }
   }
   return qty;
+}
+
+function enforceCloseResidualGuard(mode, contracts, meta, gatePrice, normalizeContracts, floorContracts) {
+  if (mode !== 'close') return { ok: true, contracts };
+  const minQuote = Number(meta?.settings?.minCloseResidualQuote || 0);
+  if (!Number.isFinite(minQuote) || minQuote <= 0) return { ok: true, contracts };
+  const positionBase = Number(positionState?.gate?.filledQty || 0);
+  if (!Number.isFinite(positionBase) || positionBase <= 0) return { ok: true, contracts };
+  const gatePriceNum = Number(gatePrice);
+  if (!Number.isFinite(gatePriceNum) || gatePriceNum <= 0) return { ok: true, contracts };
+
+  const cs = Number(meta?.mexc?.contractSize || 1);
+  const currentBase = Number(contracts) * cs;
+  if (!Number.isFinite(currentBase) || currentBase <= 0) return { ok: false, reason: 'invalid_guard_base' };
+  if (currentBase >= positionBase) return { ok: true, contracts };
+
+  const minResidualBase = minQuote / gatePriceNum;
+  if (!Number.isFinite(minResidualBase) || minResidualBase <= 0) return { ok: true, contracts };
+  if (minResidualBase >= positionBase) return { ok: true, contracts };
+
+  const maxClosableBase = positionBase - minResidualBase;
+  if (!Number.isFinite(maxClosableBase) || maxClosableBase <= 0) return { ok: true, contracts };
+
+  let maxContracts = normalizeContracts(floorContracts(maxClosableBase / cs));
+  if (!Number.isFinite(maxContracts) || maxContracts <= 0) {
+    return { ok: false, reason: 'min_residual_guard', minResidualQuote: minQuote };
+  }
+
+  const minContracts = Number(meta?.mexc?.minContracts || 1);
+  if (Number.isFinite(minContracts) && minContracts > 0 && maxContracts < minContracts) {
+    return { ok: false, reason: 'min_residual_guard', minResidualQuote: minQuote };
+  }
+
+  if (maxContracts < contracts) {
+    return { ok: true, contracts: maxContracts, applied: true, minResidualQuote: minQuote };
+  }
+
+  return { ok: true, contracts };
 }
 
 function normalizeLevelSelection(raw, maxGateLevels, maxMexcLevels) {
@@ -1388,10 +1427,15 @@ app.post('/api/position-dismantle', (req, res) => {
   }
 });
 
-function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
+function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg, options = {}) {
+  const state = options.state || positionState;
+  if (!state.gate) state.gate = { filledQty: 0, avgPrice: 0 };
+  if (!state.mexc) state.mexc = { filledQty: 0, avgPrice: 0, positionId: null };
+  const persist = options.persist !== false;
   const meta = item?.metaUsed || {};
-  if (item?.symbol) positionState.symbol = item.symbol;
-  else if (!positionState.symbol && currentSymbol) positionState.symbol = currentSymbol;
+  if (item?.symbol) state.symbol = item.symbol;
+  else if (!state.symbol && currentSymbol) state.symbol = currentSymbol;
+
   const gateQty = Number(gFilled || 0);
   const mexcContracts = Number(mFilled || 0);
 
@@ -1404,7 +1448,7 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
   }
 
   const qty = Math.min(gateQty, mexcQty);
-  if (!qty || qty <= 0) return;
+  if (!qty || qty <= 0) return state;
 
   const gatePrice = Number(gAvg || item.priceUsedGate || 0);
   const mexcPrice = Number(mAvg || item.priceUsedMexc || 0);
@@ -1417,7 +1461,7 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
   item.arbPct = roundTo(arbRaw * sign, 6);
   item.pnlUsd = roundTo(pnlUsd, 6);
 
-  positionState.trades.push({
+  state.trades.push({
     t: Date.now(),
     mode: item.mode === 'close' ? 'close' : 'open',
     qty: Number(qty),
@@ -1426,49 +1470,80 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg) {
     pnlUsd: Number.isFinite(item.pnlUsd) ? Number(item.pnlUsd) : 0,
     diffPct: Number.isFinite(item.arbPct) ? Number(item.arbPct) : null
   });
-  if (positionState.trades.length > TRADES_LIMIT) {
-    positionState.trades = positionState.trades.slice(-TRADES_LIMIT);
+  if (state.trades.length > TRADES_LIMIT) {
+    state.trades = state.trades.slice(-TRADES_LIMIT);
   }
 
   // Gate stats
-  const gPrevQty = positionState.gate.filledQty;
-  const gPrevAvg = positionState.gate.avgPrice;
+  const gPrevQty = state.gate.filledQty;
+  const gPrevAvg = state.gate.avgPrice;
   const gNewQty = gPrevQty + adjQty;
   const gNewAvg = gNewQty > 0 ? ((gPrevAvg * gPrevQty) + (gatePrice * adjQty)) / gNewQty : 0;
-  positionState.gate.filledQty = gNewQty;
-  positionState.gate.avgPrice = gNewAvg;
+  state.gate.filledQty = gNewQty;
+  state.gate.avgPrice = gNewAvg;
 
   // MEXC stats
-  const mPrevQty = positionState.mexc.filledQty;
-  const mPrevAvg = positionState.mexc.avgPrice;
+  const mPrevQty = state.mexc.filledQty;
+  const mPrevAvg = state.mexc.avgPrice;
   const mNewQty = mPrevQty + adjQty;
   const mNewAvg = mNewQty > 0 ? ((mPrevAvg * mPrevQty) + (mexcPrice * adjQty)) / mNewQty : 0;
-  positionState.mexc.filledQty = mNewQty;
-  positionState.mexc.avgPrice = mNewAvg;
-  if (mNewQty <= 0) positionState.mexc.positionId = null;
+  state.mexc.filledQty = mNewQty;
+  state.mexc.avgPrice = mNewAvg;
+  if (mNewQty <= 0) state.mexc.positionId = null;
 
   // Aggregates
-  const prevQty = positionState.filledQty;
-  const prevAvg = positionState.avgPrice;
+  const prevQty = state.filledQty;
+  const prevAvg = state.avgPrice;
   const newQty = prevQty + adjQty;
   const newAvg = newQty > 0 ? ((prevAvg * prevQty) + (gatePrice * adjQty)) / newQty : 0;
-  const newArb = newQty > 0 ? (((positionState.arbPctAvg || 0) * prevQty) + (arbRaw * adjQty)) / newQty : 0;
-  positionState.filledQty = newQty;
-  positionState.avgPrice = newAvg;
-  positionState.arbPctAvg = newArb;
-  positionState.pnlUsd = (positionState.pnlUsd || 0) + item.pnlUsd;
+  const newArb = newQty > 0 ? (((state.arbPctAvg || 0) * prevQty) + (arbRaw * adjQty)) / newQty : 0;
+  state.filledQty = newQty;
+  state.avgPrice = newAvg;
+  state.arbPctAvg = newArb;
+  state.pnlUsd = (state.pnlUsd || 0) + item.pnlUsd;
 
-  positionState.series.push({
+  state.series.push({
     t: Date.now(),
     filledQty: newQty,
     avgPrice: Number(newAvg.toFixed(11)),
     arbPctAvg: Number(newArb.toFixed(6)),
-    pnlUsd: Number(positionState.pnlUsd.toFixed(6)),
+    pnlUsd: Number(state.pnlUsd.toFixed(6)),
     gate: { filledQty: gNewQty, avgPrice: Number(gNewAvg.toFixed(11)) },
     mexc: { filledQty: mNewQty, avgPrice: Number(mNewAvg.toFixed(11)) }
   });
+  state.series = sanitizeSeries(state.series);
+  state.trades = sanitizeTrades(state.trades);
+
+  if (persist && state === positionState) {
+    persistPositionState('update-position');
+  }
+  return state;
+}
+
+function rebuildPositionFromHistory() {
+  const baseState = createEmptyPositionState();
+  baseState.targetQty = Number(positionState?.targetQty || 0);
+  if (positionState?.symbol) baseState.symbol = positionState.symbol;
+  if (positionState?.mexc?.positionId) baseState.mexc.positionId = positionState.mexc.positionId;
+
+  const sorted = orderHistory
+    .slice()
+    .filter((item) => item && item.status === 'filled')
+    .sort((a, b) => Number(a?.localId || 0) - Number(b?.localId || 0));
+
+  for (const item of sorted) {
+    const gateQty = Number(item.volume ?? item.gateOrderBaseQty ?? item.mexcDisplayVolume ?? 0);
+    if (!Number.isFinite(gateQty) || gateQty <= 0) continue;
+    const gateAvg = Number(item.priceUsedGate ?? 0);
+    const mexcAvg = Number(item.priceUsedMexc ?? 0);
+    updatePositionFromOrder(item, gateQty, gateAvg, 0, mexcAvg, { state: baseState, persist: false });
+  }
+
+  positionState = recalcPositionAggregates(baseState);
   positionState.series = sanitizeSeries(positionState.series);
-  persistPositionState('update-position');
+  positionState.trades = sanitizeTrades(positionState.trades);
+  persistPositionState('rebuild-history');
+  return positionState;
 }
 
 // ===== Precheck (respeita modo open/close do front)
@@ -1575,6 +1650,21 @@ app.post('/api/precheck', async (req, res) => {
       return res.json({ ok: true, blocked: true, reason: 'min_contracts_not_met', minContracts, mode });
     }
 
+    const guard = enforceCloseResidualGuard(mode, contracts, meta, gatePrice, normalizeContracts, floorContracts);
+    if (!guard.ok) {
+      const minResidualQuote = guard.minResidualQuote ?? Number(meta?.settings?.minCloseResidualQuote || 0);
+      const message = `Saldo residual ficaria abaixo de ${Number(minResidualQuote).toFixed(2)} USDT.`;
+      return res.json({
+        ok: true,
+        blocked: true,
+        reason: `${message} Ajuste o volume ou reduza o mínimo manual nas configurações.`,
+        code: 'min_residual_guard',
+        minResidualQuote,
+        mode
+      });
+    }
+    contracts = guard.contracts;
+
     let finalBaseQtyRaw = contracts * cs;
     let rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
     let adjustedContracts = normalizeContracts(floorContracts(rounded.q / cs));
@@ -1590,6 +1680,24 @@ app.post('/api/precheck', async (req, res) => {
 
     if (minContracts > 0 && contracts < minContracts) {
       return res.json({ ok: true, blocked: true, reason: 'min_contracts_not_met', minContracts, mode });
+    }
+
+    if (mode === 'close') {
+      const minResidualQuote = Number(meta?.settings?.minCloseResidualQuote || 0);
+      const leftover = Number(positionState?.gate?.filledQty || 0) - Number(rounded.q || 0);
+      const leftoverQuote = Number.isFinite(leftover) && Number.isFinite(rounded.pg) ? leftover * rounded.pg : null;
+      if (minResidualQuote > 0 && Number.isFinite(leftover) && leftover > 0 && Number.isFinite(leftoverQuote) && leftoverQuote < minResidualQuote) {
+        const friendly = `Saldo residual estimado: ${Number(leftoverQuote.toFixed(6))} USDT (mínimo exigido: ${Number(minResidualQuote).toFixed(2)} USDT).`;
+        return res.json({
+          ok: true,
+          blocked: true,
+          reason: `${friendly} Ajuste o volume ou reduza o mínimo manual nas configurações.`,
+          code: 'min_residual_guard',
+          minResidualQuote,
+          leftoverQuote: Number(leftoverQuote.toFixed(6)),
+          mode
+        });
+      }
     }
 
     const gateOrderBaseQty = computeGateOrderQty(rounded.q, meta, mode);
@@ -1617,6 +1725,7 @@ app.post('/api/precheck', async (req, res) => {
         leverage: meta.settings.leverage,
         marginPct: meta.settings.marginPct,
         gateOpenExtraPct: appliedGateExtraPct,
+        minCloseResidualQuote: meta?.settings?.minCloseResidualQuote,
         requiredUSDT: Number(required.toFixed(6)),
         levelsUsed: selectedLevels
       };
@@ -1633,6 +1742,7 @@ app.post('/api/precheck', async (req, res) => {
         leverage: meta.settings.leverage,
         marginPct: meta.settings.marginPct,
         gateOpenExtraPct: appliedGateExtraPct,
+        minCloseResidualQuote: meta?.settings?.minCloseResidualQuote,
         requiredUSDT: 0,
         levelsUsed: selectedLevels
       };
@@ -1683,7 +1793,8 @@ app.post('/api/execute-trade', async (req, res) => {
       settings: {
         marginPct: meta?.settings?.marginPct,
         leverage: meta?.settings?.leverage,
-        gateOpenExtraPct: meta?.settings?.gateOpenExtraPct
+        gateOpenExtraPct: meta?.settings?.gateOpenExtraPct,
+        minCloseResidualQuote: meta?.settings?.minCloseResidualQuote
       }
     });
 
@@ -1869,6 +1980,29 @@ app.post('/api/execute-trade', async (req, res) => {
       });
     }
 
+    const guard = enforceCloseResidualGuard(mode, contracts, meta, gatePrice, normalizeContracts, floorContracts);
+    if (!guard.ok) {
+      const minResidualQuote = guard.minResidualQuote ?? Number(meta?.settings?.minCloseResidualQuote || 0);
+      const message = `Saldo residual ficaria abaixo de ${Number(minResidualQuote).toFixed(2)} USDT.`;
+      return abort(400, {
+        error: `${message} Ajuste o volume ou reduza o mínimo manual nas configurações.`,
+        code: 'min_residual_guard',
+        minResidualQuote
+      }, {
+        reason: 'min_residual_guard',
+        contracts,
+        minResidualQuote
+      });
+    }
+    if (guard.applied) {
+      timelineRecorder.push('calc', 'Regra de saldo mínimo aplicada', {
+        previousContracts: contracts,
+        adjustedContracts: guard.contracts,
+        minResidualQuote: guard.minResidualQuote ?? Number(meta?.settings?.minCloseResidualQuote || 0)
+      });
+    }
+    contracts = guard.contracts;
+
     let finalBaseQtyRaw = contracts * cs;
     let rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
     let adjustedContracts = normalizeContracts(floorContracts(rounded.q / cs));
@@ -1890,6 +2024,26 @@ app.post('/api/execute-trade', async (req, res) => {
       });
     }
 
+    if (mode === 'close') {
+      const minResidualQuote = Number(meta?.settings?.minCloseResidualQuote || 0);
+      const leftover = Number(positionState?.gate?.filledQty || 0) - Number(rounded.q || 0);
+      const leftoverQuote = Number.isFinite(leftover) && Number.isFinite(rounded.pg) ? leftover * rounded.pg : null;
+      if (minResidualQuote > 0 && Number.isFinite(leftover) && leftover > 0 && Number.isFinite(leftoverQuote) && leftoverQuote < minResidualQuote) {
+        const friendly = `Saldo residual estimado: ${Number(leftoverQuote.toFixed(6))} USDT (mínimo exigido: ${Number(minResidualQuote).toFixed(2)} USDT).`;
+        return abort(400, {
+          error: `${friendly} Ajuste o volume ou reduza o mínimo manual nas configurações.`,
+          code: 'min_residual_guard',
+          minResidualQuote,
+          leftoverQuote: Number(leftoverQuote.toFixed(6))
+        }, {
+          reason: 'min_residual_guard_post',
+          leftover,
+          leftoverQuote,
+          minResidualQuote
+        });
+      }
+    }
+
     const gateOrderBaseQty = computeGateOrderQty(rounded.q, meta, mode);
 
     timelineRecorder.push('calc', 'Quantidades calculadas', {
@@ -1898,7 +2052,8 @@ app.post('/api/execute-trade', async (req, res) => {
       finalBaseQty: rounded.q,
       gateOrderBaseQty,
       gatePrice: rounded.pg,
-      mexcPrice: rounded.pm
+      mexcPrice: rounded.pm,
+      minCloseResidualQuote: meta?.settings?.minCloseResidualQuote
     });
 
     const minQuote = Number(meta.gate.minQuote || 0);
@@ -2541,6 +2696,83 @@ setInterval(() => {
 app.get('/api/history', async (_req, res) => {
   try { await pollOpenOrders(); } catch {}
   res.json(orderHistory);
+});
+
+app.post('/api/history/manual', async (req, res) => {
+  try {
+    const entry = req.body?.entry;
+    if (!entry || typeof entry !== 'object') {
+      return res.status(400).json({ ok: false, error: 'invalid_entry' });
+    }
+    const symbolRaw = typeof entry.symbol === 'string' ? entry.symbol.trim().toUpperCase() : currentSymbol;
+    if (!symbolRaw || !symbolRaw.includes('_')) {
+      return res.status(400).json({ ok: false, error: 'symbol_invalid' });
+    }
+    const mode = entry.mode === 'close' ? 'close' : 'open';
+    const volume = Number(entry.volume);
+    if (!Number.isFinite(volume) || volume <= 0) {
+      return res.status(400).json({ ok: false, error: 'volume_invalid' });
+    }
+    const gatePrice = Number(entry.gatePrice);
+    if (!Number.isFinite(gatePrice) || gatePrice <= 0) {
+      return res.status(400).json({ ok: false, error: 'gate_price_invalid' });
+    }
+    const mexcPrice = Number(entry.mexcPrice);
+    if (!Number.isFinite(mexcPrice) || mexcPrice <= 0) {
+      return res.status(400).json({ ok: false, error: 'mexc_price_invalid' });
+    }
+
+    const createdAtRaw = typeof entry.createdAt === 'string' && entry.createdAt.trim()
+      ? entry.createdAt.trim()
+      : null;
+    const createdAt = createdAtRaw || nowBR();
+    const localId = entry.localId ? String(entry.localId) : Date.now().toString();
+
+    let existing = orderHistory.find((item) => item.localId === localId);
+    const isEdit = !!existing;
+    const metaUsed = await getMergedMeta(symbolRaw);
+
+    if (!existing) {
+      existing = { localId };
+      orderHistory.unshift(existing);
+    }
+
+    existing.symbol = symbolRaw;
+    existing.mode = mode;
+    existing.sentido = mode === 'close' ? 'Close' : 'Open';
+    existing.priceUsedGate = String(gatePrice);
+    existing.priceUsedMexc = String(mexcPrice);
+    existing.volume = String(volume);
+    existing.mexcDisplayVolume = String(volume);
+    existing.gateOrderBaseQty = volume;
+    existing.gateOrderVolume = String(volume);
+    existing.mexcOrderContracts = existing.mexcOrderContracts ?? null;
+    existing.createdAt = createdAt;
+    existing.executedAt = createdAt;
+    existing.gateStatus = 'filled';
+    existing.mexcStatus = 'filled';
+    existing.status = 'filled';
+    existing.gateOrderId = isEdit ? existing.gateOrderId ?? null : null;
+    existing.mexcOrderId = isEdit ? existing.mexcOrderId ?? null : null;
+    existing.gatePartialFilled = 0;
+    existing.mexcPartialFilled = 0;
+    existing.metaUsed = metaUsed;
+    existing.manual = true;
+
+    const diff = mexcPrice - gatePrice;
+    const sign = mode === 'close' ? -1 : 1;
+    existing.arbPct = roundTo(((diff / gatePrice) * 100) * sign, 6);
+    existing.pnlUsd = roundTo(diff * volume * sign, 6);
+
+    try { db.saveHistoryItem(existing); } catch (e) { console.warn('[SQLite] save history (manual):', e?.message || e); }
+
+    rebuildPositionFromHistory();
+
+    res.json({ ok: true, item: existing, state: positionState });
+  } catch (e) {
+    console.error('[API] history-manual:', e?.message || e);
+    res.status(500).json({ ok: false, error: 'internal_error' });
+  }
 });
 
 app.listen(PORT, () => console.log(`Servidor rodando em http://localhost:${PORT}`));
