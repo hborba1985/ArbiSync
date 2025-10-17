@@ -13,6 +13,55 @@ function safeJson(res) {
 let currentSymbol = null;
 let currentBaseSymbol = null;
 
+const DEFAULT_SPOT = { key: 'gate', label: 'Gate.io' };
+let currentSpot = { ...DEFAULT_SPOT };
+
+function getSpotLabel() {
+  return currentSpot?.label || DEFAULT_SPOT.label;
+}
+
+function getSpotKey() {
+  return currentSpot?.key || DEFAULT_SPOT.key;
+}
+
+function updateSpotLabelElements() {
+  const nodes = document.querySelectorAll('[data-spot-label]');
+  nodes.forEach((el) => {
+    el.textContent = getSpotLabel();
+  });
+}
+
+function refreshDocumentTitle() {
+  const sym = currentSymbol || 'BASE_USDT';
+  document.title = `Arbitragem ${getSpotLabel()} x MEXC — ${sym}`;
+}
+
+function updateSpotSelect() {
+  const select = document.getElementById('spotExchangeSelect');
+  if (!select) return;
+  const key = getSpotKey();
+  if (select.value !== key) select.value = key;
+}
+
+function setSpotExchangeState(info) {
+  if (!info) return;
+  let key = null;
+  let label = null;
+  if (typeof info === 'string') {
+    key = info.toLowerCase();
+  } else if (typeof info === 'object') {
+    if (typeof info.key === 'string') key = info.key.toLowerCase();
+    if (typeof info.label === 'string') label = info.label;
+  }
+  if (!key) key = DEFAULT_SPOT.key;
+  if (!label) label = key === 'bitget' ? 'Bitget' : DEFAULT_SPOT.label;
+  currentSpot = { key, label };
+  updateSpotSelect();
+  updateSpotLabelElements();
+  document.body.dataset.spotExchange = key;
+  refreshDocumentTitle();
+}
+
 function setCurrentSymbol(sym) {
   if (!sym) return;
   currentSymbol = sym;
@@ -20,22 +69,28 @@ function setCurrentSymbol(sym) {
   const normalized = base ? base.toUpperCase() : null;
   if (normalized) currentBaseSymbol = normalized;
   updateBaseSymbolUI();
+  refreshDocumentTitle();
 }
 
 async function getSymbol() {
   const r = await fetch('/api/symbol');
-  const sym = (await r.json()).symbol;
-  if (sym) setCurrentSymbol(sym);
-  return sym;
+  const data = await r.json();
+  if (data?.spotExchange) setSpotExchangeState(data.spotExchange);
+  if (data?.symbol) setCurrentSymbol(data.symbol);
+  return data?.symbol;
 }
-async function setSymbol(sym) {
+async function setSymbol(sym, exchangeKey) {
   const r = await fetch('/api/symbol', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({symbol: sym})
+    body: JSON.stringify({
+      ...(sym ? { symbol: sym } : {}),
+      ...(exchangeKey ? { spotExchange: exchangeKey } : {})
+    })
   });
   const out = await safeJson(r);
   const normalized = out.symbol || sym;
   if (normalized) setCurrentSymbol(normalized);
+  if (out.spotExchange) setSpotExchangeState(out.spotExchange);
   return normalized;
 }
 
@@ -171,15 +226,16 @@ function renderExecutionLogs(historyItems) {
 
     const metrics = document.createElement('div');
     metrics.className = 'log-metrics';
+    const spotLbl = getSpotLabel();
     const metricsData = [
       ['Início', item?.createdAt || '-'],
-      ['Gate ID', item?.gateOrderId || '-'],
+      [`${spotLbl} ID`, item?.gateOrderId || '-'],
       ['MEXC ID', item?.mexcOrderId || '-'],
       ['Latência clique → servidor', Number.isFinite(clientLatency) ? formatDuration(clientLatency) : '—'],
       ['Tempo total', totalMs != null ? formatDuration(totalMs) : '—'],
-      ['Gate API', gateApiEntry?.details?.durationMs != null ? formatDuration(gateApiEntry.details.durationMs) : '—'],
+      [`${spotLbl} API`, gateApiEntry?.details?.durationMs != null ? formatDuration(gateApiEntry.details.durationMs) : '—'],
       ['MEXC API', mexcApiEntry?.details?.durationMs != null ? formatDuration(mexcApiEntry.details.durationMs) : '—'],
-      ['Gate preenchida', gateFillMs != null ? formatDuration(gateFillMs) : '—'],
+      [`${spotLbl} preenchida`, gateFillMs != null ? formatDuration(gateFillMs) : '—'],
       ['MEXC preenchida', mexcFillMs != null ? formatDuration(mexcFillMs) : '—']
     ];
     metricsData.forEach(([label, value]) => {
@@ -360,6 +416,7 @@ async function refreshBalances() {
   try {
     const r = await fetch('/api/balances');
     const d = await r.json();
+    if (d?.spotExchange) setSpotExchangeState(d.spotExchange);
     lastBalanceData.gate = parseGateBalance(d.gate);
     lastBalanceData.mexc = parseMexcBalance(d.mexc);
     updateBaseSymbolUI();
@@ -379,6 +436,15 @@ async function refreshBalances() {
 
 const refreshBalancesBtn = document.getElementById('refreshBalances');
 if (refreshBalancesBtn) refreshBalancesBtn.addEventListener('click', refreshBalances);
+
+const spotSelectEl = document.getElementById('spotExchangeSelect');
+if (spotSelectEl) {
+  spotSelectEl.addEventListener('change', () => {
+    const option = spotSelectEl.options[spotSelectEl.selectedIndex];
+    const label = option ? option.textContent : null;
+    setSpotExchangeState({ key: spotSelectEl.value, label });
+  });
+}
 
 function setupCardToggles() {
   const cards = document.querySelectorAll('.card');
@@ -425,7 +491,9 @@ function updateProgressBar(targetQty, filledQty) {
 
 // ======== Meta UI
 function fillOverridesUI(merged) {
-  const g = merged.gate || {}, m = merged.mexc || {}, s = merged.settings || {};
+  const g = (merged && merged[getSpotKey()]) || merged.gate || {};
+  const m = merged.mexc || {};
+  const s = merged.settings || {};
   const set = (id,v)=>{ const el=document.getElementById(id); if (el) el.value = (v??''); };
   set('ov_gate_price', g.priceScale);
   set('ov_gate_qty', g.qtyScale);
@@ -442,12 +510,13 @@ function fillOverridesUI(merged) {
   set('ov_set_min_residual', minResidual);
 }
 function metaToText(label, meta) {
+  const spotMeta = (meta && meta[getSpotKey()]) || meta?.gate || {};
   const gateExtra = (meta.settings && meta.settings.gateOpenExtraPct != null) ? meta.settings.gateOpenExtraPct : 0;
   const minResidual = meta.settings?.minCloseResidualQuote != null ? meta.settings.minCloseResidualQuote : 0;
   return `${label}
-Gate: priceScale=${meta.gate.priceScale}, qtyScale=${meta.gate.qtyScale}, minQty=${meta.gate.minQty}, minQuote=${meta.gate.minQuote}
+Spot(${getSpotLabel()}): priceScale=${spotMeta.priceScale}, qtyScale=${spotMeta.qtyScale}, minQty=${spotMeta.minQty}, minQuote=${spotMeta.minQuote}
 MEXC: priceScale=${meta.mexc.priceScale}, volPrecision=${meta.mexc.volPrecision}, contractSize=${meta.mexc.contractSize}, minContracts=${meta.mexc.minContracts}
-Settings: margem=${meta.settings.marginPct}%, lev=${meta.settings.leverage}, gateExtra=${gateExtra}%, minCloseResidualQuote=${minResidual}`;
+Settings: margem=${meta.settings.marginPct}%, lev=${meta.settings.leverage}, spotExtra=${gateExtra}%, minCloseResidualQuote=${minResidual}`;
 }
 async function refreshMetaUI(symbol) {
   const r = await fetch('/api/market-meta?symbol=' + encodeURIComponent(symbol));
@@ -464,8 +533,11 @@ async function refreshMetaUI(symbol) {
 document.getElementById('applySymbol').addEventListener('click', async () => {
   const sym = document.getElementById('symbolInput').value.trim().toUpperCase();
   if (!sym.includes('_')) return alert('Use BASE_QUOTE (ex.: BASE_USDT)');
-  await setSymbol(sym);
+  const select = document.getElementById('spotExchangeSelect');
+  const exchangeKey = select ? select.value : getSpotKey();
+  await setSymbol(sym, exchangeKey);
   localStorage.setItem('lastSymbol', sym);
+  try { localStorage.setItem('lastSpotExchange', exchangeKey); } catch {}
   document.getElementById('titleSymbol').textContent = sym;
   await refreshMetaUI(sym);
   await refreshBalances();
@@ -844,7 +916,7 @@ manualHistoryState.elements.saveBtn?.addEventListener('click', async () => {
   const volNum = Number(volume.value);
   if (!Number.isFinite(volNum) || volNum <= 0) { setManualHistoryStatus('Informe um volume válido.', true); return; }
   const gatePriceNum = Number(gatePrice.value);
-  if (!Number.isFinite(gatePriceNum) || gatePriceNum <= 0) { setManualHistoryStatus('Informe um preço Gate válido.', true); return; }
+  if (!Number.isFinite(gatePriceNum) || gatePriceNum <= 0) { setManualHistoryStatus(`Informe um preço ${getSpotLabel()} válido.`, true); return; }
   const mexcPriceNum = Number(mexcPrice.value);
   if (!Number.isFinite(mexcPriceNum) || mexcPriceNum <= 0) { setManualHistoryStatus('Informe um preço MEXC válido.', true); return; }
   const entry = {
@@ -1010,9 +1082,10 @@ function handleExecuteTradeError(out, statusCode) {
 
   const baseSymbol = getCurrentBaseSymbol();
   if (out.gateAutoAction) {
+    const spotLabel = getSpotLabel();
     const auto = out.gateAutoAction;
-    if (auto.cancelled) lines.push('Gate: ordem cancelada automaticamente.');
-    if (auto.error) lines.push(`Gate: falha ao cancelar automaticamente (${auto.error}).`);
+    if (auto.cancelled) lines.push(`${spotLabel}: ordem cancelada automaticamente.`);
+    if (auto.error) lines.push(`${spotLabel}: falha ao cancelar automaticamente (${auto.error}).`);
 
     const flatten = auto.flatten;
     if (flatten?.success) {
@@ -1020,28 +1093,28 @@ function handleExecuteTradeError(out, statusCode) {
       const qtyText = Number.isFinite(qty) && qty > 0
         ? formatVolumeValue(qty, 6, baseSymbol)
         : 'volume solicitado';
-      lines.push(`Gate: posição zerada automaticamente (${qtyText}).`);
+      lines.push(`${spotLabel}: posição zerada automaticamente (${qtyText}).`);
     } else {
       if (flatten?.attempted) {
         const filled = Number(flatten.filledQty);
         if (Number.isFinite(filled) && filled > 0) {
-          lines.push(`Gate: zeragem automática parcial (${formatVolumeValue(filled, 6, baseSymbol)} executados).`);
+          lines.push(`${spotLabel}: zeragem automática parcial (${formatVolumeValue(filled, 6, baseSymbol)} executados).`);
         }
         const errMsg = auto.flattenError || flatten.error || flatten.reason || auto.flattenErrorRaw;
         if (errMsg) {
-          lines.push(`Gate: falha ao zerar automaticamente (${errMsg}).`);
+          lines.push(`${spotLabel}: falha ao zerar automaticamente (${errMsg}).`);
         }
       } else if (auto.flattenError || auto.flattenErrorRaw) {
         const errMsg = auto.flattenError || auto.flattenErrorRaw;
-        lines.push(`Gate: falha ao zerar automaticamente (${errMsg}).`);
+        lines.push(`${spotLabel}: falha ao zerar automaticamente (${errMsg}).`);
       }
 
       if (auto.needsManualClose) {
         const qty = Number(auto.filledQty);
         if (Number.isFinite(qty) && qty > 0) {
-          lines.push(`Gate: preenchido ${formatVolumeValue(qty, 6, baseSymbol)} — verifique manualmente para neutralizar.`);
+          lines.push(`${spotLabel}: preenchido ${formatVolumeValue(qty, 6, baseSymbol)} — verifique manualmente para neutralizar.`);
         } else {
-          lines.push('Gate: verifique manualmente se há exposição residual na Gate.');
+          lines.push(`${spotLabel}: verifique manualmente se há exposição residual na ${spotLabel}.`);
         }
       }
     }
@@ -1145,7 +1218,7 @@ function buildSummaryText(stats, baseSymbol) {
   const mexcBase = formatVolumeValue(stats.mexcBase, 6, baseSymbol);
   const mexcUsd = formatVolumeValue(stats.mexcQuote, 2, 'USDT');
   const diff = formatDiffValue(stats.diffPct);
-  return `Gate: ${gateBase} (${gateUsd}) • MEXC: ${mexcBase} (${mexcUsd}) • Dif: ${diff}`;
+  return `${getSpotLabel()}: ${gateBase} (${gateUsd}) • MEXC: ${mexcBase} (${mexcUsd}) • Dif: ${diff}`;
 }
 
 function onLevelCheckboxChange(event) {
@@ -1697,6 +1770,7 @@ async function fetchData() {
     const r = await fetch('/api/data');
     const d = await r.json();
     lastQuotes = d;
+    if (d?.spotExchange) setSpotExchangeState(d.spotExchange);
     if (d.symbol) setCurrentSymbol(d.symbol);
     document.getElementById('titleSymbol').textContent = d.symbol || '-';
     renderQuotes();
@@ -1829,10 +1903,10 @@ async function refreshHistory() {
             body: JSON.stringify({ localId: h.localId })
           });
           const out = await safeJson(resp);
-          if (!resp.ok || out.ok === false) alert('Erro ao reposicionar Gate: ' + JSON.stringify(out));
+          if (!resp.ok || out.ok === false) alert(`Erro ao reposicionar ${getSpotLabel()}: ` + JSON.stringify(out));
           await refreshHistory();
         } catch (e) {
-          alert('Erro ao reposicionar Gate: ' + (e.message || e)); groBtn.disabled = false;
+          alert(`Erro ao reposicionar ${getSpotLabel()}: ` + (e.message || e)); groBtn.disabled = false;
         }
       });
 
@@ -1872,7 +1946,7 @@ async function refreshHistory() {
             ? ` | +${extraPct}%`
             : '';
           if ((Number.isFinite(baseNum) && Number.isFinite(gateNum) && baseNum !== gateNum) || gateVol !== h.volume || extraLabel) {
-            return `${h.volume} (Gate: ${gateVol}${extraLabel})`;
+            return `${h.volume} (${getSpotLabel()}: ${gateVol}${extraLabel})`;
           }
         }
         return String(h.volume);
@@ -2216,12 +2290,12 @@ document.getElementById('executeTrade').addEventListener('click', async () => {
         `Saldo possivelmente insuficiente na MEXC.\n` +
         `Requerido: ${d.requiredUSDT} USDT | Disponível: ${d.availableUSDT}\n` +
         `Alavancagem: ${d.leverage}x | Contratos: ${d.mexcContracts} (x${d.contractSize} moeda base) | Moeda base final (MEXC): ${d.finalBaseQty}\n` +
-        `Gate ordem base (após extra): ${d.gateOrderBaseQty ?? d.finalBaseQty} | Extra Gate (%): ${d.gateOpenExtraPct ?? 0}\n` +
+        `${getSpotLabel()} ordem base (após extra): ${d.gateOrderBaseQty ?? d.finalBaseQty} | Extra ${getSpotLabel()} (%): ${d.gateOpenExtraPct ?? 0}\n` +
         `Deseja prosseguir?`
       );
       if (!ok) { document.getElementById('status').textContent = 'Cancelado pelo usuário.'; btn.disabled = false; return; }
     } else if (preOut.unknownBalance) {
-      document.getElementById('status').textContent = `Saldo MEXC não estimado; prosseguindo... (moeda base final: ${d.finalBaseQty} | Gate ordem base: ${d.gateOrderBaseQty ?? d.finalBaseQty})`;
+      document.getElementById('status').textContent = `Saldo MEXC não estimado; prosseguindo... (moeda base final: ${d.finalBaseQty} | ${getSpotLabel()} ordem base: ${d.gateOrderBaseQty ?? d.finalBaseQty})`;
     }
 
     document.getElementById('status').textContent = 'Executando...';
@@ -2234,9 +2308,9 @@ document.getElementById('executeTrade').addEventListener('click', async () => {
     if (r.ok) {
       const statusLines = [
         `OK. localId=${out.localId}`,
-        `Gate: ${out.gate.id || '-'} @ ${out.gate.price}`
+        `${getSpotLabel()}: ${out.gate.id || '-'} @ ${out.gate.price}`
       ];
-      if (out.gate.extraPct && Number(out.gate.extraPct) > 0) statusLines.push(`Gate extra aplicado: +${out.gate.extraPct}%`);
+      if (out.gate.extraPct && Number(out.gate.extraPct) > 0) statusLines.push(`${getSpotLabel()} extra aplicado: +${out.gate.extraPct}%`);
       statusLines.push(`MEXC: ${out.mexc.id || '-'} @ ${out.mexc.price}`);
       if (out.mexc.displayBaseQty) statusLines.push(`Moeda base final: ${out.mexc.displayBaseQty}`);
       statusLines.push(`Status: ${out.status}`);
@@ -2366,12 +2440,19 @@ if (positionDismantleBtn) {
 // ======== Init
 (async function init() {
   const last = localStorage.getItem('lastSymbol');
+  const lastExchange = localStorage.getItem('lastSpotExchange');
   const serverSym = await getSymbol();
-  const sym = last || serverSym || 'BASE_USDT';
+  const serverExchange = getSpotKey();
+  let sym = last || serverSym || 'BASE_USDT';
+  let exchangeKey = lastExchange || serverExchange || getSpotKey();
   setupCardToggles();
   document.getElementById('symbolInput').value = sym;
   document.getElementById('titleSymbol').textContent = sym;
-  await setSymbol(sym);
+  setSpotExchangeState({ key: exchangeKey });
+  updateSpotSelect();
+  if (sym !== serverSym || exchangeKey !== serverExchange) {
+    await setSymbol(sym, exchangeKey);
+  }
   await refreshMetaUI(sym);
   setModeFromStorage();
   if (isFinite(alertMin)) document.getElementById('alertMin').value = alertMin;

@@ -7,6 +7,7 @@
 const express = require('express');
 const axios = require('axios');
 const path = require('path');
+const crypto = require('crypto');
 const GateApi = require('gate-api');
 const { MexcFuturesClient } = require('mexc-futures-sdk');
 const config = require('./config');
@@ -15,7 +16,48 @@ const db = require('./db'); // SQLite util
 const app = express();
 const PORT = 3000;
 
+const SPOT_EXCHANGES = {
+  gate: { key: 'gate', label: 'Gate.io' },
+  bitget: { key: 'bitget', label: 'Bitget' }
+};
+
+function normalizeSpotExchange(value) {
+  const key = String(value || '').toLowerCase();
+  return SPOT_EXCHANGES[key] ? key : 'gate';
+}
+
 let currentSymbol = (config?.defaultSymbol || 'BASE_USDT').toUpperCase();
+let currentSpotExchange = normalizeSpotExchange(config?.defaultSpotExchange);
+
+function getSpotInfo(key = currentSpotExchange) {
+  const normalized = normalizeSpotExchange(key);
+  return { ...SPOT_EXCHANGES[normalized], normalized };
+}
+
+function getSpotLabel(key = currentSpotExchange) {
+  return getSpotInfo(key).label;
+}
+
+function getSpotMeta(meta, key = currentSpotExchange) {
+  if (!meta || typeof meta !== 'object') return {};
+  const normalized = normalizeSpotExchange(key);
+  return meta[normalized] || {};
+}
+
+function setCurrentSpotExchange(nextExchange, { persist = true } = {}) {
+  const normalized = normalizeSpotExchange(nextExchange);
+  currentSpotExchange = normalized;
+  if (positionState && typeof positionState === 'object') {
+    positionState.spotExchange = normalized;
+    if (!positionState.gate || typeof positionState.gate !== 'object') {
+      positionState.gate = { filledQty: 0, avgPrice: 0, exchange: normalized };
+    } else {
+      positionState.gate.exchange = normalized;
+    }
+    if (persist) persistPositionState('set-spot-exchange');
+  }
+  return normalized;
+}
 
 const SPREAD_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -91,12 +133,13 @@ function appendTimelineEntry(item, category, label, details) {
 function createEmptyPositionState() {
   return {
     symbol: currentSymbol || null,
+    spotExchange: currentSpotExchange,
     targetQty: 0,
     filledQty: 0,
     avgPrice: 0,
     arbPctAvg: 0,
     pnlUsd: 0,
-    gate: { filledQty: 0, avgPrice: 0 },
+    gate: { filledQty: 0, avgPrice: 0, exchange: currentSpotExchange },
     mexc: { filledQty: 0, avgPrice: 0, positionId: null },
     series: [],
     trades: []
@@ -170,7 +213,10 @@ function sanitizeTrades(trades) {
 function recalcPositionAggregates(state) {
   if (!state || typeof state !== 'object') return state;
   if (!state.symbol && currentSymbol) state.symbol = currentSymbol;
+  if (!state.spotExchange) state.spotExchange = currentSpotExchange;
+  else state.spotExchange = normalizeSpotExchange(state.spotExchange);
   if (!state.gate || typeof state.gate !== 'object') state.gate = { filledQty: 0, avgPrice: 0 };
+  if (!state.gate.exchange) state.gate.exchange = state.spotExchange;
   if (!state.mexc || typeof state.mexc !== 'object') state.mexc = { filledQty: 0, avgPrice: 0 };
 
   const gateQty = Number(state.gate.filledQty);
@@ -210,6 +256,7 @@ function applyPositionStatePatch(base, patch) {
   };
 
   if (patch && typeof patch === 'object') {
+    if ('spotExchange' in patch) out.spotExchange = normalizeSpotExchange(patch.spotExchange);
     if ('targetQty' in patch) out.targetQty = finiteOr(patch.targetQty, out.targetQty);
     if ('filledQty' in patch) out.filledQty = finiteOr(patch.filledQty, out.filledQty);
     if ('avgPrice' in patch) out.avgPrice = finiteOr(patch.avgPrice, out.avgPrice);
@@ -252,7 +299,7 @@ function applyPositionStatePatch(base, patch) {
     }
 
     for (const key of Object.keys(patch)) {
-      if (!['targetQty','filledQty','avgPrice','arbPctAvg','pnlUsd','gate','mexc','series','trades'].includes(key)) {
+      if (!['spotExchange','targetQty','filledQty','avgPrice','arbPctAvg','pnlUsd','gate','mexc','series','trades'].includes(key)) {
         out[key] = patch[key];
       }
     }
@@ -297,6 +344,8 @@ try {
 } catch (e) {
   console.warn('[SQLite] Falha ao carregar posição:', e?.message || e);
 }
+
+setCurrentSpotExchange(positionState?.spotExchange || currentSpotExchange, { persist: false });
 
 try {
   positionSummaries = db.loadPositionSummaries(POSITION_SUMMARY_LIMIT);
@@ -470,8 +519,9 @@ async function fetchGateAggressivePrice(symbol, side) {
 }
 
 async function placeGateFlattenOrder(symbol, side, qty, meta, fallbackPrice = null) {
-  const qtyScale = Number(meta?.gate?.qtyScale ?? 6);
-  const priceScale = Number(meta?.gate?.priceScale ?? 6);
+  const gateMeta = getSpotMeta(meta, 'gate');
+  const qtyScale = Number(gateMeta?.qtyScale ?? 6);
+  const priceScale = Number(gateMeta?.priceScale ?? 6);
   const qtyRounded = roundDownTo(qty, qtyScale);
   if (!Number.isFinite(qtyRounded) || qtyRounded <= 0) {
     return { attempted: false, reason: 'qty_rounding' };
@@ -547,6 +597,25 @@ async function placeGateFlattenOrder(symbol, side, qty, meta, fallbackPrice = nu
   }
 }
 
+async function fetchSpotOrderBook(symbol, limit = 5, exchange = currentSpotExchange) {
+  if (normalizeSpotExchange(exchange) === 'bitget') {
+    const spotSymbol = toBitgetSymbol(symbol);
+    if (!spotSymbol) throw new Error(`Símbolo inválido para Bitget: ${symbol}`);
+    const { data } = await axios.get(`${bitgetBaseUrl}/api/spot/v1/market/depth`, {
+      params: { symbol: spotSymbol, limit },
+      timeout: 8000
+    });
+    const asks = Array.isArray(data?.data?.asks) ? data.data.asks : [];
+    const bids = Array.isArray(data?.data?.bids) ? data.data.bids : [];
+    return { asks, bids };
+  }
+
+  const { data } = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
+  const asks = Array.isArray(data?.asks) ? data.asks : [];
+  const bids = Array.isArray(data?.bids) ? data.bids : [];
+  return { asks, bids };
+}
+
 function describeFlattenError(reason) {
   if (!reason) return null;
   const normalized = String(reason).toLowerCase();
@@ -571,6 +640,318 @@ async function getGateBalances(symbol) {
   } catch (e) {
     return { error: e.response?.data || e.message };
   }
+}
+
+// ===== Bitget
+const bitgetBaseUrl = (config.bitget?.baseUrl || 'https://api.bitget.com').replace(/\/$/, '');
+
+function toBitgetSymbol(symbol) {
+  if (!symbol) return null;
+  const compact = symbol.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+  if (!compact) return null;
+  return `${compact}_SPBL`;
+}
+
+function fromBitgetSymbol(symbol) {
+  if (!symbol) return null;
+  const cleaned = symbol.replace(/_SPBL$/i, '');
+  if (!cleaned) return null;
+  const base = cleaned.slice(0, -4);
+  const quote = cleaned.slice(-4);
+  return `${base}_${quote}`.toUpperCase();
+}
+
+function canonicalQuery(params) {
+  if (!params || typeof params !== 'object') return '';
+  const entries = [];
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue;
+    entries.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);
+  }
+  return entries.join('&');
+}
+
+async function bitgetRequest(method, path, { query, body, timeout = 10000 } = {}) {
+  const key = config.bitget?.apiKey;
+  const secret = config.bitget?.apiSecret;
+  const passphrase = config.bitget?.passphrase;
+  if (!key || !secret || !passphrase) {
+    throw new Error('Bitget API key/secret/passphrase não configurados.');
+  }
+
+  const queryString = canonicalQuery(query);
+  const requestPath = `${path}${queryString ? `?${queryString}` : ''}`;
+  const bodyString = body ? JSON.stringify(body) : '';
+  const timestamp = String(Date.now());
+  const prehash = `${timestamp}${method.toUpperCase()}${requestPath}${bodyString}`;
+  const signature = crypto.createHmac('sha256', secret).update(prehash).digest('base64');
+
+  const headers = {
+    'ACCESS-KEY': key,
+    'ACCESS-SIGN': signature,
+    'ACCESS-TIMESTAMP': timestamp,
+    'ACCESS-PASSPHRASE': passphrase,
+    locale: 'en-US',
+    'Content-Type': 'application/json'
+  };
+
+  const url = `${bitgetBaseUrl}${requestPath}`;
+  const opts = {
+    method,
+    url,
+    headers,
+    timeout
+  };
+  if (body) opts.data = body;
+
+  const resp = await axios(opts);
+  const data = resp?.data || {};
+  if (data.code && data.code !== '00000') {
+    const err = new Error(`[Bitget] ${data.code}: ${data.msg || 'erro'}`);
+    err.code = data.code;
+    err.payload = data;
+    throw err;
+  }
+  return data;
+}
+
+async function placeBitgetOrder(symbol, side, priceStr, amountStr, extraOptions = null) {
+  const spotSymbol = toBitgetSymbol(symbol);
+  if (!spotSymbol) throw new Error(`Símbolo Bitget inválido: ${symbol}`);
+  const payload = {
+    symbol: spotSymbol,
+    side: side === 'sell' ? 'sell' : 'buy',
+    orderType: 'limit',
+    force: 'normal',
+    price: String(priceStr),
+    quantity: String(amountStr)
+  };
+  if (extraOptions && typeof extraOptions === 'object') {
+    if (extraOptions.clientOrderId) payload.clientOrderId = String(extraOptions.clientOrderId);
+  }
+  console.log('[BITGET] Enviando ordem:', payload);
+  const data = await bitgetRequest('POST', '/api/spot/v1/trade/orders', { body: payload });
+  const id = data?.data?.orderId || null;
+  console.log('[BITGET] Ordem criada. ID extraído:', id);
+  return { id, raw: data?.data || data };
+}
+
+async function cancelBitgetOrder(symbol, id) {
+  const spotSymbol = toBitgetSymbol(symbol);
+  if (!spotSymbol) throw new Error(`Símbolo Bitget inválido: ${symbol}`);
+  console.log('[BITGET] Cancelando ordem:', id);
+  const payload = { symbol: spotSymbol, orderId: String(id) };
+  const data = await bitgetRequest('POST', '/api/spot/v1/trade/cancel-order', { body: payload });
+  console.log('[BITGET] Cancelamento OK:', id);
+  return data?.data || data;
+}
+
+async function getBitgetOrderDetail(symbol, id) {
+  const spotSymbol = toBitgetSymbol(symbol);
+  if (!spotSymbol) throw new Error(`Símbolo Bitget inválido: ${symbol}`);
+  try {
+    const payload = { symbol: spotSymbol, orderId: String(id) };
+    const data = await bitgetRequest('POST', '/api/spot/v1/trade/orderInfo', { body: payload });
+    const arr = Array.isArray(data?.data) ? data.data : [];
+    return arr[0] || null;
+  } catch (err) {
+    const code = err?.code;
+    if (code === '43001' || code === '50024') {
+      return null;
+    }
+    throw err;
+  }
+}
+
+async function fetchBitgetOrderDetailWithStatus(symbol, id) {
+  try {
+    const detail = await getBitgetOrderDetail(symbol, id);
+    if (!detail) return { detail: null, notFound: true };
+    return { detail, notFound: false };
+  } catch (err) {
+    return { detail: null, notFound: false, error: err };
+  }
+}
+
+function parseBitgetOrderDetail(detail, fallbackAmount = 0, fallbackPrice = 0) {
+  const d = detail || {};
+  const total = Number(d.quantity ?? fallbackAmount) || 0;
+  const filled = Number(d.fillQuantity ?? d.cumulativeQuantity ?? 0) || 0;
+  const avgPrice = Number(d.fillPrice ?? d.fillAvgPrice ?? fallbackPrice) || 0;
+  const remain = Math.max(total - filled, 0);
+  const status = String(d.status || '').toLowerCase();
+  const filledStatuses = ['full_fill', 'filled', 'filled_all'];
+  const cancelledStatuses = ['cancelled', 'canceled'];
+  const isFilled = filled >= total && total > 0 || filledStatuses.includes(status);
+  const isCancelled = cancelledStatuses.includes(status);
+  return {
+    total,
+    filled: Math.max(0, filled),
+    remaining: isFilled ? 0 : remain,
+    avgPrice,
+    isFilled,
+    status,
+    isCancelled
+  };
+}
+
+async function fetchBitgetAggressivePrice(symbol, side) {
+  try {
+    const spotSymbol = toBitgetSymbol(symbol);
+    if (!spotSymbol) return { price: null, source: 'invalid_symbol' };
+    const { data } = await axios.get(`${bitgetBaseUrl}/api/spot/v1/market/depth`, {
+      params: { symbol: spotSymbol, limit: 5 },
+      timeout: 8000
+    });
+    const levels = side === 'sell' ? data?.data?.bids : data?.data?.asks;
+    if (!Array.isArray(levels) || !levels.length) return { price: null, source: 'empty_book' };
+    const best = Number(levels[0]?.[0]);
+    if (!Number.isFinite(best) || best <= 0) return { price: null, source: 'invalid_price' };
+    return { price: best, source: 'book' };
+  } catch (err) {
+    return { price: null, source: 'error', error: err?.message || err };
+  }
+}
+
+async function placeBitgetFlattenOrder(symbol, side, qty, meta, fallbackPrice = null) {
+  const spotMeta = getSpotMeta(meta, 'bitget');
+  const qtyScale = Number(spotMeta?.qtyScale ?? 6);
+  const priceScale = Number(spotMeta?.priceScale ?? 6);
+  const qtyRounded = roundDownTo(qty, qtyScale);
+  if (!Number.isFinite(qtyRounded) || qtyRounded <= 0) {
+    return { attempted: false, reason: 'qty_rounding' };
+  }
+
+  const { price: bookPrice } = await fetchBitgetAggressivePrice(symbol, side);
+  const reference = Number.isFinite(bookPrice) && bookPrice > 0
+    ? bookPrice
+    : Number(fallbackPrice);
+  if (!Number.isFinite(reference) || reference <= 0) {
+    return { attempted: false, reason: 'no_reference_price' };
+  }
+
+  const bufferPct = Number(config.execution?.gateFlattenBufferPct ?? 0.35);
+  const adjust = bufferPct / 100;
+  let adjustedPrice = reference;
+  if (side === 'sell') adjustedPrice = reference * (1 - adjust);
+  else adjustedPrice = reference * (1 + adjust);
+
+  const priceRounded = Number(roundTo(adjustedPrice, priceScale));
+  if (!Number.isFinite(priceRounded) || priceRounded <= 0) {
+    return { attempted: false, reason: 'invalid_price' };
+  }
+
+  const amountStr = qtyRounded.toFixed(Math.max(qtyScale, 0));
+  const priceStr = priceRounded.toFixed(Math.max(priceScale, 0));
+  const orderInfo = { qtyRounded: Number(amountStr), priceRounded: Number(priceStr) };
+
+  try {
+    const placed = await placeBitgetOrder(symbol, side, priceStr, amountStr);
+    const flatten = {
+      attempted: true,
+      orderId: placed?.id ? String(placed.id) : null,
+      qty: orderInfo.qtyRounded,
+      price: orderInfo.priceRounded,
+      side,
+      success: false
+    };
+    if (!flatten.orderId) {
+      flatten.error = 'sem_id';
+      return flatten;
+    }
+
+    const lookup = await fetchBitgetOrderDetailWithStatus(symbol, flatten.orderId);
+    if (lookup?.detail) {
+      const parsed = parseBitgetOrderDetail(lookup.detail, orderInfo.qtyRounded, orderInfo.priceRounded);
+      flatten.detail = parsed;
+      if (parsed.isFilled || parsed.remaining <= 0) flatten.success = true;
+    }
+    return flatten;
+  } catch (err) {
+    return {
+      attempted: true,
+      side,
+      qty: orderInfo.qtyRounded,
+      price: orderInfo.priceRounded,
+      success: false,
+      error: err?.response?.data || err?.message || err
+    };
+  }
+}
+
+async function getBitgetBalances(symbol) {
+  try {
+    const base = symbol.split('_')[0];
+    const data = await bitgetRequest('GET', '/api/spot/v1/account/assets', {
+      query: base ? { coin: `${base},USDT` } : undefined
+    });
+    const arr = Array.isArray(data?.data) ? data.data : [];
+    const out = {};
+    for (const it of arr) {
+      const coin = (it.coin || it.coinName || it.symbol || '').toUpperCase();
+      if (!coin) continue;
+      out[coin] = {
+        available: Number(it.available ?? it.availableAmount ?? 0),
+        locked: Number(it.locked ?? it.frozen ?? 0)
+      };
+    }
+    return out;
+  } catch (e) {
+    return { error: e?.payload || e?.response?.data || e.message || e };
+  }
+}
+
+// ===== Spot dispatcher helpers
+function getSpotOrderMeta(meta, exchange = currentSpotExchange) {
+  return getSpotMeta(meta, exchange);
+}
+
+function isBitget(exchange = currentSpotExchange) {
+  return normalizeSpotExchange(exchange) === 'bitget';
+}
+
+function getSpotExchangeKey(exchange = currentSpotExchange) {
+  return normalizeSpotExchange(exchange);
+}
+
+async function placeSpotOrder(symbol, side, priceStr, amountStr, extraOptions = null, exchange = currentSpotExchange) {
+  if (isBitget(exchange)) return placeBitgetOrder(symbol, side, priceStr, amountStr, extraOptions);
+  return placeGateOrderSdk(symbol, side, priceStr, amountStr, extraOptions);
+}
+
+async function cancelSpotOrder(symbol, id, exchange = currentSpotExchange) {
+  if (isBitget(exchange)) return cancelBitgetOrder(symbol, id);
+  return cancelGateOrderSdk(symbol, id);
+}
+
+async function getSpotOrderDetail(symbol, id, exchange = currentSpotExchange) {
+  if (isBitget(exchange)) return getBitgetOrderDetail(symbol, id);
+  return getGateOrderDetail(symbol, id);
+}
+
+async function fetchSpotOrderDetailWithStatus(symbol, id, exchange = currentSpotExchange) {
+  if (isBitget(exchange)) return fetchBitgetOrderDetailWithStatus(symbol, id);
+  return fetchGateOrderDetailWithStatus(symbol, id);
+}
+
+function parseSpotOrderDetail(detail, fallbackAmount = 0, fallbackPrice = 0, exchange = currentSpotExchange) {
+  if (isBitget(exchange)) return parseBitgetOrderDetail(detail, fallbackAmount, fallbackPrice);
+  return parseGateOrderDetail(detail, fallbackAmount, fallbackPrice);
+}
+
+async function fetchSpotAggressivePrice(symbol, side, exchange = currentSpotExchange) {
+  if (isBitget(exchange)) return fetchBitgetAggressivePrice(symbol, side);
+  return fetchGateAggressivePrice(symbol, side);
+}
+
+async function placeSpotFlattenOrder(symbol, side, qty, meta, fallbackPrice = null, exchange = currentSpotExchange) {
+  if (isBitget(exchange)) return placeBitgetFlattenOrder(symbol, side, qty, meta, fallbackPrice);
+  return placeGateFlattenOrder(symbol, side, qty, meta, fallbackPrice);
+}
+
+async function getSpotBalances(symbol, exchange = currentSpotExchange) {
+  if (isBitget(exchange)) return getBitgetBalances(symbol);
+  return getGateBalances(symbol);
 }
 
 // ===== MEXC (SDK oboshto)
@@ -844,6 +1225,23 @@ async function autoDiscoverGateMeta(symbol) {
   } catch {}
   return { priceScale: 11, qtyScale: 0, minQty: 0, minQuote: 3 };
 }
+async function autoDiscoverBitgetMeta(symbol) {
+  try {
+    const spotSymbol = toBitgetSymbol(symbol);
+    if (!spotSymbol) throw new Error('Símbolo inválido para Bitget');
+    const { data } = await axios.get(`${bitgetBaseUrl}/api/spot/v1/public/products`, { timeout: 8000 });
+    const arr = Array.isArray(data?.data) ? data.data : [];
+    const target = arr.find((entry) => String(entry?.symbol || '').toUpperCase() === spotSymbol.toUpperCase());
+    if (target) {
+      const priceScale = Number(target.pricePrecision ?? target.price_scale ?? target.quotePrecision ?? 11);
+      const qtyScale = Number(target.quantityPrecision ?? target.basePrecision ?? 0);
+      const minQty = Number(target.minTradeAmount ?? target.minTradeNumber ?? 0);
+      const minQuote = Number(target.minTradeUSDT ?? target.minTradeUsd ?? target.minTradeUSDTValue ?? 0);
+      return { priceScale, qtyScale, minQty, minQuote };
+    }
+  } catch {}
+  return { priceScale: 11, qtyScale: 0, minQty: 0, minQuote: 5 };
+}
 async function autoDiscoverMexcMeta(symbol) {
   const urls = [
     `https://futures.mexc.com/api/v1/contract/detail?symbol=${symbol}`,
@@ -866,6 +1264,7 @@ async function autoDiscoverMexcMeta(symbol) {
 }
 async function autoDiscoverMeta(symbol) {
   const gate = await autoDiscoverGateMeta(symbol);
+  const bitget = await autoDiscoverBitgetMeta(symbol);
   const mexc = await autoDiscoverMexcMeta(symbol);
   const settings = {
     marginPct: Number(config.execution?.marginPct ?? 10),
@@ -873,7 +1272,7 @@ async function autoDiscoverMeta(symbol) {
     gateOpenExtraPct: Number(config.execution?.gateOpenExtraPct ?? 0),
     minCloseResidualQuote: Number(config.execution?.minCloseResidualQuote ?? 4)
   };
-  return { symbolSpot: symbol, symbolFut: symbol, gate, mexc, settings };
+  return { symbolSpot: symbol, symbolFut: symbol, gate, bitget, mexc, settings };
 }
 function deepMerge(target, src) {
   if (!src) return target;
@@ -1098,23 +1497,24 @@ function contractsToBase(contracts, meta) {
   const cs = Number(meta?.mexc?.contractSize || 1);
   return Number(contracts) * cs;
 }
-function applyRoundingMeta(pg, pm, qtyW, meta) {
-  const psg = Number(meta.gate.priceScale || 11);
+function applyRoundingMeta(pg, pm, qtyW, meta, exchange = currentSpotExchange) {
+  const spotMeta = getSpotOrderMeta(meta, exchange);
+  const psg = Number(spotMeta.priceScale || 11);
   const psm = Number(meta.mexc.priceScale || 4);
-  const qsg = Number(meta.gate.qtyScale || 0);
+  const qsg = Number(spotMeta.qtyScale || 0);
   const pgR = roundTo(pg, psg);
   const pmR = roundTo(pm, psm);
   const qR = roundDownTo(qtyW, qsg);
   return { pg: pgR, pm: pmR, q: qR };
 }
 
-function computeGateOrderQty(baseQty, meta, mode) {
+function computeSpotOrderQty(baseQty, meta, mode, exchange = currentSpotExchange) {
   let qty = Number(baseQty) || 0;
   if (mode === 'open') {
     const extraPct = Number(meta?.settings?.gateOpenExtraPct || 0);
     if (Number.isFinite(extraPct) && extraPct > 0) {
       const factor = 1 + (extraPct / 100);
-      const qtyScale = Number(meta?.gate?.qtyScale || 0);
+      const qtyScale = Number(getSpotOrderMeta(meta, exchange)?.qtyScale || 0);
       const adjusted = roundTo(qty * factor, qtyScale);
       if (Number.isFinite(adjusted)) {
         qty = Math.max(qty, adjusted);
@@ -1124,7 +1524,15 @@ function computeGateOrderQty(baseQty, meta, mode) {
   return qty;
 }
 
-function enforceCloseResidualGuard(mode, contracts, meta, gatePrice, normalizeContracts, floorContracts) {
+function enforceCloseResidualGuard(
+  mode,
+  contracts,
+  meta,
+  gatePrice,
+  normalizeContracts,
+  floorContracts,
+  exchange = currentSpotExchange
+) {
   if (mode !== 'close') return { ok: true, contracts };
   const minQuote = Number(meta?.settings?.minCloseResidualQuote || 0);
   if (!Number.isFinite(minQuote) || minQuote <= 0) return { ok: true, contracts };
@@ -1150,7 +1558,7 @@ function enforceCloseResidualGuard(mode, contracts, meta, gatePrice, normalizeCo
     return { ok: false, reason: 'min_residual_guard', minResidualQuote: minQuote };
   }
 
-  const gateMinQuote = Number(meta?.gate?.minQuote || 0);
+  const gateMinQuote = Number(getSpotOrderMeta(meta, exchange)?.minQuote || 0);
   if (gateMinQuote > 0) {
     const minOrderBase = gateMinQuote / gatePriceNum;
     if (Number.isFinite(minOrderBase) && minOrderBase > 0) {
@@ -1257,12 +1665,31 @@ app.post('/api/market-meta-override', async (req, res) => {
     res.status(500).json({ error: e.message || 'Falha ao salvar override' });
   }
 });
-app.get('/api/symbol', (_req, res) => res.json({ symbol: currentSymbol }));
+app.get('/api/symbol', (_req, res) => {
+  const spotInfo = getSpotInfo();
+  res.json({ symbol: currentSymbol, spotExchange: { key: spotInfo.normalized, label: spotInfo.label } });
+});
 app.post('/api/symbol', async (req, res) => {
-  const s = String(req.body?.symbol || '').toUpperCase();
-  if (!s.includes('_')) return res.status(400).json({ error: 'Símbolo inválido. Use BASE_QUOTE' });
-  currentSymbol = s;
-  res.json({ ok: true, symbol: currentSymbol, meta: await getMergedMeta(currentSymbol) });
+  const body = req.body || {};
+  const rawSymbol = typeof body.symbol === 'string' ? body.symbol.toUpperCase() : null;
+  const spotExchangeRaw = body.spotExchange;
+
+  if (rawSymbol) {
+    if (!rawSymbol.includes('_')) return res.status(400).json({ error: 'Símbolo inválido. Use BASE_QUOTE' });
+    currentSymbol = rawSymbol;
+  }
+
+  if (spotExchangeRaw != null) {
+    setCurrentSpotExchange(spotExchangeRaw);
+  }
+
+  const spotInfo = getSpotInfo();
+  res.json({
+    ok: true,
+    symbol: currentSymbol,
+    spotExchange: { key: spotInfo.normalized, label: spotInfo.label },
+    meta: await getMergedMeta(currentSymbol)
+  });
 });
 
 // ===== /api/data — ask/bid de Gate e bid/ask de MEXC + diffs para open/close
@@ -1272,15 +1699,14 @@ app.get('/api/data', async (_req, res) => {
     const meta = await getMergedMeta(symbol);
     const [base] = symbol.split('_');
 
-    const g = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
+    const spotInfo = getSpotInfo(positionState?.spotExchange || currentSpotExchange);
+    const { asks: spotAsksRaw, bids: spotBidsRaw } = await fetchSpotOrderBook(symbol, 5, spotInfo.normalized);
     const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
 
-    const gateAsksRaw = g.data?.asks || [];
-    const gateBidsRaw = g.data?.bids || [];
     const mexcBidsRaw = m.data?.data?.bids || [];
     const mexcAsksRaw = m.data?.data?.asks || [];
 
-    if (!gateAsksRaw.length || !gateBidsRaw.length || !mexcBidsRaw.length || !mexcAsksRaw.length) {
+    if (!spotAsksRaw.length || !spotBidsRaw.length || !mexcBidsRaw.length || !mexcAsksRaw.length) {
       return res.status(500).json({ error: 'Livro de ofertas indisponível ou par inválido' });
     }
 
@@ -1291,7 +1717,7 @@ app.get('/api/data', async (_req, res) => {
     const closeLevels = [];
 
     for (let i = 0; i < limit; i++) {
-      const gAsk = gateAsksRaw[i];
+      const gAsk = spotAsksRaw[i];
       const mBid = mexcBidsRaw[i];
       if (!gAsk || !mBid) break;
       const gPrice = Number(gAsk[0]);
@@ -1313,7 +1739,7 @@ app.get('/api/data', async (_req, res) => {
     }
 
     for (let i = 0; i < limit; i++) {
-      const gBid = gateBidsRaw[i];
+      const gBid = spotBidsRaw[i];
       const mAsk = mexcAsksRaw[i];
       if (!gBid || !mAsk) break;
       const gPrice = Number(gBid[0]);
@@ -1334,7 +1760,7 @@ app.get('/api/data', async (_req, res) => {
       });
     }
 
-    const gateAsks = gateAsksRaw.slice(0, limit).map((entry, idx) => {
+    const gateAsks = spotAsksRaw.slice(0, limit).map((entry, idx) => {
       const price = Number(entry[0]);
       const baseVol = Number(entry[1]);
       return {
@@ -1346,7 +1772,7 @@ app.get('/api/data', async (_req, res) => {
       };
     });
 
-    const gateBids = gateBidsRaw.slice(0, limit).map((entry, idx) => {
+    const gateBids = spotBidsRaw.slice(0, limit).map((entry, idx) => {
       const price = Number(entry[0]);
       const baseVol = Number(entry[1]);
       return {
@@ -1427,6 +1853,7 @@ app.get('/api/data', async (_req, res) => {
     res.json({
       symbol,
       baseSymbol: base,
+      spotExchange: { key: spotInfo.normalized, label: spotInfo.label },
       gate: { asks: gateAsks, bids: gateBids },
       mexc: { bids: mexcBids, asks: mexcAsks },
       open: { diff: openLevels[0]?.diffPct ?? null, levels: openLevels },
@@ -1523,9 +1950,10 @@ app.delete('/api/spreads', (req, res) => {
 // ===== Saldos
 app.get('/api/balances', async (_req, res) => {
   const symbol = currentSymbol;
-  const gate = await getGateBalances(symbol);
+  const spotInfo = getSpotInfo();
+  const gate = await getSpotBalances(symbol, spotInfo.normalized);
   const mexc = await getMexcAvailableUSDT(symbol);
-  res.json({ gate, mexc });
+  res.json({ gate, mexc, spotExchange: { key: spotInfo.normalized, label: spotInfo.label } });
 });
 
 function sanitizeTelegramLevels(levels) {
@@ -1607,7 +2035,7 @@ function computeTelegramStats(levelMap, selectedLevels) {
   return result;
 }
 
-function formatTelegramVolumeLines(levelMap) {
+function formatTelegramVolumeLines(levelMap, spotLabel = getSpotLabel()) {
   const entries = Array.from(levelMap.values()).filter(Boolean).sort((a, b) => {
     const la = Number.isInteger(a.level) ? a.level : Number.MAX_SAFE_INTEGER;
     const lb = Number.isInteger(b.level) ? b.level : Number.MAX_SAFE_INTEGER;
@@ -1626,7 +2054,7 @@ function formatTelegramVolumeLines(levelMap) {
     const lvl = Number.isInteger(entry.level) ? entry.level + 1 : '?';
     const gateText = fmt(entry.gate?.usdtVolume);
     const mexcText = fmt(entry.mexc?.usdtVolume);
-    return `Nível ${lvl}: Gate ${gateText} USDT | MEXC ${mexcText} USDT`;
+    return `Nível ${lvl}: ${spotLabel} ${gateText} USDT | MEXC ${mexcText} USDT`;
   });
 }
 
@@ -1650,8 +2078,10 @@ app.post('/api/notify-telegram', async (req, res) => {
     const stats = computeTelegramStats(levelMap, payload.active?.selectedLevels);
 
     const meta = await getMergedMeta(symbol || currentSymbol);
+    const spotInfo = getSpotInfo(positionState?.spotExchange || currentSpotExchange);
+    const spotMeta = getSpotOrderMeta(meta, spotInfo.normalized);
     if (requireMinVolume) {
-      const gateMinQuote = Number(meta?.gate?.minQuote || 0);
+      const gateMinQuote = Number(spotMeta?.minQuote || 0);
       if (gateMinQuote > 0 && stats.gateQuote < gateMinQuote) {
         return res.json({ ok: true, skipped: true, reason: 'gate_min_quote' });
       }
@@ -1681,7 +2111,7 @@ app.post('/api/notify-telegram', async (req, res) => {
       lines.push(`Diferença: ${diffText}%`);
     }
     if (includeVolumes) {
-      const volumes = formatTelegramVolumeLines(levelMap);
+      const volumes = formatTelegramVolumeLines(levelMap, spotInfo.label);
       if (volumes.length) {
         lines.push('Volumes (USDT):');
         lines.push(...volumes);
@@ -1889,12 +2319,12 @@ app.post('/api/precheck', async (req, res) => {
     const mode = (req.body?.mode === 'close') ? 'close' : 'open';
     const symbol = currentSymbol;
     const meta = await getMergedMeta(symbol);
+    const spotInfo = getSpotInfo();
+    const exchangeKey = spotInfo.normalized;
 
-    const g = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
+    const { asks: gateAsks, bids: gateBids } = await fetchSpotOrderBook(symbol, 5, exchangeKey);
     const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
 
-    const gateAsks = g.data?.asks || [];
-    const gateBids = g.data?.bids || [];
     const mexcBids = m.data?.data?.bids || [];
     const mexcAsks = m.data?.data?.asks || [];
 
@@ -1948,7 +2378,7 @@ app.post('/api/precheck', async (req, res) => {
 
     let availableToClose = null;
     if (mode === 'close') {
-      const balances = await getGateBalances(symbol);
+      const balances = await getSpotBalances(symbol, exchangeKey);
       const baseCurrency = symbol.split('_')[0];
       const baseAvail = Number(balances?.[baseCurrency]?.available || 0);
       const remQty = Math.min(baseAvail, positionState.gate.filledQty);
@@ -1987,7 +2417,15 @@ app.post('/api/precheck', async (req, res) => {
       return res.json({ ok: true, blocked: true, reason: 'min_contracts_not_met', minContracts, mode });
     }
 
-    const guard = enforceCloseResidualGuard(mode, contracts, meta, gatePrice, normalizeContracts, floorContracts);
+    const guard = enforceCloseResidualGuard(
+      mode,
+      contracts,
+      meta,
+      gatePrice,
+      normalizeContracts,
+      floorContracts,
+      exchangeKey
+    );
     if (!guard.ok) {
       const minResidualQuote = guard.minResidualQuote ?? Number(meta?.settings?.minCloseResidualQuote || 0);
       const message = `Saldo residual ficaria abaixo de ${Number(minResidualQuote).toFixed(2)} USDT.`;
@@ -2004,7 +2442,7 @@ app.post('/api/precheck', async (req, res) => {
     contracts = guard.contracts;
 
     let finalBaseQtyRaw = contracts * cs;
-    let rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
+    let rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta, exchangeKey);
     let adjustedContracts = normalizeContracts(floorContracts(rounded.q / cs));
     if (adjustedContracts <= 0) {
       return res.json({ ok: true, blocked: true, reason: 'rounded_qty_zero', mode });
@@ -2012,7 +2450,7 @@ app.post('/api/precheck', async (req, res) => {
     if (adjustedContracts < contracts) {
       contracts = adjustedContracts;
       finalBaseQtyRaw = contracts * cs;
-      rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta);
+      rounded = applyRoundingMeta(gatePrice, mexcPrice, finalBaseQtyRaw, meta, exchangeKey);
     }
     contracts = normalizeContracts(contracts);
 
@@ -2061,13 +2499,14 @@ app.post('/api/precheck', async (req, res) => {
       }
     }
 
-    const gateOrderBaseQty = computeGateOrderQty(rounded.q, meta, mode);
+    const spotMeta = getSpotOrderMeta(meta, exchangeKey);
+    const gateOrderBaseQty = computeSpotOrderQty(rounded.q, meta, mode, exchangeKey);
     const configuredGateExtra = Number(meta?.settings?.gateOpenExtraPct ?? 0);
     const appliedGateExtraPct = (mode === 'open' && Number.isFinite(configuredGateExtra))
       ? configuredGateExtra
       : 0;
 
-    const minQuote = Number(meta.gate.minQuote || 0);
+    const minQuote = Number(spotMeta.minQuote || 0);
     if (minQuote > 0 && gateOrderBaseQty * rounded.pg < minQuote) {
       return res.json({
         ok: true, blocked: true, reason: 'min_quote_not_met', minQuote,
@@ -2141,12 +2580,16 @@ app.post('/api/execute-trade', async (req, res) => {
 
     const metaStart = Date.now();
     const meta = await getMergedMeta(symbol);
+    const spotInfo = getSpotInfo();
+    const exchangeKey = spotInfo.normalized;
+    const spotMeta = getSpotOrderMeta(meta, exchangeKey);
     timelineRecorder.push('calc', 'Metadados carregados', {
       durationMs: Date.now() - metaStart,
       gate: {
-        priceScale: meta?.gate?.priceScale,
-        qtyScale: meta?.gate?.qtyScale,
-        minQuote: meta?.gate?.minQuote
+        exchange: spotInfo.label,
+        priceScale: spotMeta?.priceScale,
+        qtyScale: spotMeta?.qtyScale,
+        minQuote: spotMeta?.minQuote
       },
       mexc: {
         priceScale: meta?.mexc?.priceScale,
@@ -2164,18 +2607,18 @@ app.post('/api/execute-trade', async (req, res) => {
 
     let gateAsks = [], gateBids = [];
     const gateBookStart = Date.now();
-    timelineRecorder.push('network', 'Consultando livro de ordens Gate', { side: mode === 'open' ? 'asks' : 'bids' });
+    timelineRecorder.push('network', `Consultando livro de ordens ${spotInfo.label}`, { side: mode === 'open' ? 'asks' : 'bids' });
     try {
-      const g = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
-      gateAsks = g.data?.asks || [];
-      gateBids = g.data?.bids || [];
-      timelineRecorder.push('gate', 'Livro Gate recebido', {
+      const book = await fetchSpotOrderBook(symbol, 5, spotInfo.normalized);
+      gateAsks = book.asks || [];
+      gateBids = book.bids || [];
+      timelineRecorder.push('gate', `Livro ${spotInfo.label} recebido`, {
         durationMs: Date.now() - gateBookStart,
         asks: gateAsks.length,
         bids: gateBids.length
       });
     } catch (err) {
-      timelineRecorder.push('error', 'Falha ao obter livro Gate', {
+      timelineRecorder.push('error', `Falha ao obter livro ${spotInfo.label}`, {
         durationMs: Date.now() - gateBookStart,
         message: err?.response?.data || err?.message || err
       });
@@ -2286,16 +2729,16 @@ app.post('/api/execute-trade', async (req, res) => {
     let mexcRiskLimitInfo = null;
     if (mode === 'close') {
       const closeBalStart = Date.now();
-      timelineRecorder.push('network', 'Consultando saldo Gate para fechamento', { currency: baseCurrency });
+      timelineRecorder.push('network', `Consultando saldo ${spotInfo.label} para fechamento`, { currency: baseCurrency });
       try {
-        gateBalances = await getGateBalances(symbol);
-        timelineRecorder.push('gate', 'Saldo Gate obtido para fechamento', {
+        gateBalances = await getSpotBalances(symbol, exchangeKey);
+        timelineRecorder.push('gate', `Saldo ${spotInfo.label} obtido para fechamento`, {
           durationMs: Date.now() - closeBalStart,
           baseAvailable: baseCurrency ? Number(gateBalances?.[baseCurrency]?.available ?? 0) : null,
           usdtAvailable: Number(gateBalances?.USDT?.available ?? 0)
         });
       } catch (err) {
-        timelineRecorder.push('error', 'Falha ao consultar saldo Gate para fechamento', {
+        timelineRecorder.push('error', `Falha ao consultar saldo ${spotInfo.label} para fechamento`, {
           durationMs: Date.now() - closeBalStart,
           message: err?.response?.data || err?.message || err
         });
@@ -2453,7 +2896,7 @@ app.post('/api/execute-trade', async (req, res) => {
       }
     }
 
-    const gateOrderBaseQty = computeGateOrderQty(rounded.q, meta, mode);
+    const gateOrderBaseQty = computeSpotOrderQty(rounded.q, meta, mode);
 
     timelineRecorder.push('calc', 'Quantidades calculadas', {
       contracts,
@@ -2465,9 +2908,9 @@ app.post('/api/execute-trade', async (req, res) => {
       minCloseResidualQuote: meta?.settings?.minCloseResidualQuote
     });
 
-    const minQuote = Number(meta.gate.minQuote || 0);
+    const minQuote = Number(spotMeta.minQuote || 0);
     if (minQuote > 0 && gateOrderBaseQty * rounded.pg < minQuote) {
-      return abort(400, { error: `Mínimo da Gate não atendido (>= ${minQuote} USDT). Tente aumentar contratos.` }, {
+      return abort(400, { error: `Mínimo da ${spotInfo.label} não atendido (>= ${minQuote} USDT). Tente aumentar contratos.` }, {
         reason: 'min_quote',
         minQuote,
         gateQuote: gateOrderBaseQty * rounded.pg
@@ -2476,24 +2919,24 @@ app.post('/api/execute-trade', async (req, res) => {
 
     const gateBalancePromise = (async () => {
       if (gateBalances) {
-        timelineRecorder.push('gate', 'Saldo Gate reutilizado', {
+        timelineRecorder.push('gate', `Saldo ${spotInfo.label} reutilizado`, {
           usdtAvailable: Number(gateBalances?.USDT?.available ?? 0),
           baseAvailable: baseCurrency ? Number(gateBalances?.[baseCurrency]?.available ?? 0) : null
         });
         return gateBalances;
       }
       const start = Date.now();
-      timelineRecorder.push('network', 'Consultando saldo Gate', { currency: baseCurrency });
+      timelineRecorder.push('network', `Consultando saldo ${spotInfo.label}`, { currency: baseCurrency });
       try {
-        const result = await getGateBalances(symbol);
-        timelineRecorder.push('gate', 'Saldo Gate obtido', {
+        const result = await getSpotBalances(symbol, exchangeKey);
+        timelineRecorder.push('gate', `Saldo ${spotInfo.label} obtido`, {
           durationMs: Date.now() - start,
           usdtAvailable: Number(result?.USDT?.available ?? 0),
           baseAvailable: baseCurrency ? Number(result?.[baseCurrency]?.available ?? 0) : null
         });
         return result;
       } catch (err) {
-        timelineRecorder.push('error', 'Falha ao consultar saldo Gate', {
+        timelineRecorder.push('error', `Falha ao consultar saldo ${spotInfo.label}`, {
           durationMs: Date.now() - start,
           message: err?.response?.data || err?.message || err
         });
@@ -2549,7 +2992,7 @@ app.post('/api/execute-trade', async (req, res) => {
       const gateUSDTAvail = Number(gateBalances?.USDT?.available || 0);
       if (gateUSDTAvail < neededGateUSDT) {
         return abort(400, {
-          error: 'Saldo Gate USDT insuficiente',
+          error: `Saldo ${spotInfo.label} USDT insuficiente`,
           requiredUSDT: Number(neededGateUSDT.toFixed(6)),
           availableUSDT: gateUSDTAvail
         }, {
@@ -2562,8 +3005,8 @@ app.post('/api/execute-trade', async (req, res) => {
       const gateBaseAvailable = Number(gateBalances?.[baseCurrency]?.available || 0);
       if (gateBaseAvailable < gateOrderBaseQty) {
         return abort(400, {
-          error: `Saldo Gate ${baseCurrency} insuficiente`,
-          requiredBase: Number(gateOrderBaseQty.toFixed(meta.gate.qtyScale)),
+          error: `Saldo ${spotInfo.label} ${baseCurrency} insuficiente`,
+          requiredBase: Number(gateOrderBaseQty.toFixed(spotMeta.qtyScale || 0)),
           availableBase: gateBaseAvailable
         }, {
           reason: 'gate_base_insuficiente',
@@ -2581,9 +3024,9 @@ app.post('/api/execute-trade', async (req, res) => {
     });
 
     console.log('[EXECUTAR] Modo:', mode);
-    console.log('[EXECUTAR] Preço Gate:', rounded.pg);
+    console.log(`[EXECUTAR] Preço ${spotInfo.label}:`, rounded.pg);
     console.log('[EXECUTAR] Preço MEXC:', rounded.pm);
-    console.log('[EXECUTAR] Volume (moeda base final):', rounded.q, '| Volume Gate (com extra):', gateOrderBaseQty, '| contratos MEXC:', contracts);
+    console.log('[EXECUTAR] Volume (moeda base final):', rounded.q, `| Volume ${spotInfo.label} (com extra):`, gateOrderBaseQty, '| contratos MEXC:', contracts);
 
     const localId = Date.now().toString();
     const configuredGateExtra = Number(meta?.settings?.gateOpenExtraPct ?? 0);
@@ -2600,6 +3043,7 @@ app.post('/api/execute-trade', async (req, res) => {
       volume: String(rounded.q),
       mexcDisplayVolume: String(rounded.q),
       mexcOrderContracts: Number(contracts),
+      spotExchange: spotInfo.normalized,
       gateOpenExtraPct: appliedGateExtraPct,
       gateOrderId: null, mexcOrderId: null,
       gateStatus: 'creating', mexcStatus: 'creating',
@@ -2622,35 +3066,37 @@ app.post('/api/execute-trade', async (req, res) => {
     // Gate: open=buy | close=sell
     let gateOk = false;
     const gateSideType = (mode === 'open') ? 'buy' : 'sell';
-    const gatePriceStr = String(rounded.pg.toFixed(meta.gate.priceScale));
-    const gateQtyStr = String(gateOrderBaseQty.toFixed(meta.gate.qtyScale));
-    timelineRecorder.push('gate', 'Enviando ordem Gate', {
+    const gatePriceStr = String(rounded.pg.toFixed(spotMeta.priceScale || 6));
+    const gateQtyStr = String(gateOrderBaseQty.toFixed(spotMeta.qtyScale || 6));
+    timelineRecorder.push('gate', `Enviando ordem ${spotInfo.label}`, {
       side: gateSideType,
       price: Number(gatePriceStr),
       amount: Number(gateQtyStr)
     });
     const gateSendStart = Date.now();
     try {
-      const go = await placeGateOrderSdk(
+      const go = await placeSpotOrder(
         symbol,
         gateSideType,
         gatePriceStr,
-        gateQtyStr
+        gateQtyStr,
+        null,
+        exchangeKey
       );
       histItem.gateOrderId = (go?.id != null) ? String(go.id) : null;
       histItem.gateOrderVolume = gateQtyStr;
       histItem.gateOrderBaseQty = Number(gateQtyStr);
       gateOk = !!histItem.gateOrderId;
       histItem.gateStatus = gateOk ? 'open' : 'error';
-      timelineRecorder.push('gate', 'Resposta Gate', {
+      timelineRecorder.push('gate', `Resposta ${spotInfo.label}`, {
         durationMs: Date.now() - gateSendStart,
         orderId: histItem.gateOrderId,
         success: gateOk
       });
     } catch (e) {
-      console.error('[ERRO AO ENVIAR GATE]:', e.response?.data || e.message);
+      console.error(`[ERRO AO ENVIAR ${spotInfo.label.toUpperCase()}]:`, e.response?.data || e.message);
       histItem.gateStatus = 'error';
-      timelineRecorder.push('error', 'Erro ao enviar ordem Gate', {
+      timelineRecorder.push('error', `Erro ao enviar ordem ${spotInfo.label}`, {
         durationMs: Date.now() - gateSendStart,
         message: e.response?.data || e.message || e
       });
@@ -2719,14 +3165,14 @@ app.post('/api/execute-trade', async (req, res) => {
     if (!mexcOk && mexcLimitError && gateOk && histItem.gateOrderId) {
       gateAutoAction = { attempted: true, orderId: histItem.gateOrderId };
       try {
-        timelineRecorder.push('gate', 'Cancelando Gate após limite MEXC', { orderId: histItem.gateOrderId });
-        await cancelGateOrderSdk(symbol, histItem.gateOrderId);
+        timelineRecorder.push('gate', `Cancelando ${spotInfo.label} após limite MEXC`, { orderId: histItem.gateOrderId });
+        await cancelSpotOrder(symbol, histItem.gateOrderId, exchangeKey);
         gateAutoAction.cancelled = true;
         histItem.gateStatus = 'cancelled';
-        timelineRecorder.push('gate', 'Gate cancelada após limite MEXC', { orderId: histItem.gateOrderId });
+        timelineRecorder.push('gate', `${spotInfo.label} cancelada após limite MEXC`, { orderId: histItem.gateOrderId });
       } catch (cancelErr) {
         gateAutoAction.error = cancelErr?.response?.data || cancelErr?.message || cancelErr;
-        timelineRecorder.push('error', 'Falha ao cancelar Gate após limite MEXC', {
+        timelineRecorder.push('error', `Falha ao cancelar ${spotInfo.label} após limite MEXC`, {
           orderId: histItem.gateOrderId,
           message: gateAutoAction.error
         });
@@ -2734,15 +3180,15 @@ app.post('/api/execute-trade', async (req, res) => {
 
       let parsedDetail = null;
       let flattenQty = 0;
-      const lookup = await fetchGateOrderDetailWithStatus(symbol, histItem.gateOrderId);
+      const lookup = await fetchSpotOrderDetailWithStatus(symbol, histItem.gateOrderId, exchangeKey);
       if (lookup?.detail) {
-        parsedDetail = parseGateOrderDetail(lookup.detail, gateOrderBaseQty, rounded.pg);
+        parsedDetail = parseSpotOrderDetail(lookup.detail, gateOrderBaseQty, rounded.pg, exchangeKey);
         gateAutoAction.detail = parsedDetail;
         if (parsedDetail.filled > 0) {
           gateAutoAction.filledQty = parsedDetail.filled;
           gateAutoAction.remainingQty = parsedDetail.remaining;
           flattenQty = parsedDetail.filled;
-          timelineRecorder.push('warning', 'Gate possivelmente preenchida durante erro MEXC', {
+          timelineRecorder.push('warning', `${spotInfo.label} possivelmente preenchida durante erro MEXC`, {
             filled: parsedDetail.filled,
             remaining: parsedDetail.remaining,
             avgPrice: parsedDetail.avgPrice
@@ -2753,13 +3199,13 @@ app.post('/api/execute-trade', async (req, res) => {
         flattenQty = gateOrderBaseQty;
         gateAutoAction.filledQty = gateOrderBaseQty;
         gateAutoAction.remainingQty = 0;
-        timelineRecorder.push('warning', 'Gate retornou not found após cancelamento', {
+        timelineRecorder.push('warning', `${spotInfo.label} retornou not found após cancelamento`, {
           orderId: histItem.gateOrderId,
           assumedQty: gateOrderBaseQty
         });
       } else if (lookup?.error) {
         gateAutoAction.detailError = lookup.error?.message || lookup.error;
-        timelineRecorder.push('warning', 'Não foi possível obter detalhe da Gate após erro MEXC', {
+        timelineRecorder.push('warning', `Não foi possível obter detalhe da ${spotInfo.label} após erro MEXC`, {
           orderId: histItem.gateOrderId,
           message: gateAutoAction.detailError
         });
@@ -2768,19 +3214,19 @@ app.post('/api/execute-trade', async (req, res) => {
       const flattenSide = (mode === 'open') ? 'sell' : 'buy';
       if (flattenQty > 0) {
         const fallbackPrice = parsedDetail?.avgPrice || rounded.pg;
-        const gateQtyScale = Number(meta?.gate?.qtyScale ?? 6);
-        timelineRecorder.push('gate', 'Tentando zerar Gate após limite MEXC', {
+        const gateQtyScale = Number(spotMeta?.qtyScale ?? 6);
+        timelineRecorder.push('gate', `Tentando zerar ${spotInfo.label} após limite MEXC`, {
           orderId: histItem.gateOrderId,
           qty: roundTo(flattenQty, gateQtyScale),
           side: flattenSide
         });
-        const flattenResult = await placeGateFlattenOrder(symbol, flattenSide, flattenQty, meta, fallbackPrice);
+        const flattenResult = await placeSpotFlattenOrder(symbol, flattenSide, flattenQty, meta, fallbackPrice, exchangeKey);
         gateAutoAction.flatten = flattenResult;
         if (flattenResult.success) {
           gateAutoAction.neutralized = true;
           gateAutoAction.needsManualClose = false;
           gateAutoAction.flattenedQty = flattenResult.filledQty ?? flattenResult.qty ?? flattenQty;
-          timelineRecorder.push('gate', 'Gate zerada automaticamente após limite MEXC', {
+          timelineRecorder.push('gate', `${spotInfo.label} zerada automaticamente após limite MEXC`, {
             flattenOrderId: flattenResult.orderId,
             filledQty: gateAutoAction.flattenedQty
           });
@@ -2869,17 +3315,19 @@ app.post('/api/cancel-order', async (req, res) => {
     const idx = orderHistory.findIndex(o => o.localId === localId);
     if (idx === -1) return res.status(404).json({ error: 'Ordem não encontrada' });
     const item = orderHistory[idx];
+    const spotInfo = getSpotInfo(item.spotExchange || currentSpotExchange);
 
     let gFilled = 0, gAvg = 0, mFilled = 0, mAvg = 0;
     if (item.gateOrderId) {
       try {
-        await cancelGateOrderSdk(symbol, item.gateOrderId);
-        const d = await getGateOrderDetail(symbol, item.gateOrderId);
+        await cancelSpotOrder(symbol, item.gateOrderId, spotInfo.normalized);
+        const d = await getSpotOrderDetail(symbol, item.gateOrderId, spotInfo.normalized);
         if (d) {
-          gFilled = Number(d.filledAmount ?? d.filled_amount ?? '0');
-          gAvg = Number(d.avgDealPrice ?? d.fill_price ?? d.avgFillPrice ?? item.priceUsedGate);
+          const parsed = parseSpotOrderDetail(d, Number(item.gateOrderBaseQty ?? item.volume ?? 0), Number(item.priceUsedGate), spotInfo.normalized);
+          gFilled = Number(parsed.filled || 0);
+          gAvg = Number(parsed.avgPrice || item.priceUsedGate);
         }
-      } catch (e) { return res.status(500).json({ error: 'Erro ao cancelar Gate', detail: e.response?.data || e.message }); }
+      } catch (e) { return res.status(500).json({ error: `Erro ao cancelar ${spotInfo.label}`, detail: e.response?.data || e.message }); }
     }
     if (item.mexcOrderId) {
       try {
@@ -2918,38 +3366,44 @@ app.post('/api/reposition-gate', async (req, res) => {
     const idx = orderHistory.findIndex(o => o.localId === localId);
     if (idx === -1) return res.status(404).json({ error: 'Ordem não encontrada' });
     const item = orderHistory[idx];
-    if (!item.gateOrderId) return res.status(400).json({ error: 'Sem ordem Gate' });
+    if (!item.gateOrderId) return res.status(400).json({ error: 'Sem ordem spot ativa' });
     if (item.gateStatus === 'filled' || item.gateStatus === 'cancelled') {
-      return res.status(400).json({ error: 'Ordem Gate já finalizada' });
+      return res.status(400).json({ error: 'Ordem spot já finalizada' });
     }
 
     const symbol = item.symbol;
     const meta = item.metaUsed || await getMergedMeta(symbol);
-    const book = await axios.get(`https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${symbol}`);
-    const gAsk = book.data.asks[0], gBid = book.data.bids[0];
-    const rawPrice = (item.mode === 'open') ? Number(gAsk[0]) : Number(gBid[0]);
-    const newPrice = Number(rawPrice.toFixed(meta.gate.priceScale));
+    const spotInfo = getSpotInfo(item.spotExchange || currentSpotExchange);
+    const spotMeta = getSpotOrderMeta(meta, spotInfo.normalized);
+    const book = await fetchSpotOrderBook(symbol, 5, spotInfo.normalized);
+    const topAsk = Array.isArray(book.asks) ? book.asks[0] : null;
+    const topBid = Array.isArray(book.bids) ? book.bids[0] : null;
+    const rawPrice = (item.mode === 'open') ? Number(topAsk?.[0]) : Number(topBid?.[0]);
+    if (!Number.isFinite(rawPrice) || rawPrice <= 0) {
+      return res.status(502).json({ error: `Falha ao obter preço da ${spotInfo.label}` });
+    }
+    const newPrice = Number(rawPrice.toFixed(spotMeta.priceScale || 6));
 
     const fallbackQty = Number(item.gateOrderBaseQty ?? item.gateOrderVolume ?? item.volume ?? 0);
     const fallbackPrice = Number(item.priceUsedGate || rawPrice || 0);
-    const { detail, notFound, error } = await fetchGateOrderDetailWithStatus(symbol, item.gateOrderId);
+    const { detail, notFound, error } = await fetchSpotOrderDetailWithStatus(symbol, item.gateOrderId, spotInfo.normalized);
     if (error && !notFound) {
-      return res.status(502).json({ error: 'Falha ao consultar ordem Gate' });
+      return res.status(502).json({ error: `Falha ao consultar ordem ${spotInfo.label}` });
     }
 
     if (notFound) {
       const qtyNum = Number.isFinite(fallbackQty) ? fallbackQty : 0;
       if (qtyNum > 0) {
-        item.gatePartialFilled = Number(roundTo(qtyNum, meta.gate.qtyScale));
+        item.gatePartialFilled = Number(roundTo(qtyNum, spotMeta.qtyScale || 0));
       }
-      item.gateOrderFilled = Number(roundTo(qtyNum, meta.gate.qtyScale));
+      item.gateOrderFilled = Number(roundTo(qtyNum, spotMeta.qtyScale || 0));
       item.gateStatus = 'filled';
       item.status = (item.mexcStatus === 'filled') ? 'filled' : 'mexc_filled';
       try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (reposition gate-notfound):', e?.message || e); }
-      return res.status(409).json({ error: 'Ordem Gate já finalizada' });
+      return res.status(409).json({ error: 'Ordem spot já finalizada' });
     }
 
-    const parsed = parseGateOrderDetail(detail, fallbackQty, fallbackPrice);
+    const parsed = parseSpotOrderDetail(detail, fallbackQty, fallbackPrice, spotInfo.normalized);
     const currentFilled = Math.max(0, Math.min((parsed.total || fallbackQty), parsed.filled || 0));
     const prevKnownFilled = Number(item.gateOrderFilled || 0);
     const incrementalFilled = Math.max(0, currentFilled - (Number.isFinite(prevKnownFilled) ? prevKnownFilled : 0));
@@ -2957,29 +3411,31 @@ app.post('/api/reposition-gate', async (req, res) => {
     const partialAfterCancel = prevPartial + incrementalFilled;
 
     const remainingRawBase = Math.max(0, (Number.isFinite(parsed.total) && parsed.total > 0 ? parsed.total : fallbackQty) - currentFilled);
-    let remainingBase = roundDownTo(remainingRawBase, meta.gate.qtyScale);
+    let remainingBase = roundDownTo(remainingRawBase, spotMeta.qtyScale || 0);
     if (!Number.isFinite(remainingBase)) remainingBase = 0;
 
     if (remainingBase <= 0 || parsed.isFilled) {
-      item.gateOrderFilled = Number(roundTo(currentFilled, meta.gate.qtyScale));
+      item.gateOrderFilled = Number(roundTo(currentFilled, spotMeta.qtyScale || 0));
       item.gateStatus = 'filled';
       item.status = (item.mexcStatus === 'filled') ? 'filled' : 'mexc_filled';
       try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (reposition gate-filled):', e?.message || e); }
-      return res.status(409).json({ error: 'Ordem Gate já finalizada' });
+      return res.status(409).json({ error: 'Ordem spot já finalizada' });
     }
 
     if (incrementalFilled > 0) {
-      item.gatePartialFilled = Number(roundTo(partialAfterCancel, meta.gate.qtyScale));
+      item.gatePartialFilled = Number(roundTo(partialAfterCancel, spotMeta.qtyScale || 0));
     }
 
     const side = (item.mode === 'open') ? 'buy' : 'sell';
-    try { await cancelGateOrderSdk(symbol, item.gateOrderId); } catch {}
-    const qtyStr = String(remainingBase.toFixed(meta.gate.qtyScale));
-    const go = await placeGateOrderSdk(
+    try { await cancelSpotOrder(symbol, item.gateOrderId, spotInfo.normalized); } catch {}
+    const qtyStr = String(remainingBase.toFixed(spotMeta.qtyScale || 6));
+    const go = await placeSpotOrder(
       symbol,
       side,
-      String(newPrice.toFixed(meta.gate.priceScale)),
-      qtyStr
+      String(newPrice.toFixed(spotMeta.priceScale || 6)),
+      qtyStr,
+      null,
+      spotInfo.normalized
     );
     item.gateOrderId = go?.id ? String(go.id) : null;
     item.priceUsedGate = String(newPrice);
@@ -2989,10 +3445,10 @@ app.post('/api/reposition-gate', async (req, res) => {
     item.gateStatus = item.gateOrderId ? 'open' : 'error';
     item.status = (item.mexcStatus === 'filled') ? 'mexc_filled' : 'open';
     try { db.saveHistoryItem(item); } catch (e) { console.warn('[SQLite] save history (reposition gate):', e?.message || e); }
-    if (!item.gateOrderId) return res.status(500).json({ error: 'Falha ao criar nova ordem Gate' });
+    if (!item.gateOrderId) return res.status(500).json({ error: `Falha ao criar nova ordem ${spotInfo.label}` });
     res.json({ ok: true, gateOrderId: item.gateOrderId, price: item.priceUsedGate });
   } catch (e) {
-    res.status(500).json({ error: 'Erro ao reposicionar Gate' });
+    res.status(500).json({ error: 'Erro ao reposicionar ordem spot' });
   }
 });
 
@@ -3009,6 +3465,8 @@ app.post('/api/reposition-mexc', async (req, res) => {
 
     const symbol = item.symbol;
     const meta = item.metaUsed || await getMergedMeta(symbol);
+    const exchangeKey = item.spotExchange || currentSpotExchange;
+    const spotMeta = getSpotOrderMeta(meta, exchangeKey);
     const book = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
     const xBid = book.data.data.bids[0], xAsk = book.data.data.asks[0];
     const rawPrice = (item.mode === 'open') ? Number(xBid[0]) : Number(xAsk[0]);
@@ -3070,7 +3528,7 @@ app.post('/api/reposition-mexc', async (req, res) => {
     item.priceUsedMexc = String(newPrice);
     item.mexcOrderContracts = Number(remainingContracts);
     const baseDisplay = contractsToBase(remainingContracts, meta);
-    const baseDisplayRounded = roundTo(baseDisplay, meta.gate.qtyScale || 6);
+    const baseDisplayRounded = roundTo(baseDisplay, spotMeta.qtyScale || 6);
     item.mexcDisplayVolume = String(baseDisplayRounded);
     item.mexcOrderFilled = 0;
     item.mexcStatus = newId ? 'open' : 'error';
@@ -3090,15 +3548,18 @@ async function pollOpenOrders() {
     const symbol = item.symbol;
     if (!ACTIVE_STATUSES.includes(item.status)) continue;
 
-    // Gate
+    const exchangeKey = item.spotExchange || currentSpotExchange;
+    const spotInfo = getSpotInfo(exchangeKey);
+
+    // Spot exchange (Gate/Bitget)
     const fallbackGateQty = Number(item.gateOrderBaseQty ?? item.gateOrderVolume ?? item.volume ?? 0);
     let gFilledCurrent = 0;
     let gAvg = Number(item.priceUsedGate || 0);
     let gIsFilled = false;
     if (item.gateOrderId) {
-      const detail = await getGateOrderDetail(symbol, item.gateOrderId);
+      const detail = await getSpotOrderDetail(symbol, item.gateOrderId, exchangeKey);
       if (detail) {
-        const parsedGate = parseGateOrderDetail(detail, fallbackGateQty, gAvg);
+        const parsedGate = parseSpotOrderDetail(detail, fallbackGateQty, gAvg, exchangeKey);
         gFilledCurrent = Math.max(0, parsedGate.filled || 0);
         gAvg = Number(parsedGate.avgPrice || gAvg);
         gIsFilled = !!parsedGate.isFilled;
@@ -3163,7 +3624,7 @@ async function pollOpenOrders() {
 
     if (item.timeline) {
       if (prevGateStatus === 'creating' && item.gateStatus === 'open') {
-        appendTimelineEntry(item, 'gate', 'Ordem Gate confirmada', { status: item.gateStatus });
+        appendTimelineEntry(item, 'gate', `Ordem ${spotInfo.label} confirmada`, { status: item.gateStatus });
       }
       if (prevMexcStatus === 'creating' && item.mexcStatus === 'open') {
         appendTimelineEntry(item, 'mexc', 'Ordem MEXC confirmada', { status: item.mexcStatus });
@@ -3197,7 +3658,7 @@ async function pollOpenOrders() {
 
     if (item.timeline) {
       if (item.gateStatus === 'filled' && prevGateStatus !== 'filled') {
-        appendTimelineEntry(item, 'gate', 'Ordem Gate preenchida', {
+        appendTimelineEntry(item, 'gate', `Ordem ${spotInfo.label} preenchida`, {
           filledQty: totalGateFilled || Number(item.volume),
           avgPrice: gAvg,
           status: item.gateStatus
@@ -3217,7 +3678,7 @@ async function pollOpenOrders() {
       } else if (item.status === 'gate_filled' && prevStatus !== 'gate_filled') {
         appendTimelineEntry(item, 'system', 'Aguardando preenchimento MEXC', { status: item.status });
       } else if (item.status === 'mexc_filled' && prevStatus !== 'mexc_filled') {
-        appendTimelineEntry(item, 'system', 'Aguardando preenchimento Gate', { status: item.status });
+        appendTimelineEntry(item, 'system', `Aguardando preenchimento ${spotInfo.label}`, { status: item.status });
       }
     }
 

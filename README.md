@@ -1,12 +1,13 @@
 # ArbiSync
 
-ArbiSync é um painel simples de arbitragem entre as corretoras **Gate.io** e **MEXC**. O projeto foi escrito em Node.js/Express e expõe uma página estática que permite acompanhar cotações, enviar ordens simultâneas e acompanhar o progresso das posições.
+ArbiSync é um painel simples de arbitragem entre as corretoras **Gate.io**, **Bitget** (spot) e **MEXC** (futuros). O projeto foi escrito em Node.js/Express
+e expõe uma página estática que permite acompanhar cotações, enviar ordens simultâneas e acompanhar o progresso das posições.
 
 ## Recursos
-- Consulta das melhores ofertas (ask/bid) das duas corretoras.
+- Consulta das melhores ofertas (ask/bid) das corretoras configuradas.
 - Envio simultâneo de ordens limit para abertura ou fechamento de posições.
 - Persistência de overrides e histórico de ordens em um banco SQLite (`data/app.db`).
-- Interface web para configuração de pares, consulta de saldos e monitoramento de ordens.
+- Interface web para configuração de pares, consulta de saldos (Gate.io ou Bitget no spot, MEXC no futuros) e monitoramento de ordens.
 
 ## Pré‑requisitos
 - [Node.js](https://nodejs.org/) (versão 18 ou superior recomendada)
@@ -24,12 +25,14 @@ npm install express axios gate-api mexc-futures-sdk better-sqlite3
 ```
 
 ## Configuração
-Edite o arquivo `config.js` e informe as chaves de API da Gate.io e da MEXC. As chaves da MEXC podem ser substituídas por um `webAuthToken` (token "WEB..." capturado na aba de Futuros).
+Edite o arquivo `config.js` e informe as chaves de API das corretoras desejadas. Gate.io e Bitget são usadas no spot (escolha configurável no painel), enquanto a MEXC é utilizada para operações de futuros. As chaves da MEXC podem ser substituídas por um `webAuthToken` (token "WEB..." capturado na aba de Futuros).
 
 ```javascript
 module.exports = {
   defaultSymbol: 'BOXCAT_USDT',
+  defaultSpotExchange: 'gate',
   gate: { apiKey: '', apiSecret: '' },
+  bitget: { apiKey: '', apiSecret: '', passphrase: '' },
   mexc: { webAuthToken: '', leverage: 1 }
 };
 ```
