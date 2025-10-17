@@ -1150,6 +1150,23 @@ function enforceCloseResidualGuard(mode, contracts, meta, gatePrice, normalizeCo
     return { ok: false, reason: 'min_residual_guard', minResidualQuote: minQuote };
   }
 
+  const gateMinQuote = Number(meta?.gate?.minQuote || 0);
+  if (gateMinQuote > 0) {
+    const minOrderBase = gateMinQuote / gatePriceNum;
+    if (Number.isFinite(minOrderBase) && minOrderBase > 0) {
+      const candidateBase = maxContracts * cs;
+      if (Number.isFinite(candidateBase) && (candidateBase + 1e-9) < minOrderBase) {
+        return {
+          ok: true,
+          contracts,
+          override: 'gate_min_quote',
+          minResidualQuote: minQuote,
+          minQuote: gateMinQuote
+        };
+      }
+    }
+  }
+
   const minContracts = Number(meta?.mexc?.minContracts || 1);
   if (Number.isFinite(minContracts) && minContracts > 0 && maxContracts < minContracts) {
     return { ok: false, reason: 'min_residual_guard', minResidualQuote: minQuote };
@@ -1983,6 +2000,7 @@ app.post('/api/precheck', async (req, res) => {
         mode
       });
     }
+    const guardOverride = guard.override || null;
     contracts = guard.contracts;
 
     let finalBaseQtyRaw = contracts * cs;
@@ -2028,7 +2046,8 @@ app.post('/api/precheck', async (req, res) => {
       const minResidualQuote = Number(meta?.settings?.minCloseResidualQuote || 0);
       const leftover = Number(positionState?.gate?.filledQty || 0) - Number(rounded.q || 0);
       const leftoverQuote = Number.isFinite(leftover) && Number.isFinite(rounded.pg) ? leftover * rounded.pg : null;
-      if (minResidualQuote > 0 && Number.isFinite(leftover) && leftover > 0 && Number.isFinite(leftoverQuote) && leftoverQuote < minResidualQuote) {
+      const skipResidualCheck = guardOverride === 'gate_min_quote';
+      if (!skipResidualCheck && minResidualQuote > 0 && Number.isFinite(leftover) && leftover > 0 && Number.isFinite(leftoverQuote) && leftoverQuote < minResidualQuote) {
         const friendly = `Saldo residual estimado: ${Number(leftoverQuote.toFixed(6))} USDT (mínimo exigido: ${Number(minResidualQuote).toFixed(2)} USDT).`;
         return res.json({
           ok: true,
@@ -2090,6 +2109,7 @@ app.post('/api/precheck', async (req, res) => {
         levelsUsed: selectedLevels,
         riskLimitCheck: mexcRiskLimitInfo
       };
+      if (guardOverride) details.guardOverride = guardOverride;
       return res.json({ ok: true, needConfirm: false, unknownBalance: false, details });
     }
   } catch (e) {
@@ -2339,11 +2359,18 @@ app.post('/api/execute-trade', async (req, res) => {
         minResidualQuote
       });
     }
+    const guardOverride = guard.override || null;
     if (guard.applied) {
       timelineRecorder.push('calc', 'Regra de saldo mínimo aplicada', {
         previousContracts: contracts,
         adjustedContracts: guard.contracts,
         minResidualQuote: guard.minResidualQuote ?? Number(meta?.settings?.minCloseResidualQuote || 0)
+      });
+    } else if (guardOverride === 'gate_min_quote') {
+      timelineRecorder.push('calc', 'Regra de saldo mínimo ignorada (Gate minQuote)', {
+        previousContracts: contracts,
+        minResidualQuote: guard.minResidualQuote ?? Number(meta?.settings?.minCloseResidualQuote || 0),
+        gateMinQuote: guard.minQuote ?? Number(meta?.gate?.minQuote || 0)
       });
     }
     contracts = guard.contracts;
@@ -2409,7 +2436,8 @@ app.post('/api/execute-trade', async (req, res) => {
       const minResidualQuote = Number(meta?.settings?.minCloseResidualQuote || 0);
       const leftover = Number(positionState?.gate?.filledQty || 0) - Number(rounded.q || 0);
       const leftoverQuote = Number.isFinite(leftover) && Number.isFinite(rounded.pg) ? leftover * rounded.pg : null;
-      if (minResidualQuote > 0 && Number.isFinite(leftover) && leftover > 0 && Number.isFinite(leftoverQuote) && leftoverQuote < minResidualQuote) {
+      const skipResidualCheck = guardOverride === 'gate_min_quote';
+      if (!skipResidualCheck && minResidualQuote > 0 && Number.isFinite(leftover) && leftover > 0 && Number.isFinite(leftoverQuote) && leftoverQuote < minResidualQuote) {
         const friendly = `Saldo residual estimado: ${Number(leftoverQuote.toFixed(6))} USDT (mínimo exigido: ${Number(minResidualQuote).toFixed(2)} USDT).`;
         return abort(400, {
           error: `${friendly} Ajuste o volume ou reduza o mínimo manual nas configurações.`,
@@ -2577,6 +2605,7 @@ app.post('/api/execute-trade', async (req, res) => {
       gateStatus: 'creating', mexcStatus: 'creating',
       status: 'creating'
     };
+    if (guardOverride) histItem.guardOverride = guardOverride;
     if (mexcRiskLimitInfo) histItem.mexcRiskLimit = mexcRiskLimitInfo;
 
     attachTimeline(histItem, timelineRecorder);
