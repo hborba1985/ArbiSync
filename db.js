@@ -50,7 +50,6 @@ CREATE TABLE IF NOT EXISTS spread_snapshots (
   open_spread REAL,
   close_spread REAL
 );
-CREATE INDEX IF NOT EXISTS idx_spread_symbol_exchange_ts ON spread_snapshots(symbol, spot_exchange, ts);
 `);
 
 // Migração simples: garante colunas gate_status e mexc_status
@@ -62,6 +61,8 @@ try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN open_volumes TEXT'); } ca
 try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN close_volumes TEXT'); } catch {}
 try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN position_arb_pct REAL'); } catch {}
 try { db.exec("ALTER TABLE spread_snapshots ADD COLUMN spot_exchange TEXT DEFAULT 'gate'"); } catch {}
+try { db.exec("UPDATE spread_snapshots SET spot_exchange = 'gate' WHERE spot_exchange IS NULL OR spot_exchange = ''"); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_spread_symbol_exchange_ts ON spread_snapshots(symbol, spot_exchange, ts)'); } catch {}
 
 const upsertOverrideStmt = db.prepare(`
 INSERT INTO overrides(symbol, override_json, updated_at)
