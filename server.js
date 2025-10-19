@@ -881,22 +881,73 @@ async function placeBitgetFlattenOrder(symbol, side, qty, meta, fallbackPrice = 
 }
 
 async function getBitgetBalances(symbol) {
-  try {
-    const base = symbol.split('_')[0];
-    const data = await bitgetRequest('GET', '/api/spot/v1/account/assets', {
-      query: base ? { coin: `${base},USDT` } : undefined
-    });
-    const arr = Array.isArray(data?.data) ? data.data : [];
-    const out = {};
-    for (const it of arr) {
-      const coin = (it.coin || it.coinName || it.symbol || '').toUpperCase();
+  const normalizeCoin = (value) => {
+    const str = String(value || '').trim();
+    return str ? str.toUpperCase() : null;
+  };
+
+  const collectEntries = (entries, target) => {
+    if (!Array.isArray(entries)) return;
+    for (const it of entries) {
+      const coin = normalizeCoin(it?.coin || it?.coinName || it?.symbol);
       if (!coin) continue;
-      out[coin] = {
-        available: Number(it.available ?? it.availableAmount ?? 0),
-        locked: Number(it.locked ?? it.frozen ?? 0)
-      };
+      target.set(coin, {
+        available: Number(it?.available ?? it?.availableAmount ?? it?.availableQty ?? 0),
+        locked: Number(it?.locked ?? it?.frozen ?? it?.freeze ?? 0)
+      });
     }
-    return out;
+  };
+
+  const fetchAssets = async (coins) => {
+    const query = coins && coins.length ? { coin: coins.join(',') } : undefined;
+    const response = await bitgetRequest('GET', '/api/spot/v1/account/assets', { query });
+    const payload = response?.data;
+    if (Array.isArray(payload)) return payload;
+    if (payload) return [payload];
+    return [];
+  };
+
+  try {
+    const base = normalizeCoin(typeof symbol === 'string' ? symbol.split('_')[0] : null);
+    const desiredCoins = Array.from(new Set([base, 'USDT'].filter(Boolean)));
+    const balances = new Map();
+    let needFallback = false;
+    let fallbackError = null;
+
+    if (desiredCoins.length) {
+      try {
+        const combined = await fetchAssets(desiredCoins);
+        collectEntries(combined, balances);
+      } catch (err) {
+        if (err?.code === '40019') needFallback = true;
+        else throw err;
+      }
+    } else {
+      const allAssets = await fetchAssets();
+      collectEntries(allAssets, balances);
+    }
+
+    const missingCoins = desiredCoins.filter((coin) => !balances.has(coin));
+    if (needFallback || missingCoins.length) {
+      for (const coin of missingCoins) {
+        try {
+          const single = await fetchAssets([coin]);
+          collectEntries(single, balances);
+        } catch (err) {
+          if (!fallbackError) fallbackError = err;
+        }
+      }
+    }
+
+    const result = {};
+    for (const [coin, info] of balances.entries()) {
+      result[coin] = info;
+    }
+    if (!balances.size && fallbackError) {
+      const err = fallbackError;
+      return { error: err?.payload || err?.response?.data || err?.message || err };
+    }
+    return result;
   } catch (e) {
     return { error: e?.payload || e?.response?.data || e.message || e };
   }
@@ -1234,10 +1285,22 @@ async function autoDiscoverBitgetMeta(symbol) {
     const arr = Array.isArray(data?.data) ? data.data : [];
     const target = arr.find((entry) => String(entry?.symbol || '').toUpperCase() === spotSymbol.toUpperCase());
     if (target) {
-      const priceScale = Number(target.pricePrecision ?? target.price_scale ?? target.quotePrecision ?? 11);
-      const qtyScale = Number(target.quantityPrecision ?? target.basePrecision ?? 0);
-      const minQty = Number(target.minTradeAmount ?? target.minTradeNumber ?? 0);
-      const minQuote = Number(target.minTradeUSDT ?? target.minTradeUsd ?? target.minTradeUSDTValue ?? 0);
+      const priceScale = finiteOr(
+        target.priceScale ?? target.price_precision ?? target.pricePrecision ?? target.quotePrecision,
+        11
+      );
+      const qtyScale = finiteOr(
+        target.quantityScale ?? target.quantityPrecision ?? target.basePrecision,
+        0
+      );
+      const minQty = finiteOr(
+        target.minTradeAmount ?? target.minTradeNumber ?? target.minTradeSize,
+        0
+      );
+      const minQuote = finiteOr(
+        target.minTradeUSDT ?? target.minTradeUsd ?? target.minTradeUSDTValue ?? target.minTradeUsdValue,
+        5
+      );
       return { priceScale, qtyScale, minQty, minQuote };
     }
   } catch {}
