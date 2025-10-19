@@ -554,13 +554,15 @@ document.getElementById('autoCfg').addEventListener('click', async () => {
 document.getElementById('saveOverride').addEventListener('click', async () => {
   const sym = document.getElementById('symbolInput').value.trim().toUpperCase();
   if (!sym.includes('_')) return alert('Use BASE_QUOTE (ex.: BASE_USDT)');
+  const spotKey = getSpotKey();
+  const spotOverride = {
+    priceScale: numOrUndef('ov_gate_price'),
+    qtyScale: numOrUndef('ov_gate_qty'),
+    minQty: numOrUndef('ov_gate_minqty'),
+    minQuote: numOrUndef('ov_gate_minquote')
+  };
   const ov = {
-    gate: {
-      priceScale: numOrUndef('ov_gate_price'),
-      qtyScale: numOrUndef('ov_gate_qty'),
-      minQty: numOrUndef('ov_gate_minqty'),
-      minQuote: numOrUndef('ov_gate_minquote')
-    },
+    [spotKey]: spotOverride,
     mexc: {
       priceScale: numOrUndef('ov_mexc_price'),
       volPrecision: numOrUndef('ov_mexc_volp'),
@@ -581,7 +583,15 @@ document.getElementById('saveOverride').addEventListener('click', async () => {
   });
   const out = await safeJson(r);
   if (!out.ok) return alert('Falha ao salvar override: ' + JSON.stringify(out));
-  localStorage.setItem('override_'+sym, JSON.stringify(ov));
+  try {
+    const storageKey = 'override_' + sym;
+    const prev = JSON.parse(localStorage.getItem(storageKey) || '{}');
+    const nextStored = { ...prev };
+    nextStored[spotKey] = { ...(prev?.[spotKey] || {}), ...spotOverride };
+    nextStored.mexc = { ...(prev?.mexc || {}), ...ov.mexc };
+    nextStored.settings = { ...(prev?.settings || {}), ...ov.settings };
+    localStorage.setItem(storageKey, JSON.stringify(nextStored));
+  } catch {}
   await refreshMetaUI(sym);
 });
 

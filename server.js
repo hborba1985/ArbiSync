@@ -666,9 +666,10 @@ function canonicalQuery(params) {
   const entries = [];
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null) continue;
-    entries.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);
+    entries.push([String(key), String(value)]);
   }
-  return entries.join('&');
+  entries.sort((a, b) => a[0].localeCompare(b[0]));
+  return entries.map(([key, value]) => `${key}=${value}`).join('&');
 }
 
 async function bitgetRequest(method, path, { query, body, timeout = 10000 } = {}) {
@@ -680,10 +681,10 @@ async function bitgetRequest(method, path, { query, body, timeout = 10000 } = {}
   }
 
   const queryString = canonicalQuery(query);
-  const requestPath = `${path}${queryString ? `?${queryString}` : ''}`;
+  const requestPath = queryString ? `${path}?${queryString}` : path;
   const bodyString = body ? JSON.stringify(body) : '';
   const timestamp = String(Date.now());
-  const prehash = `${timestamp}${method.toUpperCase()}${requestPath}${bodyString}`;
+  const prehash = `${timestamp}${method.toUpperCase()}${path}${queryString ? `?${queryString}` : ''}${bodyString}`;
   const signature = crypto.createHmac('sha256', secret).update(prehash).digest('base64');
 
   const headers = {
