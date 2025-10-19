@@ -898,9 +898,8 @@ async function getBitgetBalances(symbol) {
     }
   };
 
-  const fetchAssets = async (coins) => {
-    const query = coins && coins.length ? { coin: coins.join(',') } : undefined;
-    const response = await bitgetRequest('GET', '/api/spot/v1/account/assets', { query });
+  const fetchAssets = async () => {
+    const response = await bitgetRequest('GET', '/api/spot/v1/account/assets');
     const payload = response?.data;
     if (Array.isArray(payload)) return payload;
     if (payload) return [payload];
@@ -911,45 +910,22 @@ async function getBitgetBalances(symbol) {
     const base = normalizeCoin(typeof symbol === 'string' ? symbol.split('_')[0] : null);
     const desiredCoins = Array.from(new Set([base, 'USDT'].filter(Boolean)));
     const balances = new Map();
-    let needFallback = false;
-    let fallbackError = null;
-
-    if (desiredCoins.length) {
-      try {
-        const combined = await fetchAssets(desiredCoins);
-        collectEntries(combined, balances);
-      } catch (err) {
-        if (err?.code === '40019') needFallback = true;
-        else throw err;
-      }
-    } else {
-      const allAssets = await fetchAssets();
-      collectEntries(allAssets, balances);
-    }
-
-    const missingCoins = desiredCoins.filter((coin) => !balances.has(coin));
-    if (needFallback || missingCoins.length) {
-      for (const coin of missingCoins) {
-        try {
-          const single = await fetchAssets([coin]);
-          collectEntries(single, balances);
-        } catch (err) {
-          if (!fallbackError) fallbackError = err;
-        }
-      }
-    }
+    const allAssets = await fetchAssets();
+    collectEntries(allAssets, balances);
 
     const result = {};
-    for (const [coin, info] of balances.entries()) {
-      result[coin] = info;
-    }
-    if (!balances.size && fallbackError) {
-      const err = fallbackError;
-      return { error: err?.payload || err?.response?.data || err?.message || err };
+    if (desiredCoins.length) {
+      for (const coin of desiredCoins) {
+        result[coin] = balances.get(coin) || { available: 0, locked: 0 };
+      }
+    } else {
+      for (const [coin, info] of balances.entries()) {
+        result[coin] = info;
+      }
     }
     return result;
-  } catch (e) {
-    return { error: e?.payload || e?.response?.data || e.message || e };
+  } catch (err) {
+    return { error: err?.payload || err?.response?.data || err.message || err };
   }
 }
 
