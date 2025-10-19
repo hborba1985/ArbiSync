@@ -1878,14 +1878,14 @@ app.get('/api/data', async (_req, res) => {
     const closeVolumesSnapshot = normalizeVolumeSnapshot(closeLevels);
     const positionArbSnapshot = Number(positionState?.arbPctAvg);
     try {
-      db.saveSpreadSnapshot(symbol, nowTs,
+      db.saveSpreadSnapshot(symbol, spotInfo.normalized, nowTs,
         Number.isFinite(openSpread) ? openSpread : null,
         Number.isFinite(closeSpread) ? closeSpread : null,
         openVolumesSnapshot,
         closeVolumesSnapshot,
         Number.isFinite(positionArbSnapshot) ? positionArbSnapshot : null
       );
-      db.pruneSpreadSnapshots(symbol, nowTs - SPREAD_WINDOW_MS);
+      db.pruneSpreadSnapshots(symbol, spotInfo.normalized, nowTs - SPREAD_WINDOW_MS);
     } catch (err) {
       console.warn('[SQLite] Falha ao registrar spread:', err?.message || err);
     }
@@ -1908,11 +1908,13 @@ app.get('/api/data', async (_req, res) => {
 app.get('/api/spreads', (req, res) => {
   const symbol = String(req.query.symbol || currentSymbol || '').toUpperCase();
   if (!symbol) return res.status(400).json({ error: 'Símbolo inválido.' });
+  const requestedSpot = normalizeSpotExchange(req.query.spotExchange || currentSpotExchange);
+  const spotInfo = getSpotInfo(requestedSpot);
   const nowTs = Date.now();
   const since = nowTs - SPREAD_WINDOW_MS;
   let rows = [];
   try {
-    rows = db.loadSpreadSnapshots(symbol, since);
+    rows = db.loadSpreadSnapshots(symbol, requestedSpot, since);
   } catch (e) {
     console.warn('[SQLite] Falha ao carregar spreads:', e?.message || e);
     return res.status(500).json({ error: 'Erro ao carregar spreads.' });
@@ -1965,6 +1967,7 @@ app.get('/api/spreads', (req, res) => {
 
   res.json({
     symbol,
+    spotExchange: { key: spotInfo.normalized, label: spotInfo.label },
     windowStart: since,
     windowEnd: nowTs,
     points,
@@ -1978,9 +1981,10 @@ app.get('/api/spreads', (req, res) => {
 app.delete('/api/spreads', (req, res) => {
   const symbol = String(req.query.symbol || currentSymbol || '').toUpperCase();
   if (!symbol) return res.status(400).json({ error: 'Símbolo inválido.' });
+  const requestedSpot = normalizeSpotExchange(req.query.spotExchange || currentSpotExchange);
   try {
-    db.clearSpreadSnapshots(symbol);
-    res.json({ ok: true });
+    db.clearSpreadSnapshots(symbol, requestedSpot);
+    res.json({ ok: true, spotExchange: requestedSpot });
   } catch (e) {
     console.warn('[SQLite] Falha ao limpar spreads:', e?.message || e);
     res.status(500).json({ error: 'Erro ao limpar spreads.' });

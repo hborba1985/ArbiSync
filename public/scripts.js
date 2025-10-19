@@ -15,6 +15,13 @@ let currentBaseSymbol = null;
 
 const DEFAULT_SPOT = { key: 'gate', label: 'Gate.io' };
 let currentSpot = { ...DEFAULT_SPOT };
+let pendingSpotSelection = null;
+let spreadChart = null;
+let spreadPoints = [];
+const spreadSeriesBySpot = new Map();
+const lastSpreadFetchBySpot = new Map();
+let lastRequestedSpotKey = null;
+let spotGuardUntil = 0;
 
 function getSpotLabel() {
   return currentSpot?.label || DEFAULT_SPOT.label;
@@ -55,11 +62,30 @@ function setSpotExchangeState(info) {
   }
   if (!key) key = DEFAULT_SPOT.key;
   if (!label) label = key === 'bitget' ? 'Bitget' : DEFAULT_SPOT.label;
+  const now = Date.now();
+  if (lastRequestedSpotKey && lastRequestedSpotKey !== key && now < spotGuardUntil) {
+    return;
+  }
+  if (pendingSpotSelection && pendingSpotSelection !== key) return;
+  const previousKey = currentSpot?.key;
   currentSpot = { key, label };
   updateSpotSelect();
   updateSpotLabelElements();
   document.body.dataset.spotExchange = key;
   refreshDocumentTitle();
+  let series = spreadSeriesBySpot.get(key);
+  if (!series) {
+    series = [];
+    spreadSeriesBySpot.set(key, series);
+  }
+  spreadPoints = series;
+  if (previousKey && previousKey !== key) {
+    renderSpreadChart();
+  }
+  if (lastRequestedSpotKey && lastRequestedSpotKey === key && !pendingSpotSelection) {
+    lastRequestedSpotKey = null;
+    spotGuardUntil = 0;
+  }
 }
 
 function setCurrentSymbol(sym) {
@@ -439,10 +465,42 @@ if (refreshBalancesBtn) refreshBalancesBtn.addEventListener('click', refreshBala
 
 const spotSelectEl = document.getElementById('spotExchangeSelect');
 if (spotSelectEl) {
-  spotSelectEl.addEventListener('change', () => {
+  spotSelectEl.addEventListener('change', async () => {
+    const raw = spotSelectEl.value || '';
+    const key = raw.toLowerCase();
+    if (!key || key === getSpotKey()) {
+      return;
+    }
     const option = spotSelectEl.options[spotSelectEl.selectedIndex];
     const label = option ? option.textContent : null;
-    setSpotExchangeState({ key: spotSelectEl.value, label });
+    pendingSpotSelection = key;
+    lastRequestedSpotKey = key;
+    spotGuardUntil = Date.now() + 4000;
+    setSpotExchangeState({ key, label });
+    try { localStorage.setItem('lastSpotExchange', key); } catch {}
+    try {
+      const normalizedSymbol = await setSymbol(null, key);
+      if (normalizedSymbol) {
+        document.getElementById('titleSymbol').textContent = normalizedSymbol;
+      }
+      const activeSymbol = currentSymbol;
+      if (activeSymbol) {
+        await refreshMetaUI(activeSymbol);
+      }
+      await refreshBalances();
+      await fetchData();
+      await fetchSpreadData(true, key);
+    } catch (err) {
+      console.warn('Falha ao alterar corretora spot:', err);
+      alert('Falha ao alterar a corretora spot: ' + (err?.message || err));
+      lastRequestedSpotKey = null;
+      spotGuardUntil = 0;
+      await fetchData();
+    } finally {
+      if (pendingSpotSelection === key) {
+        pendingSpotSelection = null;
+      }
+    }
   });
 }
 
@@ -542,7 +600,7 @@ document.getElementById('applySymbol').addEventListener('click', async () => {
   await refreshMetaUI(sym);
   await refreshBalances();
   await fetchData();
-  await fetchSpreadData(true);
+  await fetchSpreadData(true, getSpotKey());
 });
 
 document.getElementById('autoCfg').addEventListener('click', async () => {
@@ -660,10 +718,7 @@ let telegramIncludeDiff = loadFlag('tgIncludeDiff', true);
 let telegramIncludeVolumes = loadFlag('tgIncludeVolumes', false);
 let audioCtx = null, lastBeep = 0, lastTgSent = 0;
 
-let spreadChart = null;
-let spreadPoints = [];
 let spreadFilter = 'all';
-let lastSpreadFetch = 0;
 const SPREAD_RANGE_WINDOWS = {
   '5min': 5 * 60 * 1000,
   '15min': 15 * 60 * 1000,
@@ -1729,18 +1784,34 @@ function renderSpreadChart() {
   chart.update('none');
 }
 
-async function fetchSpreadData(force = false) {
+async function fetchSpreadData(force = false, spotKey = getSpotKey()) {
+  const key = (spotKey || '').toLowerCase() || DEFAULT_SPOT.key;
   const now = Date.now();
-  if (!force && now - lastSpreadFetch < 10000) return;
-  lastSpreadFetch = now;
+  const lastFetch = lastSpreadFetchBySpot.get(key) || 0;
+  if (!force && now - lastFetch < 10000) return;
+  lastSpreadFetchBySpot.set(key, now);
+  let activeKey = key;
   try {
     const symbol = lastQuotes?.symbol;
-    const url = symbol ? `/api/spreads?symbol=${encodeURIComponent(symbol)}` : '/api/spreads';
+    const params = new URLSearchParams();
+    if (symbol) params.set('symbol', symbol);
+    if (key) params.set('spotExchange', key);
+    const qs = params.toString();
+    const url = qs ? `/api/spreads?${qs}` : '/api/spreads';
     const resp = await fetch(url);
     const data = await safeJson(resp);
     if (!resp.ok) throw new Error(data?.error || 'Falha ao carregar spreads.');
+    let responseKey = key;
+    if (data?.spotExchange) {
+      setSpotExchangeState(data.spotExchange);
+      if (data.spotExchange?.key) {
+        responseKey = String(data.spotExchange.key || '').toLowerCase() || key;
+      }
+    }
+    const normalizedKey = responseKey || key;
+    activeKey = normalizedKey;
     const pts = Array.isArray(data.points) ? data.points : [];
-    spreadPoints = pts.map((entry) => {
+    const mapped = pts.map((entry) => {
       const ts = Number(entry.ts);
       const openRaw = entry.open;
       const closeRaw = entry.close;
@@ -1764,13 +1835,20 @@ async function fetchSpreadData(force = false) {
         closeVolumes: parseVolumeArray(entry.closeVolumes)
       };
     });
-    spreadPoints.sort((a, b) => Number(a.ts) - Number(b.ts));
-    renderSpreadChart();
+    mapped.sort((a, b) => Number(a.ts) - Number(b.ts));
+    spreadSeriesBySpot.set(normalizedKey, mapped);
+    if (getSpotKey() === normalizedKey) {
+      spreadPoints = mapped;
+      renderSpreadChart();
+    }
   } catch (e) {
     console.warn('Falha ao carregar spreads:', e?.message || e);
     if (force) {
-      spreadPoints = [];
-      renderSpreadChart();
+      spreadSeriesBySpot.set(activeKey, []);
+      if (getSpotKey() === activeKey) {
+        spreadPoints = [];
+        renderSpreadChart();
+      }
     }
   }
 }
@@ -1841,12 +1919,16 @@ if (clearSpreadBtn) {
     }
     if (!confirm(`Apagar dados armazenados de ${symbol}?`)) return;
     try {
-      const resp = await fetch(`/api/spreads?symbol=${encodeURIComponent(symbol)}`, { method: 'DELETE' });
+      const params = new URLSearchParams({ symbol });
+      const spotKey = getSpotKey();
+      if (spotKey) params.set('spotExchange', spotKey);
+      const resp = await fetch(`/api/spreads?${params.toString()}`, { method: 'DELETE' });
       const out = await safeJson(resp);
       if (!resp.ok || out?.ok === false) {
         alert('Falha ao limpar dados: ' + JSON.stringify(out));
         return;
       }
+      spreadSeriesBySpot.set(spotKey, []);
       spreadPoints = [];
       updateSpreadStats(null);
       renderSpreadChart();
@@ -1856,7 +1938,7 @@ if (clearSpreadBtn) {
   });
 }
 
-fetchSpreadData(true);
+fetchSpreadData(true, getSpotKey());
 
 // ======== Histórico / Posição
 async function refreshHistory() {

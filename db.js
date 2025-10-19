@@ -45,11 +45,12 @@ CREATE TABLE IF NOT EXISTS position_summaries (
 CREATE TABLE IF NOT EXISTS spread_snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   symbol TEXT NOT NULL,
+  spot_exchange TEXT NOT NULL DEFAULT 'gate',
   ts INTEGER NOT NULL,
   open_spread REAL,
   close_spread REAL
 );
-CREATE INDEX IF NOT EXISTS idx_spread_symbol_ts ON spread_snapshots(symbol, ts);
+CREATE INDEX IF NOT EXISTS idx_spread_symbol_exchange_ts ON spread_snapshots(symbol, spot_exchange, ts);
 `);
 
 // Migração simples: garante colunas gate_status e mexc_status
@@ -60,6 +61,7 @@ try { db.exec('ALTER TABLE position_summaries ADD COLUMN note TEXT'); } catch {}
 try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN open_volumes TEXT'); } catch {}
 try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN close_volumes TEXT'); } catch {}
 try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN position_arb_pct REAL'); } catch {}
+try { db.exec("ALTER TABLE spread_snapshots ADD COLUMN spot_exchange TEXT DEFAULT 'gate'"); } catch {}
 
 const upsertOverrideStmt = db.prepare(`
 INSERT INTO overrides(symbol, override_json, updated_at)
@@ -93,6 +95,11 @@ function toBind(v) {
   if (t === 'string' || t === 'number' || t === 'bigint') return v;
   if (Buffer.isBuffer(v)) return v;
   try { return String(v); } catch { return null; }
+}
+
+function normalizeSpotExchangeKey(value) {
+  const key = String(value || 'gate').toLowerCase();
+  return key === 'bitget' ? 'bitget' : 'gate';
 }
 
 const insertHistoryStmt = db.prepare(`
@@ -199,13 +206,13 @@ function loadPositionSummaries(limit = 20) {
 }
 
 const insertSpreadSnapshotStmt = db.prepare(`
-INSERT INTO spread_snapshots(symbol, ts, open_spread, close_spread, open_volumes, close_volumes, position_arb_pct)
-VALUES (@symbol, @ts, @open, @close, @openVolumes, @closeVolumes, @positionArb)
+INSERT INTO spread_snapshots(symbol, spot_exchange, ts, open_spread, close_spread, open_volumes, close_volumes, position_arb_pct)
+VALUES (@symbol, @spotExchange, @ts, @open, @close, @openVolumes, @closeVolumes, @positionArb)
 `);
 
 const pruneSpreadSnapshotsStmt = db.prepare(`
 DELETE FROM spread_snapshots
-WHERE symbol = @symbol AND ts < @cutoff
+WHERE symbol = @symbol AND spot_exchange = @spotExchange AND ts < @cutoff
 `);
 
 const loadSpreadSnapshotsStmt = db.prepare(`
@@ -213,18 +220,19 @@ SELECT ts, open_spread AS open, close_spread AS close,
        open_volumes AS openVolumes, close_volumes AS closeVolumes,
        position_arb_pct AS positionArb
 FROM spread_snapshots
-WHERE symbol = @symbol AND ts >= @since
+WHERE symbol = @symbol AND spot_exchange = @spotExchange AND ts >= @since
 ORDER BY ts ASC
 `);
 
 const clearSpreadSnapshotsStmt = db.prepare(`
-DELETE FROM spread_snapshots WHERE symbol = @symbol
+DELETE FROM spread_snapshots WHERE symbol = @symbol AND spot_exchange = @spotExchange
 `);
 
-function saveSpreadSnapshot(symbol, ts, openSpread, closeSpread, openVolumes, closeVolumes, positionArb) {
+function saveSpreadSnapshot(symbol, spotExchange, ts, openSpread, closeSpread, openVolumes, closeVolumes, positionArb) {
   if (!symbol) return;
   const payload = {
     symbol: String(symbol).toUpperCase(),
+    spotExchange: normalizeSpotExchangeKey(spotExchange),
     ts: Number.isFinite(ts) ? Math.trunc(ts) : Date.now(),
     open: Number.isFinite(openSpread) ? openSpread : null,
     close: Number.isFinite(closeSpread) ? closeSpread : null,
@@ -235,20 +243,31 @@ function saveSpreadSnapshot(symbol, ts, openSpread, closeSpread, openVolumes, cl
   insertSpreadSnapshotStmt.run(payload);
 }
 
-function pruneSpreadSnapshots(symbol, cutoffTs) {
+function pruneSpreadSnapshots(symbol, spotExchange, cutoffTs) {
   if (!symbol || !Number.isFinite(cutoffTs)) return;
-  pruneSpreadSnapshotsStmt.run({ symbol: String(symbol).toUpperCase(), cutoff: Math.trunc(cutoffTs) });
+  pruneSpreadSnapshotsStmt.run({
+    symbol: String(symbol).toUpperCase(),
+    spotExchange: normalizeSpotExchangeKey(spotExchange),
+    cutoff: Math.trunc(cutoffTs)
+  });
 }
 
-function loadSpreadSnapshots(symbol, sinceTs) {
+function loadSpreadSnapshots(symbol, spotExchange, sinceTs) {
   if (!symbol) return [];
   const since = Number.isFinite(sinceTs) ? Math.trunc(sinceTs) : 0;
-  return loadSpreadSnapshotsStmt.all({ symbol: String(symbol).toUpperCase(), since });
+  return loadSpreadSnapshotsStmt.all({
+    symbol: String(symbol).toUpperCase(),
+    spotExchange: normalizeSpotExchangeKey(spotExchange),
+    since
+  });
 }
 
-function clearSpreadSnapshots(symbol) {
+function clearSpreadSnapshots(symbol, spotExchange) {
   if (!symbol) return;
-  clearSpreadSnapshotsStmt.run({ symbol: String(symbol).toUpperCase() });
+  clearSpreadSnapshotsStmt.run({
+    symbol: String(symbol).toUpperCase(),
+    spotExchange: normalizeSpotExchangeKey(spotExchange)
+  });
 }
 
 module.exports = {
