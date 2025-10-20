@@ -23,6 +23,247 @@ const lastSpreadFetchBySpot = new Map();
 let lastRequestedSpotKey = null;
 let spotGuardUntil = 0;
 
+const instances = new Map();
+let activeInstanceId = null;
+let switchingInstance = false;
+
+function generateInstanceId() {
+  return `inst_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
+}
+
+function getActiveInstance() {
+  return activeInstanceId ? instances.get(activeInstanceId) : null;
+}
+
+function persistInstances() {
+  try {
+    const serialized = Array.from(instances.values()).map((inst) => ({
+      id: inst.id,
+      symbol: inst.symbol,
+      spotExchange: inst.spotExchange,
+      label: inst.label,
+      draftSymbol: inst.draftSymbol
+    }));
+    localStorage.setItem('arb_instances', JSON.stringify(serialized));
+    localStorage.setItem('arb_active_instance', activeInstanceId || '');
+  } catch (e) {
+    console.warn('persistInstances falhou:', e);
+  }
+}
+
+function renderInstanceTabs() {
+  const container = document.getElementById('instanceTabs');
+  if (!container) return;
+  container.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  for (const inst of instances.values()) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'instance-tab' + (inst.id === activeInstanceId ? ' active' : '');
+    btn.dataset.instanceId = inst.id;
+    const label = document.createElement('span');
+    label.className = 'instance-tab-label';
+    label.textContent = inst.label || inst.symbol || '—';
+    btn.appendChild(label);
+    if (instances.size > 1) {
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'instance-tab-close';
+      close.dataset.closeInstanceId = inst.id;
+      close.textContent = '×';
+      btn.appendChild(close);
+    }
+    frag.appendChild(btn);
+  }
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'instance-tab add-tab';
+  addBtn.id = 'addInstanceTab';
+  addBtn.textContent = '+ Nova aba';
+  frag.appendChild(addBtn);
+  container.appendChild(frag);
+
+  container.querySelectorAll('.instance-tab[data-instance-id]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.instanceId;
+      if (id) switchInstance(id);
+    });
+  });
+  container.querySelectorAll('.instance-tab-close').forEach((closeBtn) => {
+    closeBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const id = closeBtn.dataset.closeInstanceId;
+      if (id) removeInstance(id);
+    });
+  });
+  addBtn.addEventListener('click', () => {
+    const suggested = getActiveInstance()?.symbol || 'BASE_USDT';
+    const raw = prompt('Qual símbolo deseja negociar? (ex.: MGO_USDT)', suggested);
+    if (!raw) return;
+    const sym = raw.trim().toUpperCase();
+    if (!sym.includes('_')) {
+      alert('Use o formato BASE_QUOTE, por exemplo MGO_USDT.');
+      return;
+    }
+    addInstance({ symbol: sym, spotExchange: getSpotKey(), label: sym, draftSymbol: sym }, { switchTo: true });
+  });
+}
+
+function addInstance({ id, symbol, spotExchange, label, draftSymbol } = {}, { switchTo = false } = {}) {
+  const instId = id || generateInstanceId();
+  const sym = (symbol || 'BASE_USDT').toUpperCase();
+  const spot = (spotExchange || getSpotKey() || DEFAULT_SPOT.key).toLowerCase();
+  const draft = draftSymbol ? draftSymbol.toUpperCase() : sym;
+  const instance = {
+    id: instId,
+    symbol: sym,
+    spotExchange: spot,
+    label: label || sym,
+    draftSymbol: draft
+  };
+  instances.set(instId, instance);
+  persistInstances();
+  renderInstanceTabs();
+  if (switchTo) {
+    switchInstance(instId);
+  }
+  return instance;
+}
+
+function removeInstance(id) {
+  if (!instances.has(id) || instances.size <= 1) return;
+  const isActive = id === activeInstanceId;
+  instances.delete(id);
+  if (isActive) {
+    const first = instances.keys().next().value;
+    if (first) {
+      activeInstanceId = null;
+      switchInstance(first);
+    } else {
+      activeInstanceId = null;
+      persistInstances();
+      renderInstanceTabs();
+    }
+  } else {
+    persistInstances();
+    renderInstanceTabs();
+  }
+}
+
+function syncSymbolInput() {
+  const input = document.getElementById('symbolInput');
+  if (!input || document.activeElement === input) return;
+  const inst = getActiveInstance();
+  const value = inst ? (inst.draftSymbol || inst.symbol || '') : (currentSymbol || '');
+  input.value = value;
+}
+
+function syncActiveInstanceSymbol(sym) {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  const prevSymbol = inst.symbol;
+  let changed = false;
+  if (inst.symbol !== sym) {
+    inst.symbol = sym;
+    changed = true;
+  }
+  if (!inst.draftSymbol || inst.draftSymbol === prevSymbol) {
+    if (inst.draftSymbol !== sym) changed = true;
+    inst.draftSymbol = sym;
+  }
+  if (!inst.label || inst.label === prevSymbol) {
+    if (inst.label !== sym) changed = true;
+    inst.label = sym;
+  }
+  if (changed) {
+    persistInstances();
+    renderInstanceTabs();
+  }
+  const titleEl = document.getElementById('titleSymbol');
+  if (titleEl) titleEl.textContent = sym;
+  syncSymbolInput();
+}
+
+function syncActiveInstanceSpot(key) {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  const normalized = key || inst.spotExchange;
+  if (inst.spotExchange === normalized) return;
+  inst.spotExchange = normalized;
+  persistInstances();
+  renderInstanceTabs();
+}
+
+async function switchInstance(id, { skipPersist = false } = {}) {
+  if (!instances.has(id)) return;
+  if (activeInstanceId === id) return;
+  if (switchingInstance) {
+    setTimeout(() => switchInstance(id), 200);
+    return;
+  }
+  switchingInstance = true;
+  const prevInstance = getActiveInstance();
+  if (prevInstance) {
+    const input = document.getElementById('symbolInput');
+    if (input) {
+      const draft = input.value.trim().toUpperCase();
+      if (draft) prevInstance.draftSymbol = draft;
+    }
+    prevInstance.spotExchange = getSpotKey();
+  }
+  activeInstanceId = id;
+  if (!skipPersist) persistInstances();
+  renderInstanceTabs();
+  const inst = getActiveInstance();
+  if (!inst) {
+    switchingInstance = false;
+    return;
+  }
+
+  spreadSeriesBySpot.clear();
+  spreadPoints = [];
+  lastSpreadFetchBySpot.clear();
+  renderSpreadChart();
+  lastQuotes = null;
+  renderQuotes();
+
+  const inputEl = document.getElementById('symbolInput');
+  if (inputEl) inputEl.value = inst.draftSymbol || inst.symbol || '';
+  setSpotExchangeState({ key: inst.spotExchange });
+  updateSpotSelect();
+
+  try {
+    const normalized = await setSymbol(inst.symbol, inst.spotExchange);
+    if (normalized) {
+      const prevSymbol = inst.symbol;
+      const prevDraft = inst.draftSymbol;
+      inst.symbol = normalized;
+      if (!prevDraft || prevDraft === prevSymbol) inst.draftSymbol = normalized;
+      if (!inst.label || inst.label === prevSymbol) inst.label = normalized;
+    }
+  } catch (e) {
+    console.warn('Falha ao aplicar símbolo da aba:', e);
+    alert('Falha ao aplicar o símbolo da aba: ' + (e?.message || e));
+  }
+
+  const sym = inst.symbol || currentSymbol || 'BASE_USDT';
+  document.getElementById('titleSymbol').textContent = sym;
+  refreshDocumentTitle();
+  persistInstances();
+
+  try {
+    await refreshMetaUI(sym);
+    setModeFromStorage();
+    await refreshBalances();
+    await fetchData();
+    await fetchSpreadData(true, getSpotKey());
+    await refreshHistory();
+    await refreshPosition();
+  } finally {
+    switchingInstance = false;
+  }
+}
+
 function getSpotLabel() {
   return currentSpot?.label || DEFAULT_SPOT.label;
 }
@@ -86,6 +327,7 @@ function setSpotExchangeState(info) {
     lastRequestedSpotKey = null;
     spotGuardUntil = 0;
   }
+  syncActiveInstanceSpot(key);
 }
 
 function setCurrentSymbol(sym) {
@@ -96,6 +338,7 @@ function setCurrentSymbol(sym) {
   if (normalized) currentBaseSymbol = normalized;
   updateBaseSymbolUI();
   refreshDocumentTitle();
+  syncActiveInstanceSymbol(sym);
 }
 
 async function getSymbol() {
@@ -477,7 +720,6 @@ if (spotSelectEl) {
     lastRequestedSpotKey = key;
     spotGuardUntil = Date.now() + 4000;
     setSpotExchangeState({ key, label });
-    try { localStorage.setItem('lastSpotExchange', key); } catch {}
     try {
       const normalizedSymbol = await setSymbol(null, key);
       if (normalizedSymbol) {
@@ -490,6 +732,13 @@ if (spotSelectEl) {
       await refreshBalances();
       await fetchData();
       await fetchSpreadData(true, key);
+      const inst = getActiveInstance();
+      if (inst) {
+        if (normalizedSymbol) inst.symbol = normalizedSymbol;
+        inst.spotExchange = key;
+        persistInstances();
+        renderInstanceTabs();
+      }
     } catch (err) {
       console.warn('Falha ao alterar corretora spot:', err);
       alert('Falha ao alterar a corretora spot: ' + (err?.message || err));
@@ -589,15 +838,33 @@ async function refreshMetaUI(symbol) {
 }
 
 document.getElementById('applySymbol').addEventListener('click', async () => {
-  const sym = document.getElementById('symbolInput').value.trim().toUpperCase();
-  if (!sym.includes('_')) return alert('Use BASE_QUOTE (ex.: BASE_USDT)');
+  const inst = getActiveInstance();
+  const inputEl = document.getElementById('symbolInput');
+  const sym = inputEl ? inputEl.value.trim().toUpperCase() : '';
+  if (!sym.includes('_')) {
+    alert('Use BASE_QUOTE (ex.: BASE_USDT)');
+    return;
+  }
   const select = document.getElementById('spotExchangeSelect');
   const exchangeKey = select ? select.value : getSpotKey();
-  await setSymbol(sym, exchangeKey);
-  localStorage.setItem('lastSymbol', sym);
-  try { localStorage.setItem('lastSpotExchange', exchangeKey); } catch {}
-  document.getElementById('titleSymbol').textContent = sym;
-  await refreshMetaUI(sym);
+  let normalized = sym;
+  try {
+    normalized = await setSymbol(sym, exchangeKey);
+  } catch (err) {
+    alert('Falha ao aplicar o símbolo: ' + (err?.message || err));
+    return;
+  }
+  if (inst) {
+    inst.symbol = normalized;
+    inst.draftSymbol = normalized;
+    inst.spotExchange = exchangeKey;
+    inst.label = inst.label && inst.label !== sym ? inst.label : normalized;
+  }
+  if (inputEl) inputEl.value = normalized;
+  document.getElementById('titleSymbol').textContent = normalized;
+  persistInstances();
+  renderInstanceTabs();
+  await refreshMetaUI(normalized);
   await refreshBalances();
   await fetchData();
   await fetchSpreadData(true, getSpotKey());
@@ -608,6 +875,18 @@ document.getElementById('autoCfg').addEventListener('click', async () => {
   if (!sym.includes('_')) return alert('Use BASE_QUOTE (ex.: BASE_USDT)');
   await refreshMetaUI(sym);
 });
+
+const symbolInputEl = document.getElementById('symbolInput');
+if (symbolInputEl) {
+  symbolInputEl.addEventListener('input', (ev) => {
+    const next = ev.target.value.toUpperCase();
+    if (next !== ev.target.value) ev.target.value = next;
+    const inst = getActiveInstance();
+    if (!inst) return;
+    inst.draftSymbol = next.trim();
+    persistInstances();
+  });
+}
 
 document.getElementById('saveOverride').addEventListener('click', async () => {
   const sym = document.getElementById('symbolInput').value.trim().toUpperCase();
@@ -1944,7 +2223,16 @@ fetchSpreadData(true, getSpotKey());
 async function refreshHistory() {
   try {
     const r = await fetch('/api/history');
-    const hist = await r.json();
+    const data = await r.json();
+    const symbol = currentSymbol;
+    const hist = Array.isArray(data)
+      ? data.filter((item) => {
+          if (!item) return false;
+          if (!symbol) return true;
+          if (!item.symbol) return true;
+          return String(item.symbol).toUpperCase() === String(symbol).toUpperCase();
+        })
+      : [];
     const tbody = document.getElementById('historyBody');
     tbody.innerHTML = '';
     hist.forEach(h => {
@@ -2531,25 +2819,61 @@ if (positionDismantleBtn) {
 // ======== Gráfico simples
 // ======== Init
 (async function init() {
-  const last = localStorage.getItem('lastSymbol');
-  const lastExchange = localStorage.getItem('lastSpotExchange');
+  setupCardToggles();
+
+  let storedInstances = [];
+  try {
+    storedInstances = JSON.parse(localStorage.getItem('arb_instances') || '[]');
+    if (!Array.isArray(storedInstances)) storedInstances = [];
+  } catch {
+    storedInstances = [];
+  }
+
+  storedInstances.forEach((item) => {
+    if (!item || typeof item !== 'object') return;
+    addInstance({
+      id: item.id,
+      symbol: typeof item.symbol === 'string' ? item.symbol.toUpperCase() : undefined,
+      spotExchange: typeof item.spotExchange === 'string' ? item.spotExchange : undefined,
+      label: typeof item.label === 'string' ? item.label : undefined,
+      draftSymbol: typeof item.draftSymbol === 'string' ? item.draftSymbol : undefined
+    }, { switchTo: false });
+  });
+
   const serverSym = await getSymbol();
   const serverExchange = getSpotKey();
-  let sym = last || serverSym || 'BASE_USDT';
-  let exchangeKey = lastExchange || serverExchange || getSpotKey();
-  setupCardToggles();
-  document.getElementById('symbolInput').value = sym;
-  document.getElementById('titleSymbol').textContent = sym;
-  setSpotExchangeState({ key: exchangeKey });
-  updateSpotSelect();
-  if (sym !== serverSym || exchangeKey !== serverExchange) {
-    await setSymbol(sym, exchangeKey);
+
+  if (instances.size === 0) {
+    addInstance({ id: 'default', symbol: serverSym || 'BASE_USDT', spotExchange: serverExchange, label: serverSym || 'BASE_USDT', draftSymbol: serverSym || 'BASE_USDT' }, { switchTo: false });
   }
-  await refreshMetaUI(sym);
-  setModeFromStorage();
+
+  let desiredActive = null;
+  try {
+    const storedActive = localStorage.getItem('arb_active_instance');
+    if (storedActive && instances.has(storedActive)) desiredActive = storedActive;
+  } catch {}
+  if (!desiredActive) {
+    desiredActive = instances.keys().next().value;
+  }
+
+  const inst = desiredActive ? instances.get(desiredActive) : null;
+  if (inst) {
+    if (!inst.symbol) inst.symbol = (serverSym || 'BASE_USDT');
+    if (!inst.draftSymbol) inst.draftSymbol = inst.symbol;
+    if (!inst.spotExchange) inst.spotExchange = serverExchange || DEFAULT_SPOT.key;
+  }
+
+  renderInstanceTabs();
+  activeInstanceId = null;
+  if (desiredActive) {
+    await switchInstance(desiredActive, { skipPersist: true });
+  }
+  persistInstances();
+
   if (isFinite(alertMin)) document.getElementById('alertMin').value = alertMin;
   if (isFinite(alertMax)) document.getElementById('alertMax').value = alertMax;
-  document.getElementById('soundToggle').checked = soundEnabled;
-  document.getElementById('telegramToggle').checked = telegramEnabled;
-  refreshBalances(); refreshHistory(); refreshPosition(); fetchData();
+  const soundToggle = document.getElementById('soundToggle');
+  if (soundToggle) soundToggle.checked = soundEnabled;
+  const telegramToggle = document.getElementById('telegramToggle');
+  if (telegramToggle) telegramToggle.checked = telegramEnabled;
 })();
