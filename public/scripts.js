@@ -18,14 +18,127 @@ let currentSpot = { ...DEFAULT_SPOT };
 let pendingSpotSelection = null;
 let spreadChart = null;
 let spreadPoints = [];
-const spreadSeriesBySpot = new Map();
-const lastSpreadFetchBySpot = new Map();
+let spreadSeriesBySpot = new Map();
+let lastSpreadFetchBySpot = new Map();
 let lastRequestedSpotKey = null;
 let spotGuardUntil = 0;
 
 const instances = new Map();
 let activeInstanceId = null;
 let switchingInstance = false;
+
+const DEFAULT_DATASET_VISIBILITY = {
+  open: true,
+  close: false,
+  positionArb: false,
+  openVol0: false,
+  openVol1: false,
+  openVol2: false,
+  closeVol0: false,
+  closeVol1: false,
+  closeVol2: false,
+  cross: false
+};
+
+function createDefaultDatasetVisibility() {
+  return { ...DEFAULT_DATASET_VISIBILITY };
+}
+
+function ensureInstanceState(inst) {
+  if (!inst) return null;
+  if (!inst._state) {
+    inst._state = {
+      lastQuotes: null,
+      spreadSeriesBySpot: new Map(),
+      spreadPoints: [],
+      lastSpreadFetchBySpot: new Map(),
+      fetchIntervals: { quotes: null, spreads: null },
+      meta: null,
+      metaSymbol: null,
+      metaLoading: false,
+      datasetVisibility: createDefaultDatasetVisibility()
+    };
+  } else {
+    if (!inst._state.spreadSeriesBySpot) inst._state.spreadSeriesBySpot = new Map();
+    if (!inst._state.lastSpreadFetchBySpot) inst._state.lastSpreadFetchBySpot = new Map();
+    if (!Array.isArray(inst._state.spreadPoints)) inst._state.spreadPoints = [];
+    if (!inst._state.fetchIntervals) inst._state.fetchIntervals = { quotes: null, spreads: null };
+    if (!inst._state.datasetVisibility) inst._state.datasetVisibility = createDefaultDatasetVisibility();
+    if (typeof inst._state.metaSymbol !== 'string') inst._state.metaSymbol = inst._state.metaSymbol || null;
+    if (typeof inst._state.metaLoading !== 'boolean') inst._state.metaLoading = false;
+  }
+  return inst._state;
+}
+
+function resetInstanceDataState(inst) {
+  const state = ensureInstanceState(inst);
+  if (!state) return;
+  state.lastQuotes = null;
+  state.spreadSeriesBySpot = new Map();
+  state.lastSpreadFetchBySpot = new Map();
+  state.spreadPoints = [];
+  if (inst?.id === activeInstanceId) {
+    spreadSeriesBySpot = state.spreadSeriesBySpot;
+    lastSpreadFetchBySpot = state.lastSpreadFetchBySpot;
+    spreadPoints = state.spreadPoints;
+    lastQuotes = null;
+    renderSpreadChart();
+    renderQuotes();
+  }
+}
+
+function captureChartVisibilityToState(state) {
+  if (!state || !spreadChart) return;
+  if (spreadFilter !== 'all') return;
+  const visibility = state.datasetVisibility || createDefaultDatasetVisibility();
+  spreadChart.data.datasets.forEach((dataset, idx) => {
+    const meta = spreadChart.getDatasetMeta(idx);
+    const hidden = meta.hidden === true;
+    visibility[dataset.id] = !hidden;
+  });
+  state.datasetVisibility = visibility;
+}
+
+function applyChartVisibilityFromState(state) {
+  if (!state || !spreadChart) return;
+  if (spreadFilter !== 'all') return;
+  const visibility = state.datasetVisibility || createDefaultDatasetVisibility();
+  spreadChart.data.datasets.forEach((dataset, idx) => {
+    const visible = visibility[dataset.id];
+    const meta = spreadChart.getDatasetMeta(idx);
+    if (typeof visible === 'boolean') {
+      dataset.hidden = !visible;
+      meta.hidden = visible ? null : true;
+    }
+  });
+}
+
+function startInstanceWatchers(inst) {
+  const state = ensureInstanceState(inst);
+  if (!state) return;
+  if (!state.fetchIntervals.quotes) {
+    state.fetchIntervals.quotes = setInterval(() => fetchDataForInstance(inst), 1000);
+    fetchDataForInstance(inst);
+  }
+  if (!state.fetchIntervals.spreads) {
+    state.fetchIntervals.spreads = setInterval(() => fetchSpreadDataForInstance(inst), 15000);
+    fetchSpreadDataForInstance(inst, true);
+  }
+  ensureInstanceMeta(inst);
+}
+
+function stopInstanceWatchers(inst) {
+  const state = ensureInstanceState(inst);
+  if (!state || !state.fetchIntervals) return;
+  if (state.fetchIntervals.quotes) {
+    clearInterval(state.fetchIntervals.quotes);
+    state.fetchIntervals.quotes = null;
+  }
+  if (state.fetchIntervals.spreads) {
+    clearInterval(state.fetchIntervals.spreads);
+    state.fetchIntervals.spreads = null;
+  }
+}
 
 function generateInstanceId() {
   return `inst_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
@@ -93,7 +206,12 @@ function renderInstanceTabs() {
     closeBtn.addEventListener('click', (ev) => {
       ev.stopPropagation();
       const id = closeBtn.dataset.closeInstanceId;
-      if (id) removeInstance(id);
+      if (!id) return;
+      const inst = instances.get(id);
+      const label = inst?.label || inst?.symbol || 'esta aba';
+      const ok = confirm(`Tem certeza que deseja fechar a aba "${label}"?`);
+      if (!ok) return;
+      removeInstance(id);
     });
   });
   addBtn.addEventListener('click', () => {
@@ -121,7 +239,9 @@ function addInstance({ id, symbol, spotExchange, label, draftSymbol } = {}, { sw
     label: label || sym,
     draftSymbol: draft
   };
+  ensureInstanceState(instance);
   instances.set(instId, instance);
+  startInstanceWatchers(instance);
   persistInstances();
   renderInstanceTabs();
   if (switchTo) {
@@ -132,8 +252,11 @@ function addInstance({ id, symbol, spotExchange, label, draftSymbol } = {}, { sw
 
 function removeInstance(id) {
   if (!instances.has(id) || instances.size <= 1) return;
+  const inst = instances.get(id);
   const isActive = id === activeInstanceId;
+  stopInstanceWatchers(inst);
   instances.delete(id);
+  if (inst) delete inst._state;
   if (isActive) {
     const first = instances.keys().next().value;
     if (first) {
@@ -210,6 +333,8 @@ async function switchInstance(id, { skipPersist = false } = {}) {
       if (draft) prevInstance.draftSymbol = draft;
     }
     prevInstance.spotExchange = getSpotKey();
+    const prevState = ensureInstanceState(prevInstance);
+    captureChartVisibilityToState(prevState);
   }
   activeInstanceId = id;
   if (!skipPersist) persistInstances();
@@ -219,18 +344,27 @@ async function switchInstance(id, { skipPersist = false } = {}) {
     switchingInstance = false;
     return;
   }
-
-  spreadSeriesBySpot.clear();
-  spreadPoints = [];
-  lastSpreadFetchBySpot.clear();
-  renderSpreadChart();
-  lastQuotes = null;
-  renderQuotes();
-
+  const state = ensureInstanceState(inst);
+  spreadSeriesBySpot = state.spreadSeriesBySpot;
+  lastSpreadFetchBySpot = state.lastSpreadFetchBySpot;
+  spreadPoints = state.spreadPoints;
+  lastQuotes = state.lastQuotes;
   const inputEl = document.getElementById('symbolInput');
   if (inputEl) inputEl.value = inst.draftSymbol || inst.symbol || '';
   setSpotExchangeState({ key: inst.spotExchange });
   updateSpotSelect();
+
+  const initialSymbol = inst.symbol || currentSymbol || 'BASE_USDT';
+  document.getElementById('titleSymbol').textContent = initialSymbol;
+  if (lastQuotes?.symbol) {
+    setCurrentSymbol(lastQuotes.symbol);
+  } else if (inst.symbol) {
+    setCurrentSymbol(inst.symbol);
+  }
+  refreshDocumentTitle();
+  renderSpreadChart();
+  renderQuotes();
+  applyChartVisibilityFromState(state);
 
   try {
     const normalized = await setSymbol(inst.symbol, inst.spotExchange);
@@ -240,6 +374,14 @@ async function switchInstance(id, { skipPersist = false } = {}) {
       inst.symbol = normalized;
       if (!prevDraft || prevDraft === prevSymbol) inst.draftSymbol = normalized;
       if (!inst.label || inst.label === prevSymbol) inst.label = normalized;
+      if (normalized !== prevSymbol) {
+        resetInstanceDataState(inst);
+        if (state) {
+          state.meta = null;
+          state.metaSymbol = null;
+        }
+        ensureInstanceMeta(inst);
+      }
     }
   } catch (e) {
     console.warn('Falha ao aplicar símbolo da aba:', e);
@@ -262,6 +404,7 @@ async function switchInstance(id, { skipPersist = false } = {}) {
   } finally {
     switchingInstance = false;
   }
+  startInstanceWatchers(inst);
 }
 
 function getSpotLabel() {
@@ -825,9 +968,37 @@ Spot(${getSpotLabel()}): priceScale=${spotMeta.priceScale}, qtyScale=${spotMeta.
 MEXC: priceScale=${meta.mexc.priceScale}, volPrecision=${meta.mexc.volPrecision}, contractSize=${meta.mexc.contractSize}, minContracts=${meta.mexc.minContracts}
 Settings: margem=${meta.settings.marginPct}%, lev=${meta.settings.leverage}, spotExtra=${gateExtra}%, minCloseResidualQuote=${minResidual}`;
 }
+async function fetchMarketMeta(symbol) {
+  const resp = await fetch('/api/market-meta?symbol=' + encodeURIComponent(symbol));
+  const data = await safeJson(resp);
+  if (!resp.ok) {
+    throw new Error((data && data.error) || 'Falha ao carregar meta.');
+  }
+  return data;
+}
+
+async function ensureInstanceMeta(inst) {
+  const state = ensureInstanceState(inst);
+  if (!inst || !state || !inst.symbol) return null;
+  if (state.meta && state.metaSymbol === inst.symbol) return state.meta;
+  if (state.metaLoading) return state.meta;
+  state.metaLoading = true;
+  try {
+    const data = await fetchMarketMeta(inst.symbol);
+    state.meta = data.merged || null;
+    state.metaSymbol = inst.symbol;
+    if (inst.id === activeInstanceId) currentMeta = state.meta;
+    return state.meta;
+  } catch (err) {
+    console.warn('Falha ao carregar meta da instância', inst.symbol, err?.message || err);
+    return state.meta;
+  } finally {
+    state.metaLoading = false;
+  }
+}
+
 async function refreshMetaUI(symbol) {
-  const r = await fetch('/api/market-meta?symbol=' + encodeURIComponent(symbol));
-  const d = await r.json();
+  const d = await fetchMarketMeta(symbol);
   document.getElementById('metaBadge').textContent = 'meta: ' + d.symbol;
   document.getElementById('metaText').textContent =
     metaToText('Auto', d.auto) + '\n\n' +
@@ -835,6 +1006,12 @@ async function refreshMetaUI(symbol) {
     metaToText('Usado', d.merged);
   currentMeta = d.merged || null;
   fillOverridesUI(d.merged);
+  const inst = getActiveInstance();
+  const state = ensureInstanceState(inst);
+  if (state) {
+    state.meta = currentMeta;
+    state.metaSymbol = inst?.symbol || null;
+  }
 }
 
 document.getElementById('applySymbol').addEventListener('click', async () => {
@@ -859,6 +1036,8 @@ document.getElementById('applySymbol').addEventListener('click', async () => {
     inst.draftSymbol = normalized;
     inst.spotExchange = exchangeKey;
     inst.label = inst.label && inst.label !== sym ? inst.label : normalized;
+    resetInstanceDataState(inst);
+    ensureInstanceMeta(inst);
   }
   if (inputEl) inputEl.value = normalized;
   document.getElementById('titleSymbol').textContent = normalized;
@@ -1113,29 +1292,32 @@ function playBeep() {
   } catch {}
 }
 
-async function notifyTelegram(diff) {
+async function notifyTelegram(diff, quotesData = lastQuotes, meta = currentMeta, spotKey = getSpotKey()) {
   if (!telegramEnabled) return;
-  if (!lastQuotes) return;
+  if (!quotesData) return;
   const now = Date.now();
   if (now - lastTgSent < 10000) return; // evita spam
   const mode = getMode();
-  const stats = computeSelectionStats(mode);
+  const stats = computeSelectionStats(mode, quotesData);
   const selectedLevels = Array.from(levelSelections[mode]).sort((a, b) => a - b);
   const levelsRaw = mode === 'close'
-    ? (lastQuotes?.close?.levels || [])
-    : (lastQuotes?.open?.levels || []);
+    ? (quotesData?.close?.levels || [])
+    : (quotesData?.open?.levels || []);
   const levelEntries = Array.isArray(levelsRaw) ? levelsRaw.slice(0, 3) : [];
-  const baseSymbol = lastQuotes?.baseSymbol || (lastQuotes?.symbol ? String(lastQuotes.symbol).split('_')[0] : 'BASE');
-  const symbol = lastQuotes?.symbol || null;
+  const baseSymbol = quotesData?.baseSymbol || (quotesData?.symbol ? String(quotesData.symbol).split('_')[0] : 'BASE');
+  const symbol = quotesData?.symbol || null;
 
   if (telegramVolumeGuard) {
-    if (!currentMeta) return;
-    const gateMinQuote = Number(currentMeta?.gate?.minQuote || 0);
+    if (!meta) return;
+    const normalizedSpot = (spotKey || DEFAULT_SPOT.key || 'gate').toLowerCase();
+    const spotMeta = (meta && meta[normalizedSpot]) || meta.gate || {};
+    const gateMinQuote = Number(spotMeta?.minQuote || 0);
     const gateQuote = Number.isFinite(stats.gateQuote) ? stats.gateQuote : 0;
     if (gateMinQuote > 0 && gateQuote < gateMinQuote) return;
 
-    const minContracts = Number(currentMeta?.mexc?.minContracts || 0);
-    const contractSize = Number(currentMeta?.mexc?.contractSize || 1);
+    const mexcMeta = meta.mexc || {};
+    const minContracts = Number(mexcMeta?.minContracts || 0);
+    const contractSize = Number(mexcMeta?.contractSize || 1);
     const mexcMinBase = minContracts * contractSize;
     const mexcQuote = Number.isFinite(stats.mexcQuote) ? stats.mexcQuote : 0;
     const mexcAvg = Number.isFinite(stats.mexcAvg) ? stats.mexcAvg : 0;
@@ -1203,15 +1385,20 @@ async function notifyTelegram(diff) {
   } catch {}
 }
 
-function checkAlert(diffVal) {
-  const diff = Number(diffVal);
+function handleAlertsForInstance(inst, state, quotesData) {
+  if (!inst || !quotesData) return;
+  const mode = getMode();
+  const stats = computeSelectionStats(mode, quotesData);
+  const diff = Number(stats.diffPct);
   if (!Number.isFinite(diff)) return;
   const min = isFinite(alertMin) ? alertMin : -Infinity;
   const max = isFinite(alertMax) ? alertMax : Infinity;
   if (diff < min || diff > max) {
     const now = Date.now();
     if (soundEnabled && now - lastBeep > 1000) { playBeep(); lastBeep = now; }
-    notifyTelegram(diff);
+    const meta = state?.meta || currentMeta;
+    const spotKey = inst?.spotExchange || getSpotKey();
+    notifyTelegram(diff, quotesData, meta, spotKey);
   }
 }
 
@@ -1527,8 +1714,10 @@ function renderLevelsTable(mode, levels, baseSymbol, tbodyId) {
   });
 }
 
-function computeSelectionStats(mode) {
-  const levels = mode === 'open' ? (lastQuotes?.open?.levels || []) : (lastQuotes?.close?.levels || []);
+function computeSelectionStats(mode, quotes = lastQuotes) {
+  const levels = mode === 'open'
+    ? (quotes?.open?.levels || [])
+    : (quotes?.close?.levels || []);
   const selected = Array.from(levelSelections[mode]).sort((a, b) => a - b);
   let gateBase = 0, gateQuote = 0, mexcBase = 0, mexcQuote = 0;
   selected.forEach(idx => {
@@ -1626,8 +1815,11 @@ function renderQuotes() {
   const diffVal = activeStats.diffPct;
   const diffEl = document.getElementById('diff');
   if (diffEl) diffEl.textContent = formatDiffValue(diffVal);
-
-  checkAlert(diffVal);
+  const inst = getActiveInstance();
+  if (inst) {
+    const state = ensureInstanceState(inst);
+    handleAlertsForInstance(inst, state, lastQuotes);
+  }
 }
 
 function ensureSpreadChart() {
@@ -1636,6 +1828,7 @@ function ensureSpreadChart() {
   const canvas = document.getElementById('spreadChart');
   if (!canvas) return null;
   const ctx = canvas.getContext('2d');
+  const defaultLegendClick = Chart?.defaults?.plugins?.legend?.onClick;
   spreadChart = new Chart(ctx, {
     type: 'line',
     data: {
@@ -1817,7 +2010,21 @@ function ensureSpreadChart() {
         }
       },
       plugins: {
-        legend: { position: 'bottom' },
+        legend: {
+          position: 'bottom',
+          onClick: (evt, legendItem, legend) => {
+            if (typeof defaultLegendClick === 'function') {
+              defaultLegendClick.call(legend.chart, evt, legendItem, legend);
+            } else if (Chart?.defaults?.plugins?.legend?.onClick) {
+              Chart.defaults.plugins.legend.onClick.call(legend.chart, evt, legendItem, legend);
+            }
+            const inst = getActiveInstance();
+            if (inst) {
+              const state = ensureInstanceState(inst);
+              captureChartVisibilityToState(state);
+            }
+          }
+        },
         tooltip: {
           callbacks: {
             label: (ctx) => {
@@ -1866,6 +2073,11 @@ function ensureSpreadChart() {
       }
     }
   });
+  const inst = getActiveInstance();
+  if (inst) {
+    const state = ensureInstanceState(inst);
+    applyChartVisibilityFromState(state);
+  }
   return spreadChart;
 }
 
@@ -2060,32 +2272,35 @@ function renderSpreadChart() {
       finalArbEl.style.color = '';
     }
   }
+  const inst = getActiveInstance();
+  if (inst) {
+    const state = ensureInstanceState(inst);
+    applyChartVisibilityFromState(state);
+  }
   chart.update('none');
 }
 
-async function fetchSpreadData(force = false, spotKey = getSpotKey()) {
-  const key = (spotKey || '').toLowerCase() || DEFAULT_SPOT.key;
+async function fetchSpreadDataForInstance(inst, force = false, spotKey = null) {
+  const state = ensureInstanceState(inst);
+  if (!state || !inst?.symbol) return;
+  const key = (spotKey || inst.spotExchange || DEFAULT_SPOT.key || '').toLowerCase();
   const now = Date.now();
-  const lastFetch = lastSpreadFetchBySpot.get(key) || 0;
+  const lastFetch = state.lastSpreadFetchBySpot.get(key) || 0;
   if (!force && now - lastFetch < 10000) return;
-  lastSpreadFetchBySpot.set(key, now);
+  state.lastSpreadFetchBySpot.set(key, now);
   let activeKey = key;
   try {
-    const symbol = lastQuotes?.symbol;
+    const symbol = inst.symbol || state.lastQuotes?.symbol;
+    if (!symbol) return;
     const params = new URLSearchParams();
-    if (symbol) params.set('symbol', symbol);
+    params.set('symbol', symbol);
     if (key) params.set('spotExchange', key);
-    const qs = params.toString();
-    const url = qs ? `/api/spreads?${qs}` : '/api/spreads';
-    const resp = await fetch(url);
+    const resp = await fetch(`/api/spreads?${params.toString()}`);
     const data = await safeJson(resp);
     if (!resp.ok) throw new Error(data?.error || 'Falha ao carregar spreads.');
     let responseKey = key;
-    if (data?.spotExchange) {
-      setSpotExchangeState(data.spotExchange);
-      if (data.spotExchange?.key) {
-        responseKey = String(data.spotExchange.key || '').toLowerCase() || key;
-      }
+    if (data?.spotExchange?.key) {
+      responseKey = String(data.spotExchange.key || '').toLowerCase() || key;
     }
     const normalizedKey = responseKey || key;
     activeKey = normalizedKey;
@@ -2115,37 +2330,93 @@ async function fetchSpreadData(force = false, spotKey = getSpotKey()) {
       };
     });
     mapped.sort((a, b) => Number(a.ts) - Number(b.ts));
-    spreadSeriesBySpot.set(normalizedKey, mapped);
-    if (getSpotKey() === normalizedKey) {
-      spreadPoints = mapped;
+    state.spreadSeriesBySpot.set(normalizedKey, mapped);
+    if (inst.id === activeInstanceId && getSpotKey() === normalizedKey) {
+      state.spreadPoints = mapped;
+      spreadPoints = state.spreadPoints;
       renderSpreadChart();
+    } else if (normalizedKey === key) {
+      state.spreadPoints = mapped;
     }
   } catch (e) {
     console.warn('Falha ao carregar spreads:', e?.message || e);
     if (force) {
-      spreadSeriesBySpot.set(activeKey, []);
-      if (getSpotKey() === activeKey) {
-        spreadPoints = [];
+      state.spreadSeriesBySpot.set(activeKey, []);
+      if (inst.id === activeInstanceId && getSpotKey() === activeKey) {
+        state.spreadPoints = [];
+        spreadPoints = state.spreadPoints;
         renderSpreadChart();
       }
     }
   }
 }
 
-async function fetchData() {
-  try {
-    const r = await fetch('/api/data');
-    const d = await r.json();
-    lastQuotes = d;
-    if (d?.spotExchange) setSpotExchangeState(d.spotExchange);
-    if (d.symbol) setCurrentSymbol(d.symbol);
-    document.getElementById('titleSymbol').textContent = d.symbol || '-';
-    renderQuotes();
-    fetchSpreadData();
-  } catch {}
+async function fetchSpreadData(force = false, spotKey = getSpotKey()) {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  await fetchSpreadDataForInstance(inst, force, spotKey);
 }
-setInterval(fetchData, 1000);
-setInterval(() => fetchSpreadData(false), 15000);
+
+async function fetchDataForInstance(inst) {
+  const state = ensureInstanceState(inst);
+  if (!state || !inst?.symbol) return;
+  try {
+    const params = new URLSearchParams();
+    params.set('symbol', inst.symbol);
+    const spotKey = inst.spotExchange || DEFAULT_SPOT.key;
+    if (spotKey) params.set('spotExchange', spotKey);
+    const resp = await fetch(`/api/data?${params.toString()}`);
+    const d = await safeJson(resp);
+    if (!resp.ok) throw new Error(d?.error || 'Erro ao obter dados.');
+    const prevSymbol = inst.symbol;
+    const normalizedSymbol = typeof d.symbol === 'string' ? d.symbol.toUpperCase() : prevSymbol;
+    let changed = false;
+    if (normalizedSymbol && normalizedSymbol !== prevSymbol) {
+      const prevDraft = inst.draftSymbol;
+      inst.symbol = normalizedSymbol;
+      if (!prevDraft || prevDraft === prevSymbol) inst.draftSymbol = normalizedSymbol;
+      if (!inst.label || inst.label === prevSymbol) inst.label = normalizedSymbol;
+      state.meta = null;
+      state.metaSymbol = null;
+      changed = true;
+    }
+    const responseSpot = d?.spotExchange?.key ? String(d.spotExchange.key || '').toLowerCase() : null;
+    if (responseSpot && responseSpot !== inst.spotExchange) {
+      inst.spotExchange = responseSpot;
+      changed = true;
+    }
+    state.lastQuotes = d;
+    if (inst.id === activeInstanceId) {
+      lastQuotes = d;
+      if (d?.spotExchange) {
+        setSpotExchangeState(d.spotExchange);
+      } else if (inst.spotExchange) {
+        setSpotExchangeState({ key: inst.spotExchange });
+      }
+      if (d.symbol) setCurrentSymbol(d.symbol);
+      document.getElementById('titleSymbol').textContent = d.symbol || inst.symbol || '-';
+      renderQuotes();
+      fetchSpreadDataForInstance(inst);
+    } else {
+      handleAlertsForInstance(inst, state, d);
+    }
+    if (changed) {
+      renderInstanceTabs();
+      persistInstances();
+      ensureInstanceMeta(inst);
+    }
+  } catch (err) {
+    if (inst.id === activeInstanceId) {
+      console.warn('Falha ao obter dados:', err?.message || err);
+    }
+  }
+}
+
+async function fetchData() {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  await fetchDataForInstance(inst);
+}
 
 const spreadFilterButtons = document.querySelectorAll('[data-spread-filter]');
 spreadFilterButtons.forEach((btn) => {
