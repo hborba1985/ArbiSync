@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
-  <title>Arbitragem Gate.io x MEXC — <span id="titleSymbol">BASE_USDT</span></title>
+  <title>Arbitragem Gate.io x MEXC — BASE_USDT</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 16px; color: #111; }
@@ -99,7 +99,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"></script>
 </head>
 <body>
-  <h1>Arbitragem Gate.io x MEXC — <span id="titleSymbol">BASE_USDT</span></h1>
+  <h1>Arbitragem <span data-spot-label>Gate.io</span> x MEXC — <span id="titleSymbol">BASE_USDT</span></h1>
 
   <div class="card top" id="configCard">
     <h3>Par &amp; Configurações</h3>
@@ -107,6 +107,11 @@
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
         <label class="inline" for="symbolInput">Par (BASE_QUOTE):</label>
         <input id="symbolInput" type="text" value="BASE_USDT" class="mono" />
+        <label class="inline" for="spotExchangeSelect">Corretora SPOT:</label>
+        <select id="spotExchangeSelect">
+          <option value="gate">Gate.io</option>
+          <option value="bitget">Bitget</option>
+        </select>
         <button id="applySymbol">Usar</button>
         <button id="autoCfg">Auto-configurar</button>
         <span id="metaBadge" class="mono muted">meta: —</span>
@@ -116,7 +121,7 @@
         <summary>Overrides manuais (opcional)</summary>
         <div style="display:grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap:10px; margin-top:10px;">
           <div>
-            <div class="muted" style="margin-bottom:6px;"><strong>Gate</strong></div>
+            <div class="muted" style="margin-bottom:6px;"><strong data-spot-label>Gate</strong></div>
             <label>priceScale <input id="ov_gate_price" type="number" step="1" class="mono" /></label><br/>
             <label>qtyScale <input id="ov_gate_qty" type="number" step="1" class="mono" /></label><br/>
             <label>minQty <input id="ov_gate_minqty" type="number" step="any" class="mono" /></label><br/>
@@ -133,7 +138,7 @@
             <div class="muted" style="margin-bottom:6px;"><strong>Settings</strong></div>
             <label>margem (%) <input id="ov_set_margin" type="number" step="any" class="mono" /></label><br/>
             <label>leverage <input id="ov_set_lev" type="number" step="any" class="mono" /></label><br/>
-            <label>Gate extra (%) <input id="ov_set_gate_extra" type="number" step="any" class="mono" /></label><br/>
+            <label><span data-spot-label>Gate</span> extra (%) <input id="ov_set_gate_extra" type="number" step="any" class="mono" /></label><br/>
             <label>Saldo mínimo p/ fechar (USDT)
               <input id="ov_set_min_residual" type="number" step="any" class="mono" />
             </label>
@@ -211,15 +216,15 @@
         </div>
 
         <div class="quotes-section">
-          <h4>Open — Gate (asks) vs MEXC (bids)</h4>
+          <h4>Open — <span data-spot-label>Gate</span> (asks) vs MEXC (bids)</h4>
           <table class="quotes-table">
             <thead>
               <tr>
                 <th class="col-check">Usar</th>
                 <th>Nível</th>
-                <th>Gate preço</th>
-                <th>Gate base</th>
-                <th>Gate USDT</th>
+                <th><span data-spot-label>Gate</span> preço</th>
+                <th><span data-spot-label>Gate</span> base</th>
+                <th><span data-spot-label>Gate</span> USDT</th>
                 <th>MEXC preço</th>
                 <th>MEXC base</th>
                 <th>MEXC USDT</th>
@@ -231,15 +236,15 @@
         </div>
 
         <div class="quotes-section">
-          <h4>Close — Gate (bids) vs MEXC (asks)</h4>
+          <h4>Close — <span data-spot-label>Gate</span> (bids) vs MEXC (asks)</h4>
           <table class="quotes-table">
             <thead>
               <tr>
                 <th class="col-check">Usar</th>
                 <th>Nível</th>
-                <th>Gate preço</th>
-                <th>Gate base</th>
-                <th>Gate USDT</th>
+                <th><span data-spot-label>Gate</span> preço</th>
+                <th><span data-spot-label>Gate</span> base</th>
+                <th><span data-spot-label>Gate</span> USDT</th>
                 <th>MEXC preço</th>
                 <th>MEXC base</th>
                 <th>MEXC USDT</th>
@@ -298,11 +303,11 @@
               <span id="ppTarget">0</span>
             </div>
             <div>
-              <span class="label">Preenchido Gate</span>
+          <span class="label">Preenchido <span data-spot-label>Gate</span></span>
               <span id="ppGateFilled">0</span>
             </div>
             <div>
-              <span class="label">Preço médio Gate</span>
+          <span class="label">Preço médio <span data-spot-label>Gate</span></span>
               <span id="ppGateAvg">0</span>
             </div>
             <div>
@@ -326,7 +331,7 @@
 
         <div class="balance-section">
           <div class="balance-column">
-            <h4>Gate</h4>
+            <h4><span data-spot-label>Gate</span></h4>
             <div class="balance-line">
               <span class="balance-label">USDT</span>
               <div class="balance-values">
@@ -401,7 +406,7 @@
             <label>Volume (base)
               <input id="manualHistoryVolume" type="number" step="any" class="mono" />
             </label>
-            <label>Gate preço
+            <label><span data-spot-label>Gate</span> preço
               <input id="manualHistoryGatePrice" type="number" step="any" class="mono" />
             </label>
             <label>MEXC preço
@@ -425,13 +430,13 @@
             <th>Local ID</th>
             <th>Hora</th>
             <th>Sentido</th>
-            <th>Gate Price</th>
+            <th><span data-spot-label>Gate</span> Price</th>
             <th>MEXC Price</th>
             <th>Volume (moeda base)</th>
             <th>%Arb</th>
             <th>$PnL</th>
-            <th>Gate Order ID</th>
-            <th>Gate Status</th>
+            <th><span data-spot-label>Gate</span> Order ID</th>
+            <th><span data-spot-label>Gate</span> Status</th>
             <th>GRO</th>
             <th>MEXC Order ID</th>
             <th>MEXC Status</th>
@@ -461,7 +466,7 @@
           </label>
         </div>
         <div>
-          <div class="muted" style="margin-bottom:4px;"><strong>Gate</strong></div>
+          <div class="muted" style="margin-bottom:4px;"><strong data-spot-label>Gate</strong></div>
           <label>Preenchido
             <input id="posEditGateFilled" type="number" step="any" class="mono" />
           </label>
@@ -497,11 +502,11 @@
               <th>Data/Hora Fechamento</th>
               <th>Tempo Total da posição</th>
               <th>Meta</th>
-              <th>Gate</th>
+              <th><span data-spot-label>Gate</span></th>
               <th>MEXC</th>
-              <th>Gate Abertura</th>
+              <th><span data-spot-label>Gate</span> Abertura</th>
               <th>MEXC Abertura</th>
-              <th>Gate Fechamento</th>
+              <th><span data-spot-label>Gate</span> Fechamento</th>
               <th>MEXC Fechamento</th>
               <th>Arb final (%)</th>
               <th>PnL</th>

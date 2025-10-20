@@ -5,11 +5,19 @@
 module.exports = {
   // Par padrão ao iniciar o servidor (pode trocar pelo frontend depois)
   defaultSymbol: 'BOXCAT_USDT',
+  defaultSpotExchange: 'gate', // 'gate' ou 'bitget'
 
   gate: {
     apiKey: 'COLOQUE SUA CHAVE AQUI',          // sua key real Gate (opcional, mas recomendado para saldo/ordens)
     apiSecret: 'COLOQUE SUA CHAVE AQUI',       // seu secret real Gate
     baseUrl: 'https://api.gateio.ws'
+  },
+
+  bitget: {
+    apiKey: 'COLOQUE SUA CHAVE AQUI',          // API key Spot Bitget
+    apiSecret: 'COLOQUE SUA CHAVE AQUI',       // Secret correspondente
+    passphrase: 'COLOQUE SUA PASSPHRASE',      // Passphrase definida ao criar a chave
+    baseUrl: 'https://api.bitget.com'
   },
 
   mexc: {
