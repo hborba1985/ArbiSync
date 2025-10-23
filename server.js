@@ -1733,15 +1733,21 @@ app.post('/api/symbol', async (req, res) => {
 });
 
 // ===== /api/data — ask/bid de Gate e bid/ask de MEXC + diffs para open/close
-app.get('/api/data', async (_req, res) => {
+app.get('/api/data', async (req, res) => {
   try {
-    const symbol = currentSymbol;
-    const meta = await getMergedMeta(symbol);
-    const [base] = symbol.split('_');
+    const requestedSymbol = String(req.query.symbol || currentSymbol || '').toUpperCase();
+    if (!requestedSymbol) {
+      return res.status(400).json({ error: 'Símbolo inválido.' });
+    }
+    const meta = await getMergedMeta(requestedSymbol);
+    const [base] = requestedSymbol.split('_');
 
-    const spotInfo = getSpotInfo(positionState?.spotExchange || currentSpotExchange);
-    const { asks: spotAsksRaw, bids: spotBidsRaw } = await fetchSpotOrderBook(symbol, 5, spotInfo.normalized);
-    const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=5`);
+    const requestedSpot = req.query.spotExchange
+      ? normalizeSpotExchange(req.query.spotExchange)
+      : (positionState?.spotExchange || currentSpotExchange);
+    const spotInfo = getSpotInfo(requestedSpot);
+    const { asks: spotAsksRaw, bids: spotBidsRaw } = await fetchSpotOrderBook(requestedSymbol, 5, spotInfo.normalized);
+    const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${requestedSymbol}?limit=5`);
 
     const mexcBidsRaw = m.data?.data?.bids || [];
     const mexcAsksRaw = m.data?.data?.asks || [];
@@ -1878,20 +1884,20 @@ app.get('/api/data', async (_req, res) => {
     const closeVolumesSnapshot = normalizeVolumeSnapshot(closeLevels);
     const positionArbSnapshot = Number(positionState?.arbPctAvg);
     try {
-      db.saveSpreadSnapshot(symbol, spotInfo.normalized, nowTs,
+      db.saveSpreadSnapshot(requestedSymbol, spotInfo.normalized, nowTs,
         Number.isFinite(openSpread) ? openSpread : null,
         Number.isFinite(closeSpread) ? closeSpread : null,
         openVolumesSnapshot,
         closeVolumesSnapshot,
         Number.isFinite(positionArbSnapshot) ? positionArbSnapshot : null
       );
-      db.pruneSpreadSnapshots(symbol, spotInfo.normalized, nowTs - SPREAD_WINDOW_MS);
+      db.pruneSpreadSnapshots(requestedSymbol, spotInfo.normalized, nowTs - SPREAD_WINDOW_MS);
     } catch (err) {
       console.warn('[SQLite] Falha ao registrar spread:', err?.message || err);
     }
 
     res.json({
-      symbol,
+      symbol: requestedSymbol,
       baseSymbol: base,
       spotExchange: { key: spotInfo.normalized, label: spotInfo.label },
       gate: { asks: gateAsks, bids: gateBids },

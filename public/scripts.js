@@ -18,10 +18,596 @@ let currentSpot = { ...DEFAULT_SPOT };
 let pendingSpotSelection = null;
 let spreadChart = null;
 let spreadPoints = [];
-const spreadSeriesBySpot = new Map();
-const lastSpreadFetchBySpot = new Map();
+let spreadSeriesBySpot = new Map();
+let lastSpreadFetchBySpot = new Map();
 let lastRequestedSpotKey = null;
 let spotGuardUntil = 0;
+
+const instances = new Map();
+let activeInstanceId = null;
+let switchingInstance = false;
+
+const DEFAULT_DATASET_VISIBILITY = {
+  open: true,
+  close: false,
+  positionArb: false,
+  openVol0: false,
+  openVol1: false,
+  openVol2: false,
+  closeVol0: false,
+  closeVol1: false,
+  closeVol2: false,
+  cross: false
+};
+
+function createDefaultDatasetVisibility() {
+  return { ...DEFAULT_DATASET_VISIBILITY };
+}
+
+const DEFAULT_ALERT_CONFIG = {
+  min: null,
+  max: null,
+  soundEnabled: false,
+  telegramEnabled: false,
+  telegramVolumeGuard: false,
+  telegramIncludeSymbol: true,
+  telegramIncludeDiff: true,
+  telegramIncludeVolumes: false
+};
+
+const DEFAULT_ALERT_RUNTIME = {
+  lastBeep: 0,
+  lastTgSent: 0
+};
+
+const LEGACY_ALERT_DEFAULTS = (() => {
+  const defaults = {};
+  const parseNumber = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
+  const parseFlag = (value) => {
+    if (value === '1') return true;
+    if (value === '0') return false;
+    return undefined;
+  };
+  try {
+    const legacyMin = parseNumber(localStorage.getItem('alertMin'));
+    if (legacyMin !== null) defaults.min = legacyMin;
+  } catch {}
+  try {
+    const legacyMax = parseNumber(localStorage.getItem('alertMax'));
+    if (legacyMax !== null) defaults.max = legacyMax;
+  } catch {}
+  try {
+    const sound = parseFlag(localStorage.getItem('soundOn'));
+    if (sound !== undefined) defaults.soundEnabled = sound;
+  } catch {}
+  try {
+    const tg = parseFlag(localStorage.getItem('tgOn'));
+    if (tg !== undefined) defaults.telegramEnabled = tg;
+  } catch {}
+  try {
+    const volumeGuard = parseFlag(localStorage.getItem('tgVolumeGuard'));
+    if (volumeGuard !== undefined) defaults.telegramVolumeGuard = volumeGuard;
+  } catch {}
+  try {
+    const includeSymbol = parseFlag(localStorage.getItem('tgIncludeSymbol'));
+    if (includeSymbol !== undefined) defaults.telegramIncludeSymbol = includeSymbol;
+  } catch {}
+  try {
+    const includeDiff = parseFlag(localStorage.getItem('tgIncludeDiff'));
+    if (includeDiff !== undefined) defaults.telegramIncludeDiff = includeDiff;
+  } catch {}
+  try {
+    const includeVolumes = parseFlag(localStorage.getItem('tgIncludeVolumes'));
+    if (includeVolumes !== undefined) defaults.telegramIncludeVolumes = includeVolumes;
+  } catch {}
+  return defaults;
+})();
+
+function createDefaultAlertConfig(overrides) {
+  const config = { ...DEFAULT_ALERT_CONFIG, ...LEGACY_ALERT_DEFAULTS };
+  if (!overrides || typeof overrides !== 'object') return config;
+  const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+  if (has(overrides, 'min')) {
+    const num = Number(overrides.min);
+    config.min = Number.isFinite(num) ? num : null;
+  }
+  if (has(overrides, 'max')) {
+    const num = Number(overrides.max);
+    config.max = Number.isFinite(num) ? num : null;
+  }
+  if (has(overrides, 'soundEnabled')) config.soundEnabled = !!overrides.soundEnabled;
+  if (has(overrides, 'telegramEnabled')) config.telegramEnabled = !!overrides.telegramEnabled;
+  if (has(overrides, 'telegramVolumeGuard')) config.telegramVolumeGuard = !!overrides.telegramVolumeGuard;
+  if (has(overrides, 'telegramIncludeSymbol')) config.telegramIncludeSymbol = !!overrides.telegramIncludeSymbol;
+  if (has(overrides, 'telegramIncludeDiff')) config.telegramIncludeDiff = !!overrides.telegramIncludeDiff;
+  if (has(overrides, 'telegramIncludeVolumes')) config.telegramIncludeVolumes = !!overrides.telegramIncludeVolumes;
+  return config;
+}
+
+function createDefaultAlertRuntime(overrides) {
+  const runtime = { ...DEFAULT_ALERT_RUNTIME };
+  if (!overrides || typeof overrides !== 'object') return runtime;
+  if (Object.prototype.hasOwnProperty.call(overrides, 'lastBeep')) {
+    const num = Number(overrides.lastBeep);
+    runtime.lastBeep = Number.isFinite(num) ? num : 0;
+  }
+  if (Object.prototype.hasOwnProperty.call(overrides, 'lastTgSent')) {
+    const num = Number(overrides.lastTgSent);
+    runtime.lastTgSent = Number.isFinite(num) ? num : 0;
+  }
+  return runtime;
+}
+
+function ensureInstanceState(inst) {
+  if (!inst) return null;
+  if (!inst._state) inst._state = {};
+  const state = inst._state;
+  if (!state.spreadSeriesBySpot) state.spreadSeriesBySpot = new Map();
+  if (!state.lastSpreadFetchBySpot) state.lastSpreadFetchBySpot = new Map();
+  if (!Array.isArray(state.spreadPoints)) state.spreadPoints = [];
+  if (!state.fetchIntervals) state.fetchIntervals = { quotes: null, spreads: null };
+  if (!state.datasetVisibility) state.datasetVisibility = createDefaultDatasetVisibility();
+  if (typeof state.metaSymbol !== 'string') state.metaSymbol = state.metaSymbol || null;
+  if (typeof state.metaLoading !== 'boolean') state.metaLoading = false;
+  if (!state.hasOwnProperty('meta')) state.meta = state.meta || null;
+  if (!state.hasOwnProperty('lastQuotes')) state.lastQuotes = state.lastQuotes || null;
+
+  const configSource = state.alertConfig || inst.alertConfig;
+  state.alertConfig = createDefaultAlertConfig(configSource);
+  state.alertRuntime = createDefaultAlertRuntime(state.alertRuntime);
+  if (inst.alertConfig) delete inst.alertConfig;
+
+  return state;
+}
+
+function resetInstanceDataState(inst) {
+  const state = ensureInstanceState(inst);
+  if (!state) return;
+  state.lastQuotes = null;
+  state.spreadSeriesBySpot = new Map();
+  state.lastSpreadFetchBySpot = new Map();
+  state.spreadPoints = [];
+  if (inst?.id === activeInstanceId) {
+    spreadSeriesBySpot = state.spreadSeriesBySpot;
+    lastSpreadFetchBySpot = state.lastSpreadFetchBySpot;
+    spreadPoints = state.spreadPoints;
+    lastQuotes = null;
+    renderSpreadChart();
+    renderQuotes();
+  }
+}
+
+function captureChartVisibilityToState(state) {
+  if (!state || !spreadChart) return;
+  if (spreadFilter !== 'all') return;
+  const visibility = state.datasetVisibility || createDefaultDatasetVisibility();
+  spreadChart.data.datasets.forEach((dataset, idx) => {
+    const meta = spreadChart.getDatasetMeta(idx);
+    const hidden = meta.hidden === true;
+    visibility[dataset.id] = !hidden;
+  });
+  state.datasetVisibility = visibility;
+}
+
+function applyChartVisibilityFromState(state) {
+  if (!state || !spreadChart) return;
+  if (spreadFilter !== 'all') return;
+  const visibility = state.datasetVisibility || createDefaultDatasetVisibility();
+  spreadChart.data.datasets.forEach((dataset, idx) => {
+    const visible = visibility[dataset.id];
+    const meta = spreadChart.getDatasetMeta(idx);
+    if (typeof visible === 'boolean') {
+      dataset.hidden = !visible;
+      meta.hidden = visible ? null : true;
+    }
+  });
+}
+
+function getAlertElements() {
+  return {
+    min: document.getElementById('alertMin'),
+    max: document.getElementById('alertMax'),
+    sound: document.getElementById('soundToggle'),
+    telegram: document.getElementById('telegramToggle'),
+    volumeGuard: document.getElementById('telegramVolumeGuard'),
+    includeSymbol: document.getElementById('telegramIncludeSymbol'),
+    includeDiff: document.getElementById('telegramIncludeDiff'),
+    includeVolumes: document.getElementById('telegramIncludeVolumes')
+  };
+}
+
+function applyAlertConfigToUI(config) {
+  const cfg = createDefaultAlertConfig(config);
+  const { min, max, sound, telegram, volumeGuard, includeSymbol, includeDiff, includeVolumes } = getAlertElements();
+  if (min) {
+    if (Number.isFinite(cfg.min)) {
+      min.value = cfg.min;
+    } else {
+      min.value = '';
+    }
+  }
+  if (max) {
+    if (Number.isFinite(cfg.max)) {
+      max.value = cfg.max;
+    } else {
+      max.value = '';
+    }
+  }
+  if (sound) sound.checked = !!cfg.soundEnabled;
+  if (telegram) telegram.checked = !!cfg.telegramEnabled;
+  if (volumeGuard) volumeGuard.checked = !!cfg.telegramVolumeGuard;
+  if (includeSymbol) includeSymbol.checked = !!cfg.telegramIncludeSymbol;
+  if (includeDiff) includeDiff.checked = !!cfg.telegramIncludeDiff;
+  if (includeVolumes) includeVolumes.checked = !!cfg.telegramIncludeVolumes;
+}
+
+function captureAlertControlsToState(inst) {
+  if (!inst) return;
+  const state = ensureInstanceState(inst);
+  const cfg = createDefaultAlertConfig(state.alertConfig);
+  const { min, max, sound, telegram, volumeGuard, includeSymbol, includeDiff, includeVolumes } = getAlertElements();
+  if (min) {
+    const num = Number(min.value);
+    cfg.min = Number.isFinite(num) ? num : null;
+  }
+  if (max) {
+    const num = Number(max.value);
+    cfg.max = Number.isFinite(num) ? num : null;
+  }
+  if (sound) cfg.soundEnabled = sound.checked;
+  if (telegram) cfg.telegramEnabled = telegram.checked;
+  if (volumeGuard) cfg.telegramVolumeGuard = volumeGuard.checked;
+  if (includeSymbol) cfg.telegramIncludeSymbol = includeSymbol.checked;
+  if (includeDiff) cfg.telegramIncludeDiff = includeDiff.checked;
+  if (includeVolumes) cfg.telegramIncludeVolumes = includeVolumes.checked;
+  state.alertConfig = createDefaultAlertConfig(cfg);
+}
+
+function mutateActiveAlertConfig(updater, { persist = true } = {}) {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  const state = ensureInstanceState(inst);
+  const cfg = createDefaultAlertConfig(state.alertConfig);
+  const result = typeof updater === 'function' ? updater(cfg, state) : undefined;
+  state.alertConfig = createDefaultAlertConfig(cfg);
+  if (persist) persistInstances();
+  return result;
+}
+
+function refreshAlertUIFromActiveInstance() {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  const state = ensureInstanceState(inst);
+  applyAlertConfigToUI(state.alertConfig);
+}
+
+function startInstanceWatchers(inst) {
+  const state = ensureInstanceState(inst);
+  if (!state) return;
+  if (!state.fetchIntervals.quotes) {
+    state.fetchIntervals.quotes = setInterval(() => fetchDataForInstance(inst), 1000);
+    fetchDataForInstance(inst);
+  }
+  if (!state.fetchIntervals.spreads) {
+    state.fetchIntervals.spreads = setInterval(() => fetchSpreadDataForInstance(inst), 15000);
+    fetchSpreadDataForInstance(inst, true);
+  }
+  ensureInstanceMeta(inst);
+}
+
+function stopInstanceWatchers(inst) {
+  const state = ensureInstanceState(inst);
+  if (!state || !state.fetchIntervals) return;
+  if (state.fetchIntervals.quotes) {
+    clearInterval(state.fetchIntervals.quotes);
+    state.fetchIntervals.quotes = null;
+  }
+  if (state.fetchIntervals.spreads) {
+    clearInterval(state.fetchIntervals.spreads);
+    state.fetchIntervals.spreads = null;
+  }
+}
+
+function generateInstanceId() {
+  return `inst_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
+}
+
+function getActiveInstance() {
+  return activeInstanceId ? instances.get(activeInstanceId) : null;
+}
+
+function persistInstances() {
+  try {
+    const serialized = Array.from(instances.values()).map((inst) => {
+      const state = ensureInstanceState(inst);
+      const config = state?.alertConfig ? createDefaultAlertConfig(state.alertConfig) : createDefaultAlertConfig();
+      state.alertConfig = config;
+      const alerts = {
+        min: Number.isFinite(config.min) ? config.min : null,
+        max: Number.isFinite(config.max) ? config.max : null,
+        soundEnabled: !!config.soundEnabled,
+        telegramEnabled: !!config.telegramEnabled,
+        telegramVolumeGuard: !!config.telegramVolumeGuard,
+        telegramIncludeSymbol: !!config.telegramIncludeSymbol,
+        telegramIncludeDiff: !!config.telegramIncludeDiff,
+        telegramIncludeVolumes: !!config.telegramIncludeVolumes
+      };
+      return {
+        id: inst.id,
+        symbol: inst.symbol,
+        spotExchange: inst.spotExchange,
+        label: inst.label,
+        draftSymbol: inst.draftSymbol,
+        alerts
+      };
+    });
+    localStorage.setItem('arb_instances', JSON.stringify(serialized));
+    localStorage.setItem('arb_active_instance', activeInstanceId || '');
+  } catch (e) {
+    console.warn('persistInstances falhou:', e);
+  }
+}
+
+function renderInstanceTabs() {
+  const container = document.getElementById('instanceTabs');
+  if (!container) return;
+  container.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  for (const inst of instances.values()) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'instance-tab' + (inst.id === activeInstanceId ? ' active' : '');
+    btn.dataset.instanceId = inst.id;
+    const label = document.createElement('span');
+    label.className = 'instance-tab-label';
+    label.textContent = inst.label || inst.symbol || '—';
+    btn.appendChild(label);
+    if (instances.size > 1) {
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'instance-tab-close';
+      close.dataset.closeInstanceId = inst.id;
+      close.textContent = '×';
+      btn.appendChild(close);
+    }
+    frag.appendChild(btn);
+  }
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'instance-tab add-tab';
+  addBtn.id = 'addInstanceTab';
+  addBtn.textContent = '+ Nova aba';
+  frag.appendChild(addBtn);
+  container.appendChild(frag);
+
+  container.querySelectorAll('.instance-tab[data-instance-id]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.instanceId;
+      if (id) switchInstance(id);
+    });
+  });
+  container.querySelectorAll('.instance-tab-close').forEach((closeBtn) => {
+    closeBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const id = closeBtn.dataset.closeInstanceId;
+      if (!id) return;
+      const inst = instances.get(id);
+      const label = inst?.label || inst?.symbol || 'esta aba';
+      const ok = confirm(`Tem certeza que deseja fechar a aba "${label}"?`);
+      if (!ok) return;
+      removeInstance(id);
+    });
+  });
+  addBtn.addEventListener('click', () => {
+    const suggested = getActiveInstance()?.symbol || 'BASE_USDT';
+    const raw = prompt('Qual símbolo deseja negociar? (ex.: MGO_USDT)', suggested);
+    if (!raw) return;
+    const sym = raw.trim().toUpperCase();
+    if (!sym.includes('_')) {
+      alert('Use o formato BASE_QUOTE, por exemplo MGO_USDT.');
+      return;
+    }
+    addInstance({ symbol: sym, spotExchange: getSpotKey(), label: sym, draftSymbol: sym }, { switchTo: true });
+  });
+}
+
+function addInstance({ id, symbol, spotExchange, label, draftSymbol, alerts } = {}, { switchTo = false } = {}) {
+  const instId = id || generateInstanceId();
+  const sym = (symbol || 'BASE_USDT').toUpperCase();
+  const spot = (spotExchange || getSpotKey() || DEFAULT_SPOT.key).toLowerCase();
+  const draft = draftSymbol ? draftSymbol.toUpperCase() : sym;
+  const instance = {
+    id: instId,
+    symbol: sym,
+    spotExchange: spot,
+    label: label || sym,
+    draftSymbol: draft
+  };
+  let initialAlerts = alerts;
+  if (!initialAlerts) {
+    const active = getActiveInstance();
+    if (active) {
+      const activeState = ensureInstanceState(active);
+      if (activeState?.alertConfig) {
+        initialAlerts = { ...activeState.alertConfig };
+      }
+    }
+  }
+  if (initialAlerts) {
+    instance.alertConfig = createDefaultAlertConfig(initialAlerts);
+  }
+  ensureInstanceState(instance);
+  instances.set(instId, instance);
+  startInstanceWatchers(instance);
+  persistInstances();
+  renderInstanceTabs();
+  if (switchTo) {
+    switchInstance(instId);
+  }
+  return instance;
+}
+
+function removeInstance(id) {
+  if (!instances.has(id) || instances.size <= 1) return;
+  const inst = instances.get(id);
+  const isActive = id === activeInstanceId;
+  stopInstanceWatchers(inst);
+  instances.delete(id);
+  if (inst) delete inst._state;
+  if (isActive) {
+    const first = instances.keys().next().value;
+    if (first) {
+      activeInstanceId = null;
+      switchInstance(first);
+    } else {
+      activeInstanceId = null;
+      persistInstances();
+      renderInstanceTabs();
+    }
+  } else {
+    persistInstances();
+    renderInstanceTabs();
+  }
+}
+
+function syncSymbolInput() {
+  const input = document.getElementById('symbolInput');
+  if (!input || document.activeElement === input) return;
+  const inst = getActiveInstance();
+  const value = inst ? (inst.draftSymbol || inst.symbol || '') : (currentSymbol || '');
+  input.value = value;
+}
+
+function syncActiveInstanceSymbol(sym) {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  const prevSymbol = inst.symbol;
+  let changed = false;
+  if (inst.symbol !== sym) {
+    inst.symbol = sym;
+    changed = true;
+  }
+  if (!inst.draftSymbol || inst.draftSymbol === prevSymbol) {
+    if (inst.draftSymbol !== sym) changed = true;
+    inst.draftSymbol = sym;
+  }
+  if (!inst.label || inst.label === prevSymbol) {
+    if (inst.label !== sym) changed = true;
+    inst.label = sym;
+  }
+  if (changed) {
+    persistInstances();
+    renderInstanceTabs();
+  }
+  const titleEl = document.getElementById('titleSymbol');
+  if (titleEl) titleEl.textContent = sym;
+  syncSymbolInput();
+}
+
+function syncActiveInstanceSpot(key) {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  const normalized = key || inst.spotExchange;
+  if (inst.spotExchange === normalized) return;
+  inst.spotExchange = normalized;
+  persistInstances();
+  renderInstanceTabs();
+}
+
+async function switchInstance(id, { skipPersist = false } = {}) {
+  if (!instances.has(id)) return;
+  if (activeInstanceId === id) return;
+  if (switchingInstance) {
+    setTimeout(() => switchInstance(id), 200);
+    return;
+  }
+  switchingInstance = true;
+  const prevInstance = getActiveInstance();
+  if (prevInstance) {
+    const input = document.getElementById('symbolInput');
+    if (input) {
+      const draft = input.value.trim().toUpperCase();
+      if (draft) prevInstance.draftSymbol = draft;
+    }
+    prevInstance.spotExchange = getSpotKey();
+    const prevState = ensureInstanceState(prevInstance);
+    captureChartVisibilityToState(prevState);
+    captureAlertControlsToState(prevInstance);
+  }
+  activeInstanceId = id;
+  if (!skipPersist) persistInstances();
+  renderInstanceTabs();
+  const inst = getActiveInstance();
+  if (!inst) {
+    switchingInstance = false;
+    return;
+  }
+  const state = ensureInstanceState(inst);
+  spreadSeriesBySpot = state.spreadSeriesBySpot;
+  lastSpreadFetchBySpot = state.lastSpreadFetchBySpot;
+  spreadPoints = state.spreadPoints;
+  lastQuotes = state.lastQuotes;
+  applyAlertConfigToUI(state.alertConfig);
+  const inputEl = document.getElementById('symbolInput');
+  if (inputEl) inputEl.value = inst.draftSymbol || inst.symbol || '';
+  setSpotExchangeState({ key: inst.spotExchange });
+  updateSpotSelect();
+
+  const initialSymbol = inst.symbol || currentSymbol || 'BASE_USDT';
+  document.getElementById('titleSymbol').textContent = initialSymbol;
+  if (lastQuotes?.symbol) {
+    setCurrentSymbol(lastQuotes.symbol);
+  } else if (inst.symbol) {
+    setCurrentSymbol(inst.symbol);
+  }
+  refreshDocumentTitle();
+  renderSpreadChart();
+  renderQuotes();
+  applyChartVisibilityFromState(state);
+
+  try {
+    const normalized = await setSymbol(inst.symbol, inst.spotExchange);
+    if (normalized) {
+      const prevSymbol = inst.symbol;
+      const prevDraft = inst.draftSymbol;
+      inst.symbol = normalized;
+      if (!prevDraft || prevDraft === prevSymbol) inst.draftSymbol = normalized;
+      if (!inst.label || inst.label === prevSymbol) inst.label = normalized;
+      if (normalized !== prevSymbol) {
+        resetInstanceDataState(inst);
+        if (state) {
+          state.meta = null;
+          state.metaSymbol = null;
+        }
+        ensureInstanceMeta(inst);
+      }
+    }
+  } catch (e) {
+    console.warn('Falha ao aplicar símbolo da aba:', e);
+    alert('Falha ao aplicar o símbolo da aba: ' + (e?.message || e));
+  }
+
+  const sym = inst.symbol || currentSymbol || 'BASE_USDT';
+  document.getElementById('titleSymbol').textContent = sym;
+  refreshDocumentTitle();
+  persistInstances();
+
+  try {
+    await refreshMetaUI(sym);
+    setModeFromStorage();
+    await refreshBalances();
+    await fetchData();
+    await fetchSpreadData(true, getSpotKey());
+    await refreshHistory();
+    await refreshPosition();
+  } finally {
+    switchingInstance = false;
+  }
+  startInstanceWatchers(inst);
+}
 
 function getSpotLabel() {
   return currentSpot?.label || DEFAULT_SPOT.label;
@@ -86,6 +672,7 @@ function setSpotExchangeState(info) {
     lastRequestedSpotKey = null;
     spotGuardUntil = 0;
   }
+  syncActiveInstanceSpot(key);
 }
 
 function setCurrentSymbol(sym) {
@@ -96,6 +683,7 @@ function setCurrentSymbol(sym) {
   if (normalized) currentBaseSymbol = normalized;
   updateBaseSymbolUI();
   refreshDocumentTitle();
+  syncActiveInstanceSymbol(sym);
 }
 
 async function getSymbol() {
@@ -477,7 +1065,6 @@ if (spotSelectEl) {
     lastRequestedSpotKey = key;
     spotGuardUntil = Date.now() + 4000;
     setSpotExchangeState({ key, label });
-    try { localStorage.setItem('lastSpotExchange', key); } catch {}
     try {
       const normalizedSymbol = await setSymbol(null, key);
       if (normalizedSymbol) {
@@ -490,6 +1077,13 @@ if (spotSelectEl) {
       await refreshBalances();
       await fetchData();
       await fetchSpreadData(true, key);
+      const inst = getActiveInstance();
+      if (inst) {
+        if (normalizedSymbol) inst.symbol = normalizedSymbol;
+        inst.spotExchange = key;
+        persistInstances();
+        renderInstanceTabs();
+      }
     } catch (err) {
       console.warn('Falha ao alterar corretora spot:', err);
       alert('Falha ao alterar a corretora spot: ' + (err?.message || err));
@@ -576,9 +1170,37 @@ Spot(${getSpotLabel()}): priceScale=${spotMeta.priceScale}, qtyScale=${spotMeta.
 MEXC: priceScale=${meta.mexc.priceScale}, volPrecision=${meta.mexc.volPrecision}, contractSize=${meta.mexc.contractSize}, minContracts=${meta.mexc.minContracts}
 Settings: margem=${meta.settings.marginPct}%, lev=${meta.settings.leverage}, spotExtra=${gateExtra}%, minCloseResidualQuote=${minResidual}`;
 }
+async function fetchMarketMeta(symbol) {
+  const resp = await fetch('/api/market-meta?symbol=' + encodeURIComponent(symbol));
+  const data = await safeJson(resp);
+  if (!resp.ok) {
+    throw new Error((data && data.error) || 'Falha ao carregar meta.');
+  }
+  return data;
+}
+
+async function ensureInstanceMeta(inst) {
+  const state = ensureInstanceState(inst);
+  if (!inst || !state || !inst.symbol) return null;
+  if (state.meta && state.metaSymbol === inst.symbol) return state.meta;
+  if (state.metaLoading) return state.meta;
+  state.metaLoading = true;
+  try {
+    const data = await fetchMarketMeta(inst.symbol);
+    state.meta = data.merged || null;
+    state.metaSymbol = inst.symbol;
+    if (inst.id === activeInstanceId) currentMeta = state.meta;
+    return state.meta;
+  } catch (err) {
+    console.warn('Falha ao carregar meta da instância', inst.symbol, err?.message || err);
+    return state.meta;
+  } finally {
+    state.metaLoading = false;
+  }
+}
+
 async function refreshMetaUI(symbol) {
-  const r = await fetch('/api/market-meta?symbol=' + encodeURIComponent(symbol));
-  const d = await r.json();
+  const d = await fetchMarketMeta(symbol);
   document.getElementById('metaBadge').textContent = 'meta: ' + d.symbol;
   document.getElementById('metaText').textContent =
     metaToText('Auto', d.auto) + '\n\n' +
@@ -586,18 +1208,44 @@ async function refreshMetaUI(symbol) {
     metaToText('Usado', d.merged);
   currentMeta = d.merged || null;
   fillOverridesUI(d.merged);
+  const inst = getActiveInstance();
+  const state = ensureInstanceState(inst);
+  if (state) {
+    state.meta = currentMeta;
+    state.metaSymbol = inst?.symbol || null;
+  }
 }
 
 document.getElementById('applySymbol').addEventListener('click', async () => {
-  const sym = document.getElementById('symbolInput').value.trim().toUpperCase();
-  if (!sym.includes('_')) return alert('Use BASE_QUOTE (ex.: BASE_USDT)');
+  const inst = getActiveInstance();
+  const inputEl = document.getElementById('symbolInput');
+  const sym = inputEl ? inputEl.value.trim().toUpperCase() : '';
+  if (!sym.includes('_')) {
+    alert('Use BASE_QUOTE (ex.: BASE_USDT)');
+    return;
+  }
   const select = document.getElementById('spotExchangeSelect');
   const exchangeKey = select ? select.value : getSpotKey();
-  await setSymbol(sym, exchangeKey);
-  localStorage.setItem('lastSymbol', sym);
-  try { localStorage.setItem('lastSpotExchange', exchangeKey); } catch {}
-  document.getElementById('titleSymbol').textContent = sym;
-  await refreshMetaUI(sym);
+  let normalized = sym;
+  try {
+    normalized = await setSymbol(sym, exchangeKey);
+  } catch (err) {
+    alert('Falha ao aplicar o símbolo: ' + (err?.message || err));
+    return;
+  }
+  if (inst) {
+    inst.symbol = normalized;
+    inst.draftSymbol = normalized;
+    inst.spotExchange = exchangeKey;
+    inst.label = inst.label && inst.label !== sym ? inst.label : normalized;
+    resetInstanceDataState(inst);
+    ensureInstanceMeta(inst);
+  }
+  if (inputEl) inputEl.value = normalized;
+  document.getElementById('titleSymbol').textContent = normalized;
+  persistInstances();
+  renderInstanceTabs();
+  await refreshMetaUI(normalized);
   await refreshBalances();
   await fetchData();
   await fetchSpreadData(true, getSpotKey());
@@ -608,6 +1256,18 @@ document.getElementById('autoCfg').addEventListener('click', async () => {
   if (!sym.includes('_')) return alert('Use BASE_QUOTE (ex.: BASE_USDT)');
   await refreshMetaUI(sym);
 });
+
+const symbolInputEl = document.getElementById('symbolInput');
+if (symbolInputEl) {
+  symbolInputEl.addEventListener('input', (ev) => {
+    const next = ev.target.value.toUpperCase();
+    if (next !== ev.target.value) ev.target.value = next;
+    const inst = getActiveInstance();
+    if (!inst) return;
+    inst.draftSymbol = next.trim();
+    persistInstances();
+  });
+}
 
 document.getElementById('saveOverride').addEventListener('click', async () => {
   const sym = document.getElementById('symbolInput').value.trim().toUpperCase();
@@ -703,20 +1363,7 @@ const levelSelections = {
   open: new Set(loadLevelSelection('open')),
   close: new Set(loadLevelSelection('close'))
 };
-let alertMin = parseFloat(localStorage.getItem('alertMin'));
-let alertMax = parseFloat(localStorage.getItem('alertMax'));
-let soundEnabled = localStorage.getItem('soundOn') === '1';
-let telegramEnabled = localStorage.getItem('tgOn') === '1';
-const loadFlag = (key, defaultValue) => {
-  const raw = localStorage.getItem(key);
-  if (raw === null || raw === undefined) return defaultValue;
-  return raw === '1';
-};
-let telegramVolumeGuard = loadFlag('tgVolumeGuard', false);
-let telegramIncludeSymbol = loadFlag('tgIncludeSymbol', true);
-let telegramIncludeDiff = loadFlag('tgIncludeDiff', true);
-let telegramIncludeVolumes = loadFlag('tgIncludeVolumes', false);
-let audioCtx = null, lastBeep = 0, lastTgSent = 0;
+let audioCtx = null;
 
 let spreadFilter = 'all';
 const SPREAD_RANGE_WINDOWS = {
@@ -743,27 +1390,7 @@ try {
   }
 } catch {}
 
-if (Number.isFinite(alertMin)) {
-  const el = document.getElementById('alertMin');
-  if (el) el.value = alertMin;
-}
-if (Number.isFinite(alertMax)) {
-  const el = document.getElementById('alertMax');
-  if (el) el.value = alertMax;
-}
 useScientificNotation = localStorage.getItem('quotesScientific') === '1';
-const soundToggleEl = document.getElementById('soundToggle');
-if (soundToggleEl) soundToggleEl.checked = soundEnabled;
-const telegramToggleEl = document.getElementById('telegramToggle');
-if (telegramToggleEl) telegramToggleEl.checked = telegramEnabled;
-const telegramVolumeGuardEl = document.getElementById('telegramVolumeGuard');
-if (telegramVolumeGuardEl) telegramVolumeGuardEl.checked = telegramVolumeGuard;
-const telegramIncludeSymbolEl = document.getElementById('telegramIncludeSymbol');
-if (telegramIncludeSymbolEl) telegramIncludeSymbolEl.checked = telegramIncludeSymbol;
-const telegramIncludeDiffEl = document.getElementById('telegramIncludeDiff');
-if (telegramIncludeDiffEl) telegramIncludeDiffEl.checked = telegramIncludeDiff;
-const telegramIncludeVolumesEl = document.getElementById('telegramIncludeVolumes');
-if (telegramIncludeVolumesEl) telegramIncludeVolumesEl.checked = telegramIncludeVolumes;
 const scientificToggleEl = document.getElementById('scientificToggle');
 if (scientificToggleEl) scientificToggleEl.checked = useScientificNotation;
 
@@ -834,29 +1461,34 @@ function playBeep() {
   } catch {}
 }
 
-async function notifyTelegram(diff) {
-  if (!telegramEnabled) return;
-  if (!lastQuotes) return;
+async function notifyTelegram(diff, { quotesData = lastQuotes, meta = currentMeta, spotKey = getSpotKey(), config, runtime } = {}) {
+  const cfg = createDefaultAlertConfig(config);
+  if (!cfg.telegramEnabled) return;
+  if (!quotesData) return;
+  const run = runtime || createDefaultAlertRuntime();
   const now = Date.now();
-  if (now - lastTgSent < 10000) return; // evita spam
+  if (now - run.lastTgSent < 10000) return; // evita spam
   const mode = getMode();
-  const stats = computeSelectionStats(mode);
+  const stats = computeSelectionStats(mode, quotesData);
   const selectedLevels = Array.from(levelSelections[mode]).sort((a, b) => a - b);
   const levelsRaw = mode === 'close'
-    ? (lastQuotes?.close?.levels || [])
-    : (lastQuotes?.open?.levels || []);
+    ? (quotesData?.close?.levels || [])
+    : (quotesData?.open?.levels || []);
   const levelEntries = Array.isArray(levelsRaw) ? levelsRaw.slice(0, 3) : [];
-  const baseSymbol = lastQuotes?.baseSymbol || (lastQuotes?.symbol ? String(lastQuotes.symbol).split('_')[0] : 'BASE');
-  const symbol = lastQuotes?.symbol || null;
+  const baseSymbol = quotesData?.baseSymbol || (quotesData?.symbol ? String(quotesData.symbol).split('_')[0] : 'BASE');
+  const symbol = quotesData?.symbol || null;
 
-  if (telegramVolumeGuard) {
-    if (!currentMeta) return;
-    const gateMinQuote = Number(currentMeta?.gate?.minQuote || 0);
+  if (cfg.telegramVolumeGuard) {
+    if (!meta) return;
+    const normalizedSpot = (spotKey || DEFAULT_SPOT.key || 'gate').toLowerCase();
+    const spotMeta = (meta && meta[normalizedSpot]) || meta.gate || {};
+    const gateMinQuote = Number(spotMeta?.minQuote || 0);
     const gateQuote = Number.isFinite(stats.gateQuote) ? stats.gateQuote : 0;
     if (gateMinQuote > 0 && gateQuote < gateMinQuote) return;
 
-    const minContracts = Number(currentMeta?.mexc?.minContracts || 0);
-    const contractSize = Number(currentMeta?.mexc?.contractSize || 1);
+    const mexcMeta = meta.mexc || {};
+    const minContracts = Number(mexcMeta?.minContracts || 0);
+    const contractSize = Number(mexcMeta?.contractSize || 1);
     const mexcMinBase = minContracts * contractSize;
     const mexcQuote = Number.isFinite(stats.mexcQuote) ? stats.mexcQuote : 0;
     const mexcAvg = Number.isFinite(stats.mexcAvg) ? stats.mexcAvg : 0;
@@ -866,7 +1498,7 @@ async function notifyTelegram(diff) {
     }
   }
 
-  lastTgSent = now;
+  run.lastTgSent = now;
   const sanitizeLevel = (entry) => {
     const level = Number(entry?.level);
     const gatePrice = Number(entry?.gate?.price);
@@ -896,10 +1528,10 @@ async function notifyTelegram(diff) {
     mode,
     diff,
     options: {
-      includeSymbol: telegramIncludeSymbol,
-      includeDiff: telegramIncludeDiff,
-      includeVolumes: telegramIncludeVolumes,
-      requireMinVolume: telegramVolumeGuard
+      includeSymbol: !!cfg.telegramIncludeSymbol,
+      includeDiff: !!cfg.telegramIncludeDiff,
+      includeVolumes: !!cfg.telegramIncludeVolumes,
+      requireMinVolume: !!cfg.telegramVolumeGuard
     },
     active: {
       selectedLevels,
@@ -924,49 +1556,98 @@ async function notifyTelegram(diff) {
   } catch {}
 }
 
-function checkAlert(diffVal) {
-  const diff = Number(diffVal);
+function handleAlertsForInstance(inst, state, quotesData) {
+  if (!inst || !quotesData) return;
+  const config = state ? (state.alertConfig = createDefaultAlertConfig(state.alertConfig)) : createDefaultAlertConfig();
+  const runtime = state ? (state.alertRuntime = createDefaultAlertRuntime(state.alertRuntime)) : createDefaultAlertRuntime();
+  const mode = getMode();
+  const stats = computeSelectionStats(mode, quotesData);
+  const diff = Number(stats.diffPct);
   if (!Number.isFinite(diff)) return;
-  const min = isFinite(alertMin) ? alertMin : -Infinity;
-  const max = isFinite(alertMax) ? alertMax : Infinity;
+  const min = Number.isFinite(config.min) ? config.min : -Infinity;
+  const max = Number.isFinite(config.max) ? config.max : Infinity;
   if (diff < min || diff > max) {
     const now = Date.now();
-    if (soundEnabled && now - lastBeep > 1000) { playBeep(); lastBeep = now; }
-    notifyTelegram(diff);
+    if (config.soundEnabled && now - runtime.lastBeep > 1000) {
+      playBeep();
+      runtime.lastBeep = now;
+    }
+    const meta = state?.meta || currentMeta;
+    const spotKey = inst?.spotExchange || getSpotKey();
+    notifyTelegram(diff, { quotesData, meta, spotKey, config, runtime });
   }
 }
 
-document.getElementById('alertMin').addEventListener('change', e => {
-  alertMin = parseFloat(e.target.value);
-  localStorage.setItem('alertMin', e.target.value);
+const { min: alertMinInput, max: alertMaxInput, sound: soundToggleEl, telegram: telegramToggleEl, volumeGuard: telegramVolumeGuardEl, includeSymbol: telegramIncludeSymbolEl, includeDiff: telegramIncludeDiffEl, includeVolumes: telegramIncludeVolumesEl } = getAlertElements();
+
+alertMinInput?.addEventListener('change', (e) => {
+  const num = Number(e.target.value);
+  mutateActiveAlertConfig((cfg) => {
+    cfg.min = Number.isFinite(num) ? num : null;
+  });
+  refreshAlertUIFromActiveInstance();
 });
-document.getElementById('alertMax').addEventListener('change', e => {
-  alertMax = parseFloat(e.target.value);
-  localStorage.setItem('alertMax', e.target.value);
+
+alertMaxInput?.addEventListener('change', (e) => {
+  const num = Number(e.target.value);
+  mutateActiveAlertConfig((cfg) => {
+    cfg.max = Number.isFinite(num) ? num : null;
+  });
+  refreshAlertUIFromActiveInstance();
 });
-document.getElementById('soundToggle').addEventListener('change', e => {
-  soundEnabled = e.target.checked;
-  localStorage.setItem('soundOn', soundEnabled ? '1' : '0');
+
+soundToggleEl?.addEventListener('change', (e) => {
+  const checked = !!e.target.checked;
+  mutateActiveAlertConfig((cfg, state) => {
+    cfg.soundEnabled = checked;
+    if (!checked && state?.alertRuntime) {
+      state.alertRuntime.lastBeep = 0;
+    }
+  });
+  refreshAlertUIFromActiveInstance();
 });
-document.getElementById('telegramToggle').addEventListener('change', e => {
-  telegramEnabled = e.target.checked;
-  localStorage.setItem('tgOn', telegramEnabled ? '1' : '0');
+
+telegramToggleEl?.addEventListener('change', (e) => {
+  const checked = !!e.target.checked;
+  mutateActiveAlertConfig((cfg, state) => {
+    cfg.telegramEnabled = checked;
+    if (!checked && state?.alertRuntime) {
+      state.alertRuntime.lastTgSent = 0;
+    }
+  });
+  refreshAlertUIFromActiveInstance();
 });
-telegramVolumeGuardEl?.addEventListener('change', e => {
-  telegramVolumeGuard = e.target.checked;
-  localStorage.setItem('tgVolumeGuard', telegramVolumeGuard ? '1' : '0');
+
+telegramVolumeGuardEl?.addEventListener('change', (e) => {
+  const checked = !!e.target.checked;
+  mutateActiveAlertConfig((cfg) => {
+    cfg.telegramVolumeGuard = checked;
+  });
+  refreshAlertUIFromActiveInstance();
 });
-telegramIncludeSymbolEl?.addEventListener('change', e => {
-  telegramIncludeSymbol = e.target.checked;
-  localStorage.setItem('tgIncludeSymbol', telegramIncludeSymbol ? '1' : '0');
+
+telegramIncludeSymbolEl?.addEventListener('change', (e) => {
+  const checked = !!e.target.checked;
+  mutateActiveAlertConfig((cfg) => {
+    cfg.telegramIncludeSymbol = checked;
+  });
+  refreshAlertUIFromActiveInstance();
 });
-telegramIncludeDiffEl?.addEventListener('change', e => {
-  telegramIncludeDiff = e.target.checked;
-  localStorage.setItem('tgIncludeDiff', telegramIncludeDiff ? '1' : '0');
+
+telegramIncludeDiffEl?.addEventListener('change', (e) => {
+  const checked = !!e.target.checked;
+  mutateActiveAlertConfig((cfg) => {
+    cfg.telegramIncludeDiff = checked;
+  });
+  refreshAlertUIFromActiveInstance();
 });
-telegramIncludeVolumesEl?.addEventListener('change', e => {
-  telegramIncludeVolumes = e.target.checked;
-  localStorage.setItem('tgIncludeVolumes', telegramIncludeVolumes ? '1' : '0');
+
+telegramIncludeVolumesEl?.addEventListener('change', (e) => {
+  const checked = !!e.target.checked;
+  mutateActiveAlertConfig((cfg) => {
+    cfg.telegramIncludeVolumes = checked;
+  });
+  refreshAlertUIFromActiveInstance();
 });
 scientificToggleEl?.addEventListener('change', e => {
   useScientificNotation = e.target.checked;
@@ -1248,8 +1929,10 @@ function renderLevelsTable(mode, levels, baseSymbol, tbodyId) {
   });
 }
 
-function computeSelectionStats(mode) {
-  const levels = mode === 'open' ? (lastQuotes?.open?.levels || []) : (lastQuotes?.close?.levels || []);
+function computeSelectionStats(mode, quotes = lastQuotes) {
+  const levels = mode === 'open'
+    ? (quotes?.open?.levels || [])
+    : (quotes?.close?.levels || []);
   const selected = Array.from(levelSelections[mode]).sort((a, b) => a - b);
   let gateBase = 0, gateQuote = 0, mexcBase = 0, mexcQuote = 0;
   selected.forEach(idx => {
@@ -1347,8 +2030,11 @@ function renderQuotes() {
   const diffVal = activeStats.diffPct;
   const diffEl = document.getElementById('diff');
   if (diffEl) diffEl.textContent = formatDiffValue(diffVal);
-
-  checkAlert(diffVal);
+  const inst = getActiveInstance();
+  if (inst) {
+    const state = ensureInstanceState(inst);
+    handleAlertsForInstance(inst, state, lastQuotes);
+  }
 }
 
 function ensureSpreadChart() {
@@ -1357,6 +2043,7 @@ function ensureSpreadChart() {
   const canvas = document.getElementById('spreadChart');
   if (!canvas) return null;
   const ctx = canvas.getContext('2d');
+  const defaultLegendClick = Chart?.defaults?.plugins?.legend?.onClick;
   spreadChart = new Chart(ctx, {
     type: 'line',
     data: {
@@ -1538,7 +2225,21 @@ function ensureSpreadChart() {
         }
       },
       plugins: {
-        legend: { position: 'bottom' },
+        legend: {
+          position: 'bottom',
+          onClick: (evt, legendItem, legend) => {
+            if (typeof defaultLegendClick === 'function') {
+              defaultLegendClick.call(legend.chart, evt, legendItem, legend);
+            } else if (Chart?.defaults?.plugins?.legend?.onClick) {
+              Chart.defaults.plugins.legend.onClick.call(legend.chart, evt, legendItem, legend);
+            }
+            const inst = getActiveInstance();
+            if (inst) {
+              const state = ensureInstanceState(inst);
+              captureChartVisibilityToState(state);
+            }
+          }
+        },
         tooltip: {
           callbacks: {
             label: (ctx) => {
@@ -1587,6 +2288,11 @@ function ensureSpreadChart() {
       }
     }
   });
+  const inst = getActiveInstance();
+  if (inst) {
+    const state = ensureInstanceState(inst);
+    applyChartVisibilityFromState(state);
+  }
   return spreadChart;
 }
 
@@ -1781,32 +2487,35 @@ function renderSpreadChart() {
       finalArbEl.style.color = '';
     }
   }
+  const inst = getActiveInstance();
+  if (inst) {
+    const state = ensureInstanceState(inst);
+    applyChartVisibilityFromState(state);
+  }
   chart.update('none');
 }
 
-async function fetchSpreadData(force = false, spotKey = getSpotKey()) {
-  const key = (spotKey || '').toLowerCase() || DEFAULT_SPOT.key;
+async function fetchSpreadDataForInstance(inst, force = false, spotKey = null) {
+  const state = ensureInstanceState(inst);
+  if (!state || !inst?.symbol) return;
+  const key = (spotKey || inst.spotExchange || DEFAULT_SPOT.key || '').toLowerCase();
   const now = Date.now();
-  const lastFetch = lastSpreadFetchBySpot.get(key) || 0;
+  const lastFetch = state.lastSpreadFetchBySpot.get(key) || 0;
   if (!force && now - lastFetch < 10000) return;
-  lastSpreadFetchBySpot.set(key, now);
+  state.lastSpreadFetchBySpot.set(key, now);
   let activeKey = key;
   try {
-    const symbol = lastQuotes?.symbol;
+    const symbol = inst.symbol || state.lastQuotes?.symbol;
+    if (!symbol) return;
     const params = new URLSearchParams();
-    if (symbol) params.set('symbol', symbol);
+    params.set('symbol', symbol);
     if (key) params.set('spotExchange', key);
-    const qs = params.toString();
-    const url = qs ? `/api/spreads?${qs}` : '/api/spreads';
-    const resp = await fetch(url);
+    const resp = await fetch(`/api/spreads?${params.toString()}`);
     const data = await safeJson(resp);
     if (!resp.ok) throw new Error(data?.error || 'Falha ao carregar spreads.');
     let responseKey = key;
-    if (data?.spotExchange) {
-      setSpotExchangeState(data.spotExchange);
-      if (data.spotExchange?.key) {
-        responseKey = String(data.spotExchange.key || '').toLowerCase() || key;
-      }
+    if (data?.spotExchange?.key) {
+      responseKey = String(data.spotExchange.key || '').toLowerCase() || key;
     }
     const normalizedKey = responseKey || key;
     activeKey = normalizedKey;
@@ -1836,37 +2545,93 @@ async function fetchSpreadData(force = false, spotKey = getSpotKey()) {
       };
     });
     mapped.sort((a, b) => Number(a.ts) - Number(b.ts));
-    spreadSeriesBySpot.set(normalizedKey, mapped);
-    if (getSpotKey() === normalizedKey) {
-      spreadPoints = mapped;
+    state.spreadSeriesBySpot.set(normalizedKey, mapped);
+    if (inst.id === activeInstanceId && getSpotKey() === normalizedKey) {
+      state.spreadPoints = mapped;
+      spreadPoints = state.spreadPoints;
       renderSpreadChart();
+    } else if (normalizedKey === key) {
+      state.spreadPoints = mapped;
     }
   } catch (e) {
     console.warn('Falha ao carregar spreads:', e?.message || e);
     if (force) {
-      spreadSeriesBySpot.set(activeKey, []);
-      if (getSpotKey() === activeKey) {
-        spreadPoints = [];
+      state.spreadSeriesBySpot.set(activeKey, []);
+      if (inst.id === activeInstanceId && getSpotKey() === activeKey) {
+        state.spreadPoints = [];
+        spreadPoints = state.spreadPoints;
         renderSpreadChart();
       }
     }
   }
 }
 
-async function fetchData() {
-  try {
-    const r = await fetch('/api/data');
-    const d = await r.json();
-    lastQuotes = d;
-    if (d?.spotExchange) setSpotExchangeState(d.spotExchange);
-    if (d.symbol) setCurrentSymbol(d.symbol);
-    document.getElementById('titleSymbol').textContent = d.symbol || '-';
-    renderQuotes();
-    fetchSpreadData();
-  } catch {}
+async function fetchSpreadData(force = false, spotKey = getSpotKey()) {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  await fetchSpreadDataForInstance(inst, force, spotKey);
 }
-setInterval(fetchData, 1000);
-setInterval(() => fetchSpreadData(false), 15000);
+
+async function fetchDataForInstance(inst) {
+  const state = ensureInstanceState(inst);
+  if (!state || !inst?.symbol) return;
+  try {
+    const params = new URLSearchParams();
+    params.set('symbol', inst.symbol);
+    const spotKey = inst.spotExchange || DEFAULT_SPOT.key;
+    if (spotKey) params.set('spotExchange', spotKey);
+    const resp = await fetch(`/api/data?${params.toString()}`);
+    const d = await safeJson(resp);
+    if (!resp.ok) throw new Error(d?.error || 'Erro ao obter dados.');
+    const prevSymbol = inst.symbol;
+    const normalizedSymbol = typeof d.symbol === 'string' ? d.symbol.toUpperCase() : prevSymbol;
+    let changed = false;
+    if (normalizedSymbol && normalizedSymbol !== prevSymbol) {
+      const prevDraft = inst.draftSymbol;
+      inst.symbol = normalizedSymbol;
+      if (!prevDraft || prevDraft === prevSymbol) inst.draftSymbol = normalizedSymbol;
+      if (!inst.label || inst.label === prevSymbol) inst.label = normalizedSymbol;
+      state.meta = null;
+      state.metaSymbol = null;
+      changed = true;
+    }
+    const responseSpot = d?.spotExchange?.key ? String(d.spotExchange.key || '').toLowerCase() : null;
+    if (responseSpot && responseSpot !== inst.spotExchange) {
+      inst.spotExchange = responseSpot;
+      changed = true;
+    }
+    state.lastQuotes = d;
+    if (inst.id === activeInstanceId) {
+      lastQuotes = d;
+      if (d?.spotExchange) {
+        setSpotExchangeState(d.spotExchange);
+      } else if (inst.spotExchange) {
+        setSpotExchangeState({ key: inst.spotExchange });
+      }
+      if (d.symbol) setCurrentSymbol(d.symbol);
+      document.getElementById('titleSymbol').textContent = d.symbol || inst.symbol || '-';
+      renderQuotes();
+      fetchSpreadDataForInstance(inst);
+    } else {
+      handleAlertsForInstance(inst, state, d);
+    }
+    if (changed) {
+      renderInstanceTabs();
+      persistInstances();
+      ensureInstanceMeta(inst);
+    }
+  } catch (err) {
+    if (inst.id === activeInstanceId) {
+      console.warn('Falha ao obter dados:', err?.message || err);
+    }
+  }
+}
+
+async function fetchData() {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  await fetchDataForInstance(inst);
+}
 
 const spreadFilterButtons = document.querySelectorAll('[data-spread-filter]');
 spreadFilterButtons.forEach((btn) => {
@@ -1944,7 +2709,16 @@ fetchSpreadData(true, getSpotKey());
 async function refreshHistory() {
   try {
     const r = await fetch('/api/history');
-    const hist = await r.json();
+    const data = await r.json();
+    const symbol = currentSymbol;
+    const hist = Array.isArray(data)
+      ? data.filter((item) => {
+          if (!item) return false;
+          if (!symbol) return true;
+          if (!item.symbol) return true;
+          return String(item.symbol).toUpperCase() === String(symbol).toUpperCase();
+        })
+      : [];
     const tbody = document.getElementById('historyBody');
     tbody.innerHTML = '';
     hist.forEach(h => {
@@ -2531,25 +3305,56 @@ if (positionDismantleBtn) {
 // ======== Gráfico simples
 // ======== Init
 (async function init() {
-  const last = localStorage.getItem('lastSymbol');
-  const lastExchange = localStorage.getItem('lastSpotExchange');
+  setupCardToggles();
+
+  let storedInstances = [];
+  try {
+    storedInstances = JSON.parse(localStorage.getItem('arb_instances') || '[]');
+    if (!Array.isArray(storedInstances)) storedInstances = [];
+  } catch {
+    storedInstances = [];
+  }
+
+  storedInstances.forEach((item) => {
+    if (!item || typeof item !== 'object') return;
+    addInstance({
+      id: item.id,
+      symbol: typeof item.symbol === 'string' ? item.symbol.toUpperCase() : undefined,
+      spotExchange: typeof item.spotExchange === 'string' ? item.spotExchange : undefined,
+      label: typeof item.label === 'string' ? item.label : undefined,
+      draftSymbol: typeof item.draftSymbol === 'string' ? item.draftSymbol : undefined,
+      alerts: item.alerts
+    }, { switchTo: false });
+  });
+
   const serverSym = await getSymbol();
   const serverExchange = getSpotKey();
-  let sym = last || serverSym || 'BASE_USDT';
-  let exchangeKey = lastExchange || serverExchange || getSpotKey();
-  setupCardToggles();
-  document.getElementById('symbolInput').value = sym;
-  document.getElementById('titleSymbol').textContent = sym;
-  setSpotExchangeState({ key: exchangeKey });
-  updateSpotSelect();
-  if (sym !== serverSym || exchangeKey !== serverExchange) {
-    await setSymbol(sym, exchangeKey);
+
+  if (instances.size === 0) {
+    addInstance({ id: 'default', symbol: serverSym || 'BASE_USDT', spotExchange: serverExchange, label: serverSym || 'BASE_USDT', draftSymbol: serverSym || 'BASE_USDT' }, { switchTo: false });
   }
-  await refreshMetaUI(sym);
-  setModeFromStorage();
-  if (isFinite(alertMin)) document.getElementById('alertMin').value = alertMin;
-  if (isFinite(alertMax)) document.getElementById('alertMax').value = alertMax;
-  document.getElementById('soundToggle').checked = soundEnabled;
-  document.getElementById('telegramToggle').checked = telegramEnabled;
-  refreshBalances(); refreshHistory(); refreshPosition(); fetchData();
+
+  let desiredActive = null;
+  try {
+    const storedActive = localStorage.getItem('arb_active_instance');
+    if (storedActive && instances.has(storedActive)) desiredActive = storedActive;
+  } catch {}
+  if (!desiredActive) {
+    desiredActive = instances.keys().next().value;
+  }
+
+  const inst = desiredActive ? instances.get(desiredActive) : null;
+  if (inst) {
+    if (!inst.symbol) inst.symbol = (serverSym || 'BASE_USDT');
+    if (!inst.draftSymbol) inst.draftSymbol = inst.symbol;
+    if (!inst.spotExchange) inst.spotExchange = serverExchange || DEFAULT_SPOT.key;
+  }
+
+  renderInstanceTabs();
+  activeInstanceId = null;
+  if (desiredActive) {
+    await switchInstance(desiredActive, { skipPersist: true });
+  }
+  persistInstances();
+
 })();

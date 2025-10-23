@@ -13,6 +13,14 @@
     .card-body { margin-top: 10px; }
     .w33 { flex: 1 1 360px; }
     .w66 { flex: 2 1 360px; }
+    .instance-tabs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    .instance-tab { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 18px; border: 1px solid #cfd4dc; background: #f3f5f8; color: #2f3b52; font-size: 13px; cursor: pointer; transition: background 0.2s ease, color 0.2s ease, border 0.2s ease; }
+    .instance-tab.active { background: #0b5fff; border-color: #0b5fff; color: #fff; }
+    .instance-tab .instance-tab-label { pointer-events: none; }
+    .instance-tab .instance-tab-close { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px; }
+    .instance-tab .instance-tab-close:hover { opacity: 0.75; }
+    .instance-tab.add-tab { border: 1px dashed #b5bdc9; background: transparent; color: #445066; font-weight: 600; }
+    .instance-tab.add-tab:hover { background: #e7ecf4; }
     label.inline { display: inline-block; margin-right: 8px; }
     input[type="text"], input[type="number"] { padding: 4px 6px; }
     button { padding: 6px 10px; cursor: pointer; }
@@ -100,6 +108,8 @@
 </head>
 <body>
   <h1>Arbitragem <span data-spot-label>Gate.io</span> x MEXC — <span id="titleSymbol">BASE_USDT</span></h1>
+
+  <div class="instance-tabs" id="instanceTabs"></div>
 
   <div class="card top" id="configCard">
     <h3>Par &amp; Configurações</h3>
