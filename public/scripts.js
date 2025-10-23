@@ -44,30 +44,123 @@ function createDefaultDatasetVisibility() {
   return { ...DEFAULT_DATASET_VISIBILITY };
 }
 
+const DEFAULT_ALERT_CONFIG = {
+  min: null,
+  max: null,
+  soundEnabled: false,
+  telegramEnabled: false,
+  telegramVolumeGuard: false,
+  telegramIncludeSymbol: true,
+  telegramIncludeDiff: true,
+  telegramIncludeVolumes: false
+};
+
+const DEFAULT_ALERT_RUNTIME = {
+  lastBeep: 0,
+  lastTgSent: 0
+};
+
+const LEGACY_ALERT_DEFAULTS = (() => {
+  const defaults = {};
+  const parseNumber = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
+  const parseFlag = (value) => {
+    if (value === '1') return true;
+    if (value === '0') return false;
+    return undefined;
+  };
+  try {
+    const legacyMin = parseNumber(localStorage.getItem('alertMin'));
+    if (legacyMin !== null) defaults.min = legacyMin;
+  } catch {}
+  try {
+    const legacyMax = parseNumber(localStorage.getItem('alertMax'));
+    if (legacyMax !== null) defaults.max = legacyMax;
+  } catch {}
+  try {
+    const sound = parseFlag(localStorage.getItem('soundOn'));
+    if (sound !== undefined) defaults.soundEnabled = sound;
+  } catch {}
+  try {
+    const tg = parseFlag(localStorage.getItem('tgOn'));
+    if (tg !== undefined) defaults.telegramEnabled = tg;
+  } catch {}
+  try {
+    const volumeGuard = parseFlag(localStorage.getItem('tgVolumeGuard'));
+    if (volumeGuard !== undefined) defaults.telegramVolumeGuard = volumeGuard;
+  } catch {}
+  try {
+    const includeSymbol = parseFlag(localStorage.getItem('tgIncludeSymbol'));
+    if (includeSymbol !== undefined) defaults.telegramIncludeSymbol = includeSymbol;
+  } catch {}
+  try {
+    const includeDiff = parseFlag(localStorage.getItem('tgIncludeDiff'));
+    if (includeDiff !== undefined) defaults.telegramIncludeDiff = includeDiff;
+  } catch {}
+  try {
+    const includeVolumes = parseFlag(localStorage.getItem('tgIncludeVolumes'));
+    if (includeVolumes !== undefined) defaults.telegramIncludeVolumes = includeVolumes;
+  } catch {}
+  return defaults;
+})();
+
+function createDefaultAlertConfig(overrides) {
+  const config = { ...DEFAULT_ALERT_CONFIG, ...LEGACY_ALERT_DEFAULTS };
+  if (!overrides || typeof overrides !== 'object') return config;
+  const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+  if (has(overrides, 'min')) {
+    const num = Number(overrides.min);
+    config.min = Number.isFinite(num) ? num : null;
+  }
+  if (has(overrides, 'max')) {
+    const num = Number(overrides.max);
+    config.max = Number.isFinite(num) ? num : null;
+  }
+  if (has(overrides, 'soundEnabled')) config.soundEnabled = !!overrides.soundEnabled;
+  if (has(overrides, 'telegramEnabled')) config.telegramEnabled = !!overrides.telegramEnabled;
+  if (has(overrides, 'telegramVolumeGuard')) config.telegramVolumeGuard = !!overrides.telegramVolumeGuard;
+  if (has(overrides, 'telegramIncludeSymbol')) config.telegramIncludeSymbol = !!overrides.telegramIncludeSymbol;
+  if (has(overrides, 'telegramIncludeDiff')) config.telegramIncludeDiff = !!overrides.telegramIncludeDiff;
+  if (has(overrides, 'telegramIncludeVolumes')) config.telegramIncludeVolumes = !!overrides.telegramIncludeVolumes;
+  return config;
+}
+
+function createDefaultAlertRuntime(overrides) {
+  const runtime = { ...DEFAULT_ALERT_RUNTIME };
+  if (!overrides || typeof overrides !== 'object') return runtime;
+  if (Object.prototype.hasOwnProperty.call(overrides, 'lastBeep')) {
+    const num = Number(overrides.lastBeep);
+    runtime.lastBeep = Number.isFinite(num) ? num : 0;
+  }
+  if (Object.prototype.hasOwnProperty.call(overrides, 'lastTgSent')) {
+    const num = Number(overrides.lastTgSent);
+    runtime.lastTgSent = Number.isFinite(num) ? num : 0;
+  }
+  return runtime;
+}
+
 function ensureInstanceState(inst) {
   if (!inst) return null;
-  if (!inst._state) {
-    inst._state = {
-      lastQuotes: null,
-      spreadSeriesBySpot: new Map(),
-      spreadPoints: [],
-      lastSpreadFetchBySpot: new Map(),
-      fetchIntervals: { quotes: null, spreads: null },
-      meta: null,
-      metaSymbol: null,
-      metaLoading: false,
-      datasetVisibility: createDefaultDatasetVisibility()
-    };
-  } else {
-    if (!inst._state.spreadSeriesBySpot) inst._state.spreadSeriesBySpot = new Map();
-    if (!inst._state.lastSpreadFetchBySpot) inst._state.lastSpreadFetchBySpot = new Map();
-    if (!Array.isArray(inst._state.spreadPoints)) inst._state.spreadPoints = [];
-    if (!inst._state.fetchIntervals) inst._state.fetchIntervals = { quotes: null, spreads: null };
-    if (!inst._state.datasetVisibility) inst._state.datasetVisibility = createDefaultDatasetVisibility();
-    if (typeof inst._state.metaSymbol !== 'string') inst._state.metaSymbol = inst._state.metaSymbol || null;
-    if (typeof inst._state.metaLoading !== 'boolean') inst._state.metaLoading = false;
-  }
-  return inst._state;
+  if (!inst._state) inst._state = {};
+  const state = inst._state;
+  if (!state.spreadSeriesBySpot) state.spreadSeriesBySpot = new Map();
+  if (!state.lastSpreadFetchBySpot) state.lastSpreadFetchBySpot = new Map();
+  if (!Array.isArray(state.spreadPoints)) state.spreadPoints = [];
+  if (!state.fetchIntervals) state.fetchIntervals = { quotes: null, spreads: null };
+  if (!state.datasetVisibility) state.datasetVisibility = createDefaultDatasetVisibility();
+  if (typeof state.metaSymbol !== 'string') state.metaSymbol = state.metaSymbol || null;
+  if (typeof state.metaLoading !== 'boolean') state.metaLoading = false;
+  if (!state.hasOwnProperty('meta')) state.meta = state.meta || null;
+  if (!state.hasOwnProperty('lastQuotes')) state.lastQuotes = state.lastQuotes || null;
+
+  const configSource = state.alertConfig || inst.alertConfig;
+  state.alertConfig = createDefaultAlertConfig(configSource);
+  state.alertRuntime = createDefaultAlertRuntime(state.alertRuntime);
+  if (inst.alertConfig) delete inst.alertConfig;
+
+  return state;
 }
 
 function resetInstanceDataState(inst) {
@@ -113,6 +206,84 @@ function applyChartVisibilityFromState(state) {
   });
 }
 
+function getAlertElements() {
+  return {
+    min: document.getElementById('alertMin'),
+    max: document.getElementById('alertMax'),
+    sound: document.getElementById('soundToggle'),
+    telegram: document.getElementById('telegramToggle'),
+    volumeGuard: document.getElementById('telegramVolumeGuard'),
+    includeSymbol: document.getElementById('telegramIncludeSymbol'),
+    includeDiff: document.getElementById('telegramIncludeDiff'),
+    includeVolumes: document.getElementById('telegramIncludeVolumes')
+  };
+}
+
+function applyAlertConfigToUI(config) {
+  const cfg = createDefaultAlertConfig(config);
+  const { min, max, sound, telegram, volumeGuard, includeSymbol, includeDiff, includeVolumes } = getAlertElements();
+  if (min) {
+    if (Number.isFinite(cfg.min)) {
+      min.value = cfg.min;
+    } else {
+      min.value = '';
+    }
+  }
+  if (max) {
+    if (Number.isFinite(cfg.max)) {
+      max.value = cfg.max;
+    } else {
+      max.value = '';
+    }
+  }
+  if (sound) sound.checked = !!cfg.soundEnabled;
+  if (telegram) telegram.checked = !!cfg.telegramEnabled;
+  if (volumeGuard) volumeGuard.checked = !!cfg.telegramVolumeGuard;
+  if (includeSymbol) includeSymbol.checked = !!cfg.telegramIncludeSymbol;
+  if (includeDiff) includeDiff.checked = !!cfg.telegramIncludeDiff;
+  if (includeVolumes) includeVolumes.checked = !!cfg.telegramIncludeVolumes;
+}
+
+function captureAlertControlsToState(inst) {
+  if (!inst) return;
+  const state = ensureInstanceState(inst);
+  const cfg = createDefaultAlertConfig(state.alertConfig);
+  const { min, max, sound, telegram, volumeGuard, includeSymbol, includeDiff, includeVolumes } = getAlertElements();
+  if (min) {
+    const num = Number(min.value);
+    cfg.min = Number.isFinite(num) ? num : null;
+  }
+  if (max) {
+    const num = Number(max.value);
+    cfg.max = Number.isFinite(num) ? num : null;
+  }
+  if (sound) cfg.soundEnabled = sound.checked;
+  if (telegram) cfg.telegramEnabled = telegram.checked;
+  if (volumeGuard) cfg.telegramVolumeGuard = volumeGuard.checked;
+  if (includeSymbol) cfg.telegramIncludeSymbol = includeSymbol.checked;
+  if (includeDiff) cfg.telegramIncludeDiff = includeDiff.checked;
+  if (includeVolumes) cfg.telegramIncludeVolumes = includeVolumes.checked;
+  state.alertConfig = createDefaultAlertConfig(cfg);
+}
+
+function mutateActiveAlertConfig(updater, { persist = true } = {}) {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  const state = ensureInstanceState(inst);
+  const cfg = createDefaultAlertConfig(state.alertConfig);
+  const result = typeof updater === 'function' ? updater(cfg, state) : undefined;
+  state.alertConfig = createDefaultAlertConfig(cfg);
+  if (persist) persistInstances();
+  return result;
+}
+
+function refreshAlertUIFromActiveInstance() {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  const state = ensureInstanceState(inst);
+  applyAlertConfigToUI(state.alertConfig);
+}
+
 function startInstanceWatchers(inst) {
   const state = ensureInstanceState(inst);
   if (!state) return;
@@ -150,13 +321,29 @@ function getActiveInstance() {
 
 function persistInstances() {
   try {
-    const serialized = Array.from(instances.values()).map((inst) => ({
-      id: inst.id,
-      symbol: inst.symbol,
-      spotExchange: inst.spotExchange,
-      label: inst.label,
-      draftSymbol: inst.draftSymbol
-    }));
+    const serialized = Array.from(instances.values()).map((inst) => {
+      const state = ensureInstanceState(inst);
+      const config = state?.alertConfig ? createDefaultAlertConfig(state.alertConfig) : createDefaultAlertConfig();
+      state.alertConfig = config;
+      const alerts = {
+        min: Number.isFinite(config.min) ? config.min : null,
+        max: Number.isFinite(config.max) ? config.max : null,
+        soundEnabled: !!config.soundEnabled,
+        telegramEnabled: !!config.telegramEnabled,
+        telegramVolumeGuard: !!config.telegramVolumeGuard,
+        telegramIncludeSymbol: !!config.telegramIncludeSymbol,
+        telegramIncludeDiff: !!config.telegramIncludeDiff,
+        telegramIncludeVolumes: !!config.telegramIncludeVolumes
+      };
+      return {
+        id: inst.id,
+        symbol: inst.symbol,
+        spotExchange: inst.spotExchange,
+        label: inst.label,
+        draftSymbol: inst.draftSymbol,
+        alerts
+      };
+    });
     localStorage.setItem('arb_instances', JSON.stringify(serialized));
     localStorage.setItem('arb_active_instance', activeInstanceId || '');
   } catch (e) {
@@ -227,7 +414,7 @@ function renderInstanceTabs() {
   });
 }
 
-function addInstance({ id, symbol, spotExchange, label, draftSymbol } = {}, { switchTo = false } = {}) {
+function addInstance({ id, symbol, spotExchange, label, draftSymbol, alerts } = {}, { switchTo = false } = {}) {
   const instId = id || generateInstanceId();
   const sym = (symbol || 'BASE_USDT').toUpperCase();
   const spot = (spotExchange || getSpotKey() || DEFAULT_SPOT.key).toLowerCase();
@@ -239,6 +426,19 @@ function addInstance({ id, symbol, spotExchange, label, draftSymbol } = {}, { sw
     label: label || sym,
     draftSymbol: draft
   };
+  let initialAlerts = alerts;
+  if (!initialAlerts) {
+    const active = getActiveInstance();
+    if (active) {
+      const activeState = ensureInstanceState(active);
+      if (activeState?.alertConfig) {
+        initialAlerts = { ...activeState.alertConfig };
+      }
+    }
+  }
+  if (initialAlerts) {
+    instance.alertConfig = createDefaultAlertConfig(initialAlerts);
+  }
   ensureInstanceState(instance);
   instances.set(instId, instance);
   startInstanceWatchers(instance);
@@ -335,6 +535,7 @@ async function switchInstance(id, { skipPersist = false } = {}) {
     prevInstance.spotExchange = getSpotKey();
     const prevState = ensureInstanceState(prevInstance);
     captureChartVisibilityToState(prevState);
+    captureAlertControlsToState(prevInstance);
   }
   activeInstanceId = id;
   if (!skipPersist) persistInstances();
@@ -349,6 +550,7 @@ async function switchInstance(id, { skipPersist = false } = {}) {
   lastSpreadFetchBySpot = state.lastSpreadFetchBySpot;
   spreadPoints = state.spreadPoints;
   lastQuotes = state.lastQuotes;
+  applyAlertConfigToUI(state.alertConfig);
   const inputEl = document.getElementById('symbolInput');
   if (inputEl) inputEl.value = inst.draftSymbol || inst.symbol || '';
   setSpotExchangeState({ key: inst.spotExchange });
@@ -1161,20 +1363,7 @@ const levelSelections = {
   open: new Set(loadLevelSelection('open')),
   close: new Set(loadLevelSelection('close'))
 };
-let alertMin = parseFloat(localStorage.getItem('alertMin'));
-let alertMax = parseFloat(localStorage.getItem('alertMax'));
-let soundEnabled = localStorage.getItem('soundOn') === '1';
-let telegramEnabled = localStorage.getItem('tgOn') === '1';
-const loadFlag = (key, defaultValue) => {
-  const raw = localStorage.getItem(key);
-  if (raw === null || raw === undefined) return defaultValue;
-  return raw === '1';
-};
-let telegramVolumeGuard = loadFlag('tgVolumeGuard', false);
-let telegramIncludeSymbol = loadFlag('tgIncludeSymbol', true);
-let telegramIncludeDiff = loadFlag('tgIncludeDiff', true);
-let telegramIncludeVolumes = loadFlag('tgIncludeVolumes', false);
-let audioCtx = null, lastBeep = 0, lastTgSent = 0;
+let audioCtx = null;
 
 let spreadFilter = 'all';
 const SPREAD_RANGE_WINDOWS = {
@@ -1201,27 +1390,7 @@ try {
   }
 } catch {}
 
-if (Number.isFinite(alertMin)) {
-  const el = document.getElementById('alertMin');
-  if (el) el.value = alertMin;
-}
-if (Number.isFinite(alertMax)) {
-  const el = document.getElementById('alertMax');
-  if (el) el.value = alertMax;
-}
 useScientificNotation = localStorage.getItem('quotesScientific') === '1';
-const soundToggleEl = document.getElementById('soundToggle');
-if (soundToggleEl) soundToggleEl.checked = soundEnabled;
-const telegramToggleEl = document.getElementById('telegramToggle');
-if (telegramToggleEl) telegramToggleEl.checked = telegramEnabled;
-const telegramVolumeGuardEl = document.getElementById('telegramVolumeGuard');
-if (telegramVolumeGuardEl) telegramVolumeGuardEl.checked = telegramVolumeGuard;
-const telegramIncludeSymbolEl = document.getElementById('telegramIncludeSymbol');
-if (telegramIncludeSymbolEl) telegramIncludeSymbolEl.checked = telegramIncludeSymbol;
-const telegramIncludeDiffEl = document.getElementById('telegramIncludeDiff');
-if (telegramIncludeDiffEl) telegramIncludeDiffEl.checked = telegramIncludeDiff;
-const telegramIncludeVolumesEl = document.getElementById('telegramIncludeVolumes');
-if (telegramIncludeVolumesEl) telegramIncludeVolumesEl.checked = telegramIncludeVolumes;
 const scientificToggleEl = document.getElementById('scientificToggle');
 if (scientificToggleEl) scientificToggleEl.checked = useScientificNotation;
 
@@ -1292,11 +1461,13 @@ function playBeep() {
   } catch {}
 }
 
-async function notifyTelegram(diff, quotesData = lastQuotes, meta = currentMeta, spotKey = getSpotKey()) {
-  if (!telegramEnabled) return;
+async function notifyTelegram(diff, { quotesData = lastQuotes, meta = currentMeta, spotKey = getSpotKey(), config, runtime } = {}) {
+  const cfg = createDefaultAlertConfig(config);
+  if (!cfg.telegramEnabled) return;
   if (!quotesData) return;
+  const run = runtime || createDefaultAlertRuntime();
   const now = Date.now();
-  if (now - lastTgSent < 10000) return; // evita spam
+  if (now - run.lastTgSent < 10000) return; // evita spam
   const mode = getMode();
   const stats = computeSelectionStats(mode, quotesData);
   const selectedLevels = Array.from(levelSelections[mode]).sort((a, b) => a - b);
@@ -1307,7 +1478,7 @@ async function notifyTelegram(diff, quotesData = lastQuotes, meta = currentMeta,
   const baseSymbol = quotesData?.baseSymbol || (quotesData?.symbol ? String(quotesData.symbol).split('_')[0] : 'BASE');
   const symbol = quotesData?.symbol || null;
 
-  if (telegramVolumeGuard) {
+  if (cfg.telegramVolumeGuard) {
     if (!meta) return;
     const normalizedSpot = (spotKey || DEFAULT_SPOT.key || 'gate').toLowerCase();
     const spotMeta = (meta && meta[normalizedSpot]) || meta.gate || {};
@@ -1327,7 +1498,7 @@ async function notifyTelegram(diff, quotesData = lastQuotes, meta = currentMeta,
     }
   }
 
-  lastTgSent = now;
+  run.lastTgSent = now;
   const sanitizeLevel = (entry) => {
     const level = Number(entry?.level);
     const gatePrice = Number(entry?.gate?.price);
@@ -1357,10 +1528,10 @@ async function notifyTelegram(diff, quotesData = lastQuotes, meta = currentMeta,
     mode,
     diff,
     options: {
-      includeSymbol: telegramIncludeSymbol,
-      includeDiff: telegramIncludeDiff,
-      includeVolumes: telegramIncludeVolumes,
-      requireMinVolume: telegramVolumeGuard
+      includeSymbol: !!cfg.telegramIncludeSymbol,
+      includeDiff: !!cfg.telegramIncludeDiff,
+      includeVolumes: !!cfg.telegramIncludeVolumes,
+      requireMinVolume: !!cfg.telegramVolumeGuard
     },
     active: {
       selectedLevels,
@@ -1387,52 +1558,96 @@ async function notifyTelegram(diff, quotesData = lastQuotes, meta = currentMeta,
 
 function handleAlertsForInstance(inst, state, quotesData) {
   if (!inst || !quotesData) return;
+  const config = state ? (state.alertConfig = createDefaultAlertConfig(state.alertConfig)) : createDefaultAlertConfig();
+  const runtime = state ? (state.alertRuntime = createDefaultAlertRuntime(state.alertRuntime)) : createDefaultAlertRuntime();
   const mode = getMode();
   const stats = computeSelectionStats(mode, quotesData);
   const diff = Number(stats.diffPct);
   if (!Number.isFinite(diff)) return;
-  const min = isFinite(alertMin) ? alertMin : -Infinity;
-  const max = isFinite(alertMax) ? alertMax : Infinity;
+  const min = Number.isFinite(config.min) ? config.min : -Infinity;
+  const max = Number.isFinite(config.max) ? config.max : Infinity;
   if (diff < min || diff > max) {
     const now = Date.now();
-    if (soundEnabled && now - lastBeep > 1000) { playBeep(); lastBeep = now; }
+    if (config.soundEnabled && now - runtime.lastBeep > 1000) {
+      playBeep();
+      runtime.lastBeep = now;
+    }
     const meta = state?.meta || currentMeta;
     const spotKey = inst?.spotExchange || getSpotKey();
-    notifyTelegram(diff, quotesData, meta, spotKey);
+    notifyTelegram(diff, { quotesData, meta, spotKey, config, runtime });
   }
 }
 
-document.getElementById('alertMin').addEventListener('change', e => {
-  alertMin = parseFloat(e.target.value);
-  localStorage.setItem('alertMin', e.target.value);
+const { min: alertMinInput, max: alertMaxInput, sound: soundToggleEl, telegram: telegramToggleEl, volumeGuard: telegramVolumeGuardEl, includeSymbol: telegramIncludeSymbolEl, includeDiff: telegramIncludeDiffEl, includeVolumes: telegramIncludeVolumesEl } = getAlertElements();
+
+alertMinInput?.addEventListener('change', (e) => {
+  const num = Number(e.target.value);
+  mutateActiveAlertConfig((cfg) => {
+    cfg.min = Number.isFinite(num) ? num : null;
+  });
+  refreshAlertUIFromActiveInstance();
 });
-document.getElementById('alertMax').addEventListener('change', e => {
-  alertMax = parseFloat(e.target.value);
-  localStorage.setItem('alertMax', e.target.value);
+
+alertMaxInput?.addEventListener('change', (e) => {
+  const num = Number(e.target.value);
+  mutateActiveAlertConfig((cfg) => {
+    cfg.max = Number.isFinite(num) ? num : null;
+  });
+  refreshAlertUIFromActiveInstance();
 });
-document.getElementById('soundToggle').addEventListener('change', e => {
-  soundEnabled = e.target.checked;
-  localStorage.setItem('soundOn', soundEnabled ? '1' : '0');
+
+soundToggleEl?.addEventListener('change', (e) => {
+  const checked = !!e.target.checked;
+  mutateActiveAlertConfig((cfg, state) => {
+    cfg.soundEnabled = checked;
+    if (!checked && state?.alertRuntime) {
+      state.alertRuntime.lastBeep = 0;
+    }
+  });
+  refreshAlertUIFromActiveInstance();
 });
-document.getElementById('telegramToggle').addEventListener('change', e => {
-  telegramEnabled = e.target.checked;
-  localStorage.setItem('tgOn', telegramEnabled ? '1' : '0');
+
+telegramToggleEl?.addEventListener('change', (e) => {
+  const checked = !!e.target.checked;
+  mutateActiveAlertConfig((cfg, state) => {
+    cfg.telegramEnabled = checked;
+    if (!checked && state?.alertRuntime) {
+      state.alertRuntime.lastTgSent = 0;
+    }
+  });
+  refreshAlertUIFromActiveInstance();
 });
-telegramVolumeGuardEl?.addEventListener('change', e => {
-  telegramVolumeGuard = e.target.checked;
-  localStorage.setItem('tgVolumeGuard', telegramVolumeGuard ? '1' : '0');
+
+telegramVolumeGuardEl?.addEventListener('change', (e) => {
+  const checked = !!e.target.checked;
+  mutateActiveAlertConfig((cfg) => {
+    cfg.telegramVolumeGuard = checked;
+  });
+  refreshAlertUIFromActiveInstance();
 });
-telegramIncludeSymbolEl?.addEventListener('change', e => {
-  telegramIncludeSymbol = e.target.checked;
-  localStorage.setItem('tgIncludeSymbol', telegramIncludeSymbol ? '1' : '0');
+
+telegramIncludeSymbolEl?.addEventListener('change', (e) => {
+  const checked = !!e.target.checked;
+  mutateActiveAlertConfig((cfg) => {
+    cfg.telegramIncludeSymbol = checked;
+  });
+  refreshAlertUIFromActiveInstance();
 });
-telegramIncludeDiffEl?.addEventListener('change', e => {
-  telegramIncludeDiff = e.target.checked;
-  localStorage.setItem('tgIncludeDiff', telegramIncludeDiff ? '1' : '0');
+
+telegramIncludeDiffEl?.addEventListener('change', (e) => {
+  const checked = !!e.target.checked;
+  mutateActiveAlertConfig((cfg) => {
+    cfg.telegramIncludeDiff = checked;
+  });
+  refreshAlertUIFromActiveInstance();
 });
-telegramIncludeVolumesEl?.addEventListener('change', e => {
-  telegramIncludeVolumes = e.target.checked;
-  localStorage.setItem('tgIncludeVolumes', telegramIncludeVolumes ? '1' : '0');
+
+telegramIncludeVolumesEl?.addEventListener('change', (e) => {
+  const checked = !!e.target.checked;
+  mutateActiveAlertConfig((cfg) => {
+    cfg.telegramIncludeVolumes = checked;
+  });
+  refreshAlertUIFromActiveInstance();
 });
 scientificToggleEl?.addEventListener('change', e => {
   useScientificNotation = e.target.checked;
@@ -3107,7 +3322,8 @@ if (positionDismantleBtn) {
       symbol: typeof item.symbol === 'string' ? item.symbol.toUpperCase() : undefined,
       spotExchange: typeof item.spotExchange === 'string' ? item.spotExchange : undefined,
       label: typeof item.label === 'string' ? item.label : undefined,
-      draftSymbol: typeof item.draftSymbol === 'string' ? item.draftSymbol : undefined
+      draftSymbol: typeof item.draftSymbol === 'string' ? item.draftSymbol : undefined,
+      alerts: item.alerts
     }, { switchTo: false });
   });
 
@@ -3141,10 +3357,4 @@ if (positionDismantleBtn) {
   }
   persistInstances();
 
-  if (isFinite(alertMin)) document.getElementById('alertMin').value = alertMin;
-  if (isFinite(alertMax)) document.getElementById('alertMax').value = alertMax;
-  const soundToggle = document.getElementById('soundToggle');
-  if (soundToggle) soundToggle.checked = soundEnabled;
-  const telegramToggle = document.getElementById('telegramToggle');
-  if (telegramToggle) telegramToggle.checked = telegramEnabled;
 })();
