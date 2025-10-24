@@ -4,530 +4,1452 @@
   <meta charset="utf-8" />
   <title>Arbitragem Gate.io x MEXC — BASE_USDT</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Poppins:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
   <style>
-    body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 16px; color: #111; }
-    h1 { margin: 0 0 16px 0; font-size: 22px; }
-    .row { display: flex; gap: 16px; flex-wrap: wrap; }
-    .card { border: 1px solid #ddd; border-radius: 6px; padding: 14px; background: #fff; position: relative; }
-    .card h3 { margin: 0; font-size: 18px; display:flex; align-items:center; justify-content: space-between; gap:12px; }
-    .card-body { margin-top: 10px; }
-    .w33 { flex: 1 1 360px; }
-    .w66 { flex: 2 1 360px; }
-    .instance-tabs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
-    .instance-tab { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 18px; border: 1px solid #cfd4dc; background: #f3f5f8; color: #2f3b52; font-size: 13px; cursor: pointer; transition: background 0.2s ease, color 0.2s ease, border 0.2s ease; }
-    .instance-tab.active { background: #0b5fff; border-color: #0b5fff; color: #fff; }
-    .instance-tab .instance-tab-label { pointer-events: none; }
-    .instance-tab .instance-tab-close { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px; }
-    .instance-tab .instance-tab-close:hover { opacity: 0.75; }
-    .instance-tab.add-tab { border: 1px dashed #b5bdc9; background: transparent; color: #445066; font-weight: 600; }
-    .instance-tab.add-tab:hover { background: #e7ecf4; }
-    label.inline { display: inline-block; margin-right: 8px; }
-    input[type="text"], input[type="number"] { padding: 4px 6px; }
-    button { padding: 6px 10px; cursor: pointer; }
-    summary { cursor: pointer; font-weight: 600; }
-    pre { white-space: pre-wrap; background: #fafafa; border: 1px solid #eee; padding: 8px; border-radius: 4px; min-height: 38px; }
-    table { border-collapse: collapse; width: 100%; }
-    th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
-    th { background: #fafafa; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
-    .muted { color: #666; }
-    .top { margin-bottom: 14px; }
-    .status { min-height: 60px; }
-    canvas { border: 1px solid #ddd; background: #fff; }
-    .quotes-card input[type="number"] { width: 70px; }
-    .quotes-section h4 { margin: 12px 0 6px; font-size: 14px; }
-    .quotes-table { width: 100%; font-size: 12px; }
-    .quotes-table th, .quotes-table td { text-align: right; }
-    .quotes-table th:nth-child(2), .quotes-table td:nth-child(2) { text-align: center; }
-    .quotes-table th.col-check { text-align: center; width: 52px; }
-    .quotes-table td.col-check { text-align: center; }
-    .quote-summary { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; margin-bottom: 4px; }
-    .quote-controls { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
-    .quote-control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
-    .quote-actions { display: flex; justify-content: flex-end; }
-    .position-edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 10px; }
-    .position-edit-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
-    .position-edit-grid input { padding: 4px 6px; }
-    .position-edit-actions { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
-    .position-edit-actions textarea { width: 100%; min-height: 50px; resize: vertical; padding: 6px; font-family: inherit; }
-    .position-edit-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
-    .position-summaries { margin-top: 16px; }
-    .position-summaries table { font-size: 12px; }
-    .position-summaries th { background: #fafafa; }
-    .position-summaries td, .position-summaries th { text-align: left; }
-    .card.collapsed .card-body { display: none; }
-    .card-toggle { font-size: 12px; padding: 4px 8px; }
-    .spread-controls { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; align-items:center; }
-    .spread-controls button { padding:4px 8px; }
-    .spread-controls button.active { background:#0066cc; color:#fff; }
-    .spread-stats { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:8px; font-size:13px; margin-top:10px; }
-    .spread-stats span.label { display:block; color:#555; font-size:12px; text-transform:uppercase; letter-spacing:0.04em; }
-    .spread-chart-wrapper { position: relative; width: 100%; max-width: 100%; height: 320px; }
-    .spread-chart-wrapper canvas { width: 100% !important; height: 100% !important; display: block; }
-    .progress-section { display: flex; flex-direction: column; gap: 8px; }
-    .progress-bar { position: relative; width: 100%; height: 20px; background: #f0f0f0; border-radius: 10px; overflow: hidden; border: 1px solid #ddd; }
-    .progress-bar-fill { height: 100%; background: linear-gradient(90deg, #2ca02c, #1f77b4); width: 0%; display:flex; align-items:center; justify-content:flex-end; color:#fff; font-size: 12px; font-weight:600; padding-right:6px; transition: width 0.3s ease; }
-    .progress-bar-label { position: absolute; top: 0; left: 50%; transform: translateX(-50%); font-size: 12px; font-weight: 600; color: #111; line-height: 20px; }
-    .progress-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; font-size: 13px; }
-    .progress-metrics span.label { display:block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color:#555; }
-    .balance-section { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 14px; }
-    .balance-column { border: 1px solid #eee; border-radius: 6px; padding: 10px; background: #fafafa; display:flex; flex-direction:column; gap:8px; }
-    .balance-column h4 { margin: 0; font-size: 15px; }
-    .balance-line { display:flex; flex-direction:column; gap:4px; font-size: 13px; }
-    .balance-line .balance-label { font-weight: 600; }
-    .balance-values { display:flex; gap:6px; flex-wrap:wrap; }
-    .balance-max { display:flex; align-items:center; gap:6px; font-size: 12px; color:#333; }
-    .balance-target-button { padding: 2px 6px; font-size: 12px; cursor: pointer; }
-    .balance-target-button:disabled { opacity: 0.5; cursor: not-allowed; }
-    .balance-message { font-size: 12px; color: #b00; }
-    .balance-actions { margin-top: 10px; display:flex; justify-content:flex-end; }
-    .quotes-card .quote-controls { margin-top: 12px; }
-    .execution-logs { display: flex; flex-direction: column; gap: 12px; }
-    .log-block { border: 1px solid #e0e0e0; border-radius: 6px; background: #fafafa; }
-    .log-block > summary { cursor: pointer; padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-weight: 600; font-size: 14px; }
-    .log-block > summary span.meta { font-weight: 400; font-size: 12px; color: #444; margin-left: auto; }
-    .log-block-content { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
-    .log-metrics { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: #333; }
-    .log-metrics span { background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 4px 6px; }
-    .log-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-    .log-step { border-left: 3px solid #bbb; padding-left: 10px; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
-    .log-step.system { border-color: #2ca02c; }
-    .log-step.calc { border-color: #9467bd; }
-    .log-step.network { border-color: #ff7f0e; }
-    .log-step.gate { border-color: #1f77b4; }
-    .log-step.mexc { border-color: #d62728; }
-    .log-step.error { border-color: #b00020; }
-    .log-step-header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-weight: 600; }
-    .log-step-header span.times { font-weight: 400; color: #555; }
-    .log-step-body { color: #333; display: flex; flex-wrap: wrap; gap: 6px; }
-    .log-step-body span { background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 2px 4px; }
-    .log-empty { font-size: 13px; color: #666; }
+    :root {
+      --bg-body: #050714;
+      --bg-gradient-1: radial-gradient(circle at 20% 20%, rgba(124, 92, 255, 0.4), transparent 65%);
+      --bg-gradient-2: radial-gradient(circle at 80% 0%, rgba(34, 211, 255, 0.32), transparent 70%);
+      --surface: rgba(22, 20, 46, 0.7);
+      --surface-strong: rgba(30, 26, 64, 0.85);
+      --surface-hover: rgba(40, 33, 86, 0.92);
+      --border-strong: rgba(132, 99, 255, 0.5);
+      --border-soft: rgba(255, 255, 255, 0.07);
+      --text-primary: #f6f7ff;
+      --text-secondary: #a6aed0;
+      --text-muted: #7680a6;
+      --accent: #7f5bff;
+      --accent-strong: #b642ff;
+      --accent-soft: rgba(127, 91, 255, 0.16);
+      --success: #3be6c4;
+      --danger: #ff6c8e;
+      --warning: #ffb95c;
+      --card-radius: 22px;
+      --transition-base: 0.25s ease;
+      --shadow-card: 0 24px 70px rgba(5, 7, 20, 0.45);
+      --shadow-card-soft: 0 14px 40px rgba(9, 12, 30, 0.35);
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Poppins', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg-body);
+      color: var(--text-primary);
+      position: relative;
+      overflow-x: hidden;
+      line-height: 1.55;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(16, 12, 40, 0.8), rgba(5, 8, 25, 0.92));
+      z-index: 0;
+    }
+
+    .background-lights {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      overflow: hidden;
+    }
+
+    .background-lights .orb {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(80px);
+      opacity: 0.55;
+      mix-blend-mode: screen;
+      transform: translate3d(0, 0, 0);
+    }
+
+    .background-lights .orb-1 {
+      top: -20%;
+      left: -18%;
+      width: 55vw;
+      height: 55vw;
+      background: var(--bg-gradient-1);
+    }
+
+    .background-lights .orb-2 {
+      bottom: -25%;
+      right: -15%;
+      width: 60vw;
+      height: 60vw;
+      background: var(--bg-gradient-2);
+    }
+
+    .background-lights .light-grid {
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+      background-size: 80px 80px;
+      opacity: 0.35;
+      mix-blend-mode: overlay;
+    }
+
+    main.page {
+      position: relative;
+      z-index: 1;
+      width: min(1280px, 100%);
+      margin: 0 auto;
+      padding: 52px 24px 96px;
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+    }
+
+    .page-header {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .badge {
+      align-self: flex-start;
+      font-size: 12px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      background: rgba(124, 92, 255, 0.12);
+      border: 1px solid rgba(124, 92, 255, 0.4);
+      color: #d7d9ff;
+      padding: 6px 14px;
+      border-radius: 999px;
+    }
+
+    .page-header h1 {
+      margin: 0;
+      font-size: clamp(28px, 5vw, 40px);
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      background: linear-gradient(135deg, #ffffff 10%, #a69bff 45%, #8c5bff 80%);
+      -webkit-background-clip: text;
+      color: transparent;
+      text-shadow: 0 14px 25px rgba(34, 17, 72, 0.45);
+    }
+
+    .page-header h1 span {
+      color: inherit;
+    }
+
+    .page-subtitle {
+      margin: 0;
+      color: var(--text-secondary);
+      max-width: 720px;
+      font-size: 15px;
+    }
+
+    .instance-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 12px 16px;
+      background: linear-gradient(135deg, rgba(29, 26, 64, 0.85), rgba(21, 19, 50, 0.78));
+      border-radius: 18px;
+      border: 1px solid var(--border-soft);
+      box-shadow: var(--shadow-card-soft);
+    }
+
+    .instance-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--border-soft);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text-secondary);
+      font-size: 13px;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      transition: background var(--transition-base), color var(--transition-base), border var(--transition-base), transform var(--transition-base);
+      backdrop-filter: blur(6px);
+    }
+
+    .instance-tab:hover {
+      border-color: rgba(124, 92, 255, 0.5);
+      color: #fff;
+      transform: translateY(-1px);
+    }
+
+    .instance-tab.active {
+      background: linear-gradient(135deg, rgba(127, 91, 255, 0.85), rgba(84, 192, 255, 0.75));
+      color: #ffffff;
+      border-color: rgba(127, 91, 255, 0.8);
+      box-shadow: 0 12px 28px rgba(104, 86, 255, 0.35);
+    }
+
+    .instance-tab.add-tab {
+      border-style: dashed;
+      border-color: rgba(124, 92, 255, 0.45);
+      background: rgba(124, 92, 255, 0.12);
+      color: #d7d9ff;
+      font-weight: 600;
+    }
+
+    .instance-tab .instance-tab-close {
+      color: inherit;
+      padding: 0 4px;
+      border-radius: 50%;
+      transition: background var(--transition-base);
+    }
+
+    .instance-tab .instance-tab-close:hover {
+      background: rgba(0, 0, 0, 0.25);
+    }
+
+    .card {
+      position: relative;
+      background: linear-gradient(140deg, rgba(30, 26, 68, 0.92), rgba(18, 14, 46, 0.88));
+      border-radius: var(--card-radius);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 24px 24px 26px;
+      box-shadow: var(--shadow-card);
+      overflow: hidden;
+      backdrop-filter: blur(16px);
+      transition: transform var(--transition-base), border var(--transition-base), box-shadow var(--transition-base);
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: radial-gradient(circle at top right, rgba(124, 92, 255, 0.25), transparent 58%);
+      opacity: 0.6;
+      pointer-events: none;
+      mix-blend-mode: lighten;
+    }
+
+    .card:hover {
+      transform: translateY(-4px);
+      border-color: rgba(127, 91, 255, 0.45);
+      box-shadow: 0 30px 70px rgba(8, 6, 32, 0.6);
+    }
+
+    .card h3 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: #f7f6ff;
+    }
+
+    .card-body {
+      margin-top: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .form-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+    }
+
+    details {
+      border-radius: 16px;
+      background: rgba(12, 12, 32, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 14px 16px;
+    }
+
+    details[open] {
+      background: rgba(12, 12, 32, 0.5);
+    }
+
+    details summary {
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 14px;
+      color: #e0e4ff;
+      letter-spacing: 0.03em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    details summary::-webkit-details-marker {
+      display: none;
+    }
+
+    details summary::after {
+      content: '⟩';
+      transform: rotate(90deg);
+      transition: transform var(--transition-base);
+      font-size: 12px;
+      opacity: 0.65;
+    }
+
+    details[open] summary::after {
+      transform: rotate(270deg);
+    }
+
+    .details-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    .details-actions {
+      margin-top: 12px;
+      display: flex;
+      justify-content: flex-start;
+    }
+
+    .meta-text {
+      margin: 12px 0 0;
+      font-size: 13px;
+    }
+
+    label {
+      font-size: 13px;
+      color: var(--text-secondary);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    label.inline {
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    input,
+    select,
+    textarea {
+      font-family: inherit;
+      font-size: 14px;
+      padding: 8px 12px;
+      color: var(--text-primary);
+      background: rgba(12, 14, 32, 0.72);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      outline: none;
+      transition: border var(--transition-base), box-shadow var(--transition-base), background var(--transition-base);
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      border-color: rgba(127, 91, 255, 0.65);
+      box-shadow: 0 0 0 3px rgba(127, 91, 255, 0.18);
+      background: rgba(20, 22, 50, 0.92);
+    }
+
+    input::placeholder,
+    textarea::placeholder {
+      color: rgba(214, 220, 255, 0.4);
+    }
+
+    input[type="checkbox"] {
+      accent-color: var(--accent);
+    }
+
+    button {
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 10px 18px;
+      border-radius: 999px;
+      border: 1px solid rgba(127, 91, 255, 0.45);
+      background: linear-gradient(135deg, rgba(127, 91, 255, 0.65), rgba(90, 206, 255, 0.58));
+      color: #ffffff;
+      cursor: pointer;
+      transition: transform var(--transition-base), box-shadow var(--transition-base), filter var(--transition-base), background var(--transition-base);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 16px 32px rgba(107, 90, 255, 0.45);
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    button:focus-visible {
+      outline: 2px solid rgba(127, 91, 255, 0.85);
+      outline-offset: 2px;
+    }
+
+    .button-ghost {
+      background: rgba(255, 255, 255, 0.06);
+      border-color: rgba(255, 255, 255, 0.1);
+      color: var(--text-secondary);
+    }
+
+    .button-ghost:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+      box-shadow: none;
+    }
+
+    .button-danger {
+      background: linear-gradient(135deg, rgba(255, 118, 139, 0.88), rgba(255, 83, 83, 0.78));
+      border-color: rgba(255, 118, 139, 0.88);
+    }
+
+    .button-danger:hover {
+      box-shadow: 0 16px 36px rgba(255, 100, 120, 0.45);
+    }
+
+    .balance-target-button {
+      padding: 6px 10px;
+      font-size: 11px;
+      letter-spacing: 0;
+      text-transform: none;
+      background: rgba(124, 92, 255, 0.18);
+      border-color: rgba(124, 92, 255, 0.45);
+    }
+
+    .balance-target-button:hover {
+      box-shadow: none;
+    }
+
+    .balance-target-button:disabled {
+      opacity: 0.4;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      background: rgba(10, 12, 28, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 14px;
+      padding: 12px;
+      color: var(--text-secondary);
+    }
+
+    .mono {
+      font-family: 'IBM Plex Mono', 'Roboto Mono', 'Fira Code', monospace;
+    }
+
+    .muted {
+      color: var(--text-muted);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: rgba(9, 12, 28, 0.55);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+
+    th,
+    td {
+      padding: 10px 12px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      text-align: left;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    th {
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 11px;
+      background: rgba(255, 255, 255, 0.05);
+      color: #dfe3ff;
+    }
+
+    tbody tr:hover {
+      background: rgba(127, 91, 255, 0.12);
+    }
+
+    .quotes-card .quotes-section h4 {
+      margin: 16px 0 8px;
+      font-size: 14px;
+      color: var(--text-primary);
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    .quotes-card input[type="number"] {
+      width: 88px;
+    }
+
+    .quotes-table th,
+    .quotes-table td {
+      text-align: right;
+    }
+
+    .quotes-table th:nth-child(2),
+    .quotes-table td:nth-child(2),
+    .quotes-table th.col-check,
+    .quotes-table td.col-check {
+      text-align: center;
+    }
+
+    .quote-summary {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .quote-summary strong {
+      color: var(--text-primary);
+      letter-spacing: 0.04em;
+    }
+
+    .quote-controls {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 16px;
+      background: rgba(9, 11, 28, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      border-radius: 16px;
+    }
+
+    .quote-control-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .quote-actions {
+      display: flex;
+      justify-content: flex-end;
+    }
+
+    .status {
+      min-height: 68px;
+    }
+
+    .row {
+      display: grid;
+      gap: 24px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    }
+
+    .row .w66 {
+      grid-column: span 2;
+    }
+
+    @media (max-width: 960px) {
+      .row .w66 {
+        grid-column: span 1;
+      }
+    }
+
+    canvas {
+      width: 100%;
+      border-radius: 18px;
+      background: rgba(7, 7, 22, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .spread-chart-wrapper {
+      position: relative;
+      width: 100%;
+      max-width: 100%;
+      height: 340px;
+    }
+
+    .spread-chart-wrapper canvas {
+      height: 100% !important;
+    }
+
+    .spread-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      padding: 16px;
+      border-radius: 16px;
+      background: rgba(9, 11, 28, 0.55);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .spread-controls strong {
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      color: var(--text-muted);
+    }
+
+    .spread-controls button {
+      padding: 8px 14px;
+      font-size: 11px;
+    }
+
+    .spread-controls button.active {
+      background: rgba(124, 92, 255, 0.85);
+      border-color: rgba(124, 92, 255, 0.9);
+      box-shadow: 0 8px 20px rgba(124, 92, 255, 0.4);
+    }
+
+    .spread-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      font-size: 13px;
+    }
+
+    .spread-stats span.label {
+      display: block;
+      color: var(--text-muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 6px;
+    }
+
+    .progress-section {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .progress-bar {
+      position: relative;
+      width: 100%;
+      height: 24px;
+      border-radius: 999px;
+      background: rgba(9, 11, 28, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding-right: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      background: linear-gradient(90deg, rgba(124, 92, 255, 0.95), rgba(75, 222, 255, 0.85));
+      box-shadow: inset 0 0 14px rgba(0, 0, 0, 0.25);
+      transition: width 0.3s ease;
+    }
+
+    .progress-bar-label {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 600;
+      color: #fff;
+      text-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+    }
+
+    .progress-metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 14px;
+      font-size: 13px;
+    }
+
+    .progress-metrics span.label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    .balance-section {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }
+
+    .balance-column {
+      background: rgba(9, 11, 28, 0.55);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 16px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .balance-column h4 {
+      margin: 0;
+      font-size: 15px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .balance-line {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .balance-label {
+      font-weight: 600;
+      color: var(--text-primary);
+      letter-spacing: 0.04em;
+    }
+
+    .balance-values {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .balance-max {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .balance-message {
+      font-size: 12px;
+      color: var(--danger);
+    }
+
+    .balance-actions {
+      display: flex;
+      justify-content: flex-end;
+    }
+
+    .execution-logs {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .log-block {
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      background: rgba(9, 11, 28, 0.6);
+      overflow: hidden;
+    }
+
+    .log-block > summary {
+      padding: 14px 18px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      font-weight: 600;
+      font-size: 14px;
+      letter-spacing: 0.04em;
+      color: var(--text-primary);
+    }
+
+    .log-block > summary span.meta {
+      font-weight: 400;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-left: auto;
+    }
+
+    .log-block-content {
+      padding: 16px 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .log-metrics {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .log-metrics span {
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 999px;
+      padding: 6px 12px;
+    }
+
+    .log-timeline {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .log-step {
+      border-left: 3px solid var(--text-muted);
+      padding-left: 12px;
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .log-step.system {
+      border-color: var(--success);
+    }
+
+    .log-step.calc {
+      border-color: #a97bff;
+    }
+
+    .log-step.network {
+      border-color: #ffb347;
+    }
+
+    .log-step.gate {
+      border-color: #1f77b4;
+    }
+
+    .log-step.mexc {
+      border-color: #d62728;
+    }
+
+    .log-step.error {
+      border-color: var(--danger);
+    }
+
+    .log-step-header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 8px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .log-step-header span.times {
+      font-weight: 400;
+      color: var(--text-muted);
+    }
+
+    .log-step-body {
+      color: var(--text-secondary);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .log-step-body span {
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 8px;
+      padding: 4px 8px;
+    }
+
+    .log-empty {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .manual-history-form {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      margin-top: 16px;
+    }
+
+    .manual-history-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 14px;
+    }
+
+    .manual-history-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .manual-history-status {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .manual-history-editing {
+      font-size: 12px;
+      color: var(--warning);
+    }
+
+    .position-edit-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }
+
+    .position-edit-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .position-edit-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    textarea {
+      min-height: 80px;
+      resize: vertical;
+    }
+
+    .position-summaries {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .position-summaries h4 {
+      margin: 0;
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+    }
+
+    @media (max-width: 720px) {
+      main.page {
+        padding: 40px 18px 72px;
+      }
+
+      button {
+        width: 100%;
+        justify-content: center;
+      }
+
+      .instance-tabs {
+        padding: 10px 12px;
+      }
+
+      .card {
+        padding: 20px 18px 22px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        transition-duration: 0.001ms !important;
+        animation-duration: 0.001ms !important;
+      }
+    }
+
+    ::-webkit-scrollbar {
+      width: 10px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: rgba(124, 92, 255, 0.45);
+      border-radius: 999px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(124, 92, 255, 0.65);
+    }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"></script>
 </head>
 <body>
-  <h1>Arbitragem <span data-spot-label>Gate.io</span> x MEXC — <span id="titleSymbol">BASE_USDT</span></h1>
-
-  <div class="instance-tabs" id="instanceTabs"></div>
-
-  <div class="card top" id="configCard">
-    <h3>Par &amp; Configurações</h3>
-    <div class="card-body">
-      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-        <label class="inline" for="symbolInput">Par (BASE_QUOTE):</label>
-        <input id="symbolInput" type="text" value="BASE_USDT" class="mono" />
-        <label class="inline" for="spotExchangeSelect">Corretora SPOT:</label>
-        <select id="spotExchangeSelect">
-          <option value="gate">Gate.io</option>
-          <option value="bitget">Bitget</option>
-        </select>
-        <button id="applySymbol">Usar</button>
-        <button id="autoCfg">Auto-configurar</button>
-        <span id="metaBadge" class="mono muted">meta: —</span>
-      </div>
-
-      <details style="margin-top:10px;">
-        <summary>Overrides manuais (opcional)</summary>
-        <div style="display:grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap:10px; margin-top:10px;">
-          <div>
-            <div class="muted" style="margin-bottom:6px;"><strong data-spot-label>Gate</strong></div>
-            <label>priceScale <input id="ov_gate_price" type="number" step="1" class="mono" /></label><br/>
-            <label>qtyScale <input id="ov_gate_qty" type="number" step="1" class="mono" /></label><br/>
-            <label>minQty <input id="ov_gate_minqty" type="number" step="any" class="mono" /></label><br/>
-            <label>minQuote <input id="ov_gate_minquote" type="number" step="any" class="mono" /></label>
-          </div>
-          <div>
-            <div class="muted" style="margin-bottom:6px;"><strong>MEXC</strong></div>
-            <label>priceScale <input id="ov_mexc_price" type="number" step="1" class="mono" /></label><br/>
-            <label>volPrecision <input id="ov_mexc_volp" type="number" step="1" class="mono" /></label><br/>
-            <label>contractSize <input id="ov_mexc_cs" type="number" step="any" class="mono" /></label><br/>
-            <label>minContracts <input id="ov_mexc_minc" type="number" step="1" class="mono" /></label>
-          </div>
-          <div>
-            <div class="muted" style="margin-bottom:6px;"><strong>Settings</strong></div>
-            <label>margem (%) <input id="ov_set_margin" type="number" step="any" class="mono" /></label><br/>
-            <label>leverage <input id="ov_set_lev" type="number" step="any" class="mono" /></label><br/>
-            <label><span data-spot-label>Gate</span> extra (%) <input id="ov_set_gate_extra" type="number" step="any" class="mono" /></label><br/>
-            <label>Saldo mínimo p/ fechar (USDT)
-              <input id="ov_set_min_residual" type="number" step="any" class="mono" />
-            </label>
-          </div>
-        </div>
-        <div style="margin-top:10px;">
-          <button id="saveOverride">Salvar override</button>
-        </div>
-        <pre id="metaText" class="mono" style="margin-top:10px;">(meta não carregada)</pre>
-      </details>
-    </div>
+  <div class="background-lights">
+    <span class="orb orb-1"></span>
+    <span class="orb orb-2"></span>
+    <span class="light-grid"></span>
   </div>
+  <main class="page">
+    <header class="page-header">
+      <span class="badge">Painel em tempo real</span>
+      <h1>Arbitragem <span data-spot-label>Gate.io</span> x MEXC — <span id="titleSymbol">BASE_USDT</span></h1>
+      <p class="page-subtitle">
+        Visual interativo para monitorar spreads, meta de execução e saldos das corretoras em tempo real.
+      </p>
+    </header>
 
-  <div class="card" id="spreadCard">
-    <h3>Gráfico de Spreads</h3>
-    <div class="card-body">
-      <div class="spread-controls">
-        <strong>Mostrar:</strong>
-        <button data-spread-filter="all" class="active">Todos</button>
-        <button data-spread-filter="open">Abertura</button>
-        <button data-spread-filter="close">Fechamento</button>
-        <button data-spread-filter="cross">Cruzamentos</button>
-        <strong style="margin-left:12px;">Intervalo:</strong>
-        <button data-spread-range="all" class="active">Tudo</button>
-        <button data-spread-range="5min">5min</button>
-        <button data-spread-range="15min">15min</button>
-        <button data-spread-range="30min">30min</button>
-        <button data-spread-range="1H">1H</button>
-        <button data-spread-range="4H">4H</button>
-        <button data-spread-range="6H">6H</button>
-        <button data-spread-range="12H">12H</button>
-        <button data-spread-range="24H">24H</button>
-        <button id="resetSpreadZoom" style="margin-left:auto;">Resetar zoom</button>
-        <button id="clearSpreadData">Limpar dados do ativo</button>
-      </div>
-      <div class="spread-chart-wrapper">
-        <canvas id="spreadChart"></canvas>
-      </div>
-      <div class="spread-stats" style="margin-top:12px;">
-        <div>
-          <span class="label">Abertura máx</span>
-          <span id="spreadOpenMax">-</span>
-        </div>
-        <div>
-          <span class="label">Abertura mín</span>
-          <span id="spreadOpenMin">-</span>
-        </div>
-        <div>
-          <span class="label">Fechamento máx</span>
-          <span id="spreadCloseMax">-</span>
-        </div>
-        <div>
-          <span class="label">Fechamento mín</span>
-          <span id="spreadCloseMin">-</span>
-        </div>
-        <div>
-          <span class="label">Arbitragem final (diferença)</span>
-          <span id="spreadFinalArb">-</span>
-        </div>
-      </div>
-    </div>
-  </div>
+    <div class="instance-tabs" id="instanceTabs"></div>
 
-  <div class="row">
-    <div class="card w33 quotes-card" id="quotesCard">
-      <h3>Cotações</h3>
+    <div class="card top" id="configCard">
+      <h3>Par &amp; Configurações</h3>
       <div class="card-body">
-        <div class="quote-summary">
-          <div><strong>Modo atual:</strong> <span id="quoteModeLabel">Abrir</span></div>
-          <div><strong>Diferença selecionada:</strong> <span id="diff">-%</span></div>
-        </div>
-        <div class="quote-summary">
-          <div>Open selecionado: <span id="openSummary">-</span></div>
-          <div>Close selecionado: <span id="closeSummary">-</span></div>
-        </div>
-
-        <div class="quotes-section">
-          <h4>Open — <span data-spot-label>Gate</span> (asks) vs MEXC (bids)</h4>
-          <table class="quotes-table">
-            <thead>
-              <tr>
-                <th class="col-check">Usar</th>
-                <th>Nível</th>
-                <th><span data-spot-label>Gate</span> preço</th>
-                <th><span data-spot-label>Gate</span> base</th>
-                <th><span data-spot-label>Gate</span> USDT</th>
-                <th>MEXC preço</th>
-                <th>MEXC base</th>
-                <th>MEXC USDT</th>
-                <th>Dif.%</th>
-              </tr>
-            </thead>
-            <tbody id="openQuotesBody"></tbody>
-          </table>
+        <div class="form-row">
+          <label class="inline" for="symbolInput">Par (BASE_QUOTE):</label>
+          <input id="symbolInput" type="text" value="BASE_USDT" class="mono" />
+          <label class="inline" for="spotExchangeSelect">Corretora SPOT:</label>
+          <select id="spotExchangeSelect">
+            <option value="gate">Gate.io</option>
+            <option value="bitget">Bitget</option>
+          </select>
+          <button id="applySymbol">Usar</button>
+          <button id="autoCfg">Auto-configurar</button>
+          <span id="metaBadge" class="mono muted">meta: —</span>
         </div>
 
-        <div class="quotes-section">
-          <h4>Close — <span data-spot-label>Gate</span> (bids) vs MEXC (asks)</h4>
-          <table class="quotes-table">
-            <thead>
-              <tr>
-                <th class="col-check">Usar</th>
-                <th>Nível</th>
-                <th><span data-spot-label>Gate</span> preço</th>
-                <th><span data-spot-label>Gate</span> base</th>
-                <th><span data-spot-label>Gate</span> USDT</th>
-                <th>MEXC preço</th>
-                <th>MEXC base</th>
-                <th>MEXC USDT</th>
-                <th>Dif.%</th>
-              </tr>
-            </thead>
-            <tbody id="closeQuotesBody"></tbody>
-          </table>
-        </div>
-
-        <div class="quote-controls">
-          <div class="quote-control-row">
-            <label><input type="checkbox" id="modeClose" /> Fechar posições (inverter lógica)</label>
+        <details>
+          <summary>Overrides manuais (opcional)</summary>
+          <div class="details-grid">
+            <div>
+              <div class="muted"><strong data-spot-label>Gate</strong></div>
+              <label>priceScale
+                <input id="ov_gate_price" type="number" step="1" class="mono" />
+              </label>
+              <label>qtyScale
+                <input id="ov_gate_qty" type="number" step="1" class="mono" />
+              </label>
+              <label>minQty
+                <input id="ov_gate_minqty" type="number" step="any" class="mono" />
+              </label>
+              <label>minQuote
+                <input id="ov_gate_minquote" type="number" step="any" class="mono" />
+              </label>
+            </div>
+            <div>
+              <div class="muted"><strong>MEXC</strong></div>
+              <label>priceScale
+                <input id="ov_mexc_price" type="number" step="1" class="mono" />
+              </label>
+              <label>volPrecision
+                <input id="ov_mexc_volp" type="number" step="1" class="mono" />
+              </label>
+              <label>contractSize
+                <input id="ov_mexc_cs" type="number" step="any" class="mono" />
+              </label>
+              <label>minContracts
+                <input id="ov_mexc_minc" type="number" step="1" class="mono" />
+              </label>
+            </div>
+            <div>
+              <div class="muted"><strong>Settings</strong></div>
+              <label>margem (%)
+                <input id="ov_set_margin" type="number" step="any" class="mono" />
+              </label>
+              <label>leverage
+                <input id="ov_set_lev" type="number" step="any" class="mono" />
+              </label>
+              <label><span data-spot-label>Gate</span> extra (%)
+                <input id="ov_set_gate_extra" type="number" step="any" class="mono" />
+              </label>
+              <label>Saldo mínimo p/ fechar (USDT)
+                <input id="ov_set_min_residual" type="number" step="any" class="mono" />
+              </label>
+            </div>
           </div>
-          <div class="quote-control-row">
-            <label><input type="checkbox" id="scientificToggle" /> Notação científica (&gt;6 decimais)</label>
+          <div class="details-actions">
+            <button id="saveOverride">Salvar override</button>
           </div>
-          <div class="quote-control-row">
-            <span>Alerta de dif. (%):</span>
-            <input id="alertMin" type="number" step="any" class="mono" placeholder="min" />
-            <input id="alertMax" type="number" step="any" class="mono" placeholder="max" />
-            <label><input type="checkbox" id="soundToggle" /> Som</label>
-            <label><input type="checkbox" id="telegramToggle" /> Telegram</label>
-          </div>
-          <div class="quote-control-row telegram-template-row">
-            <label><input type="checkbox" id="telegramVolumeGuard" /> Somente se volume ≥ mínimos</label>
-            <label><input type="checkbox" id="telegramIncludeSymbol" checked /> Nome do ativo</label>
-            <label><input type="checkbox" id="telegramIncludeDiff" checked /> Diferença (%)</label>
-            <label><input type="checkbox" id="telegramIncludeVolumes" /> Volumes (3 níveis)</label>
-          </div>
-          <div class="quote-actions">
-            <button id="executeTrade">Executar Ordem Simultânea</button>
-          </div>
-        </div>
-        <pre id="status" class="mono status" style="margin-top:10px;"></pre>
+          <pre id="metaText" class="mono meta-text">(meta não carregada)</pre>
+        </details>
       </div>
     </div>
 
-    <div class="card w66" id="positionCard">
-      <h3>Meta, Progresso &amp; Saldos</h3>
+    <div class="card" id="spreadCard">
+      <h3>Gráfico de Spreads</h3>
       <div class="card-body">
-        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-          <label for="targetQty">Meta (qtd total moeda base):</label>
-          <input id="targetQty" type="number" step="1" min="0" class="mono" />
-          <button id="setTarget">Definir meta</button>
+        <div class="spread-controls">
+          <strong>Mostrar:</strong>
+          <button data-spread-filter="all" class="active">Todos</button>
+          <button data-spread-filter="open">Abertura</button>
+          <button data-spread-filter="close">Fechamento</button>
+          <button data-spread-filter="cross">Cruzamentos</button>
+          <strong>Intervalo:</strong>
+          <button data-spread-range="all" class="active">Tudo</button>
+          <button data-spread-range="5min">5min</button>
+          <button data-spread-range="15min">15min</button>
+          <button data-spread-range="30min">30min</button>
+          <button data-spread-range="1H">1H</button>
+          <button data-spread-range="4H">4H</button>
+          <button data-spread-range="6H">6H</button>
+          <button data-spread-range="12H">12H</button>
+          <button data-spread-range="24H">24H</button>
+          <button id="resetSpreadZoom" class="button-ghost">Resetar zoom</button>
+          <button id="clearSpreadData" class="button-danger">Limpar dados do ativo</button>
         </div>
-
-        <div class="progress-section" style="margin-top:12px;">
-          <div class="progress-bar">
-            <div class="progress-bar-fill" id="positionProgressFill"></div>
-            <div class="progress-bar-label" id="positionProgressLabel">0%</div>
-          </div>
-          <div class="progress-metrics">
-            <div>
-              <span class="label">Meta</span>
-              <span id="ppTarget">0</span>
-            </div>
-            <div>
-          <span class="label">Preenchido <span data-spot-label>Gate</span></span>
-              <span id="ppGateFilled">0</span>
-            </div>
-            <div>
-          <span class="label">Preço médio <span data-spot-label>Gate</span></span>
-              <span id="ppGateAvg">0</span>
-            </div>
-            <div>
-              <span class="label">Preenchido MEXC</span>
-              <span id="ppMexcFilled">0</span>
-            </div>
-            <div>
-              <span class="label">Preço médio MEXC</span>
-              <span id="ppMexcAvg">0</span>
-            </div>
-            <div>
-              <span class="label">Arb. média (%)</span>
-              <span id="ppArb">0</span>
-            </div>
-            <div>
-              <span class="label">PnL geral (USDT)</span>
-              <span id="ppPnl">0</span>
-            </div>
-          </div>
+        <div class="spread-chart-wrapper">
+          <canvas id="spreadChart"></canvas>
         </div>
-
-        <div class="balance-section">
-          <div class="balance-column">
-            <h4><span data-spot-label>Gate</span></h4>
-            <div class="balance-line">
-              <span class="balance-label">USDT</span>
-              <div class="balance-values">
-                <span>disp <span id="gateUsdtAvailable">—</span></span>
-                <span>ordem <span id="gateUsdtLocked">—</span></span>
-              </div>
-              <div class="balance-max">
-                <span id="gateMaxBaseValue">Max: —</span>
-                <button type="button" class="balance-target-button" id="gateMaxBaseBtn" title="Definir meta com este volume">&gt;</button>
-              </div>
-            </div>
-            <div class="balance-line">
-              <span class="balance-label" id="gateBaseLabel">BASE</span>
-              <div class="balance-values">
-                <span>disp <span id="gateBaseAvailable">—</span></span>
-                <span>ordem <span id="gateBaseLocked">—</span></span>
-              </div>
-            </div>
-            <div class="balance-message" id="gateBalanceMessage"></div>
+        <div class="spread-stats">
+          <div>
+            <span class="label">Abertura máx</span>
+            <span id="spreadOpenMax">-</span>
           </div>
-          <div class="balance-column">
-            <h4>MEXC</h4>
-            <div class="balance-line">
-              <span class="balance-label">USDT</span>
-              <div class="balance-values">
-                <span>disp <span id="mexcUsdtAvailable">—</span></span>
-                <span>ordem <span id="mexcUsdtLocked">—</span></span>
-              </div>
-              <div class="balance-max">
-                <span id="mexcMaxBaseValue">Max: —</span>
-                <button type="button" class="balance-target-button" id="mexcMaxBaseBtn" title="Definir meta com este volume">&gt;</button>
-              </div>
-            </div>
-            <div class="balance-line">
-              <span class="balance-label" id="mexcBaseLabel">BASE</span>
-              <div class="balance-values">
-                <span>disp <span id="mexcBaseAvailable">—</span></span>
-                <span>ordem <span id="mexcBaseLocked">—</span></span>
-              </div>
-            </div>
-            <div class="balance-message" id="mexcBalanceMessage"></div>
+          <div>
+            <span class="label">Abertura mín</span>
+            <span id="spreadOpenMin">-</span>
           </div>
-        </div>
-
-        <div class="balance-actions">
-          <button id="refreshBalances">Atualizar saldos</button>
+          <div>
+            <span class="label">Fechamento máx</span>
+            <span id="spreadCloseMax">-</span>
+          </div>
+          <div>
+            <span class="label">Fechamento mín</span>
+            <span id="spreadCloseMin">-</span>
+          </div>
+          <div>
+            <span class="label">Arbitragem final (diferença)</span>
+            <span id="spreadFinalArb">-</span>
+          </div>
         </div>
       </div>
     </div>
-  </div>
 
-  <div class="card" id="executionLogsCard">
-    <h3>Logs de execução de ordens</h3>
-    <div class="card-body">
-      <div id="executionLogs" class="execution-logs"></div>
-    </div>
-  </div>
-
-  <div class="card" id="historyCard">
-    <h3>Histórico (ordens criadas pelo sistema)</h3>
-    <div class="card-body">
-      <details id="manualHistoryDetails" class="manual-history">
-        <summary>Adicionar/editar ordem manual</summary>
-        <div class="manual-history-form">
-          <div class="manual-history-grid">
-            <label>Modo
-              <select id="manualHistoryMode" class="mono">
-                <option value="open">Open</option>
-                <option value="close">Close</option>
-              </select>
-            </label>
-            <label>Volume (base)
-              <input id="manualHistoryVolume" type="number" step="any" class="mono" />
-            </label>
-            <label><span data-spot-label>Gate</span> preço
-              <input id="manualHistoryGatePrice" type="number" step="any" class="mono" />
-            </label>
-            <label>MEXC preço
-              <input id="manualHistoryMexcPrice" type="number" step="any" class="mono" />
-            </label>
-            <label>Data/Hora (opcional)
-              <input id="manualHistoryCreatedAt" type="text" class="mono" placeholder="Ex.: 01/01/2024 10:00:00" />
-            </label>
+    <div class="row">
+      <div class="card w33 quotes-card" id="quotesCard">
+        <h3>Cotações</h3>
+        <div class="card-body">
+          <div class="quote-summary">
+            <div><strong>Modo atual:</strong> <span id="quoteModeLabel">Abrir</span></div>
+            <div><strong>Diferença selecionada:</strong> <span id="diff">-%</span></div>
           </div>
-          <div id="manualHistoryEditingLabel" class="manual-history-editing"></div>
-          <div class="manual-history-actions">
-            <button id="manualHistorySave">Salvar ordem manual</button>
-            <button type="button" id="manualHistoryCancel">Cancelar edição</button>
+          <div class="quote-summary">
+            <div>Open selecionado: <span id="openSummary">-</span></div>
+            <div>Close selecionado: <span id="closeSummary">-</span></div>
           </div>
-          <div id="manualHistoryStatus" class="manual-history-status"></div>
-        </div>
-      </details>
-      <table>
-        <thead>
-          <tr>
-            <th>Local ID</th>
-            <th>Hora</th>
-            <th>Sentido</th>
-            <th><span data-spot-label>Gate</span> Price</th>
-            <th>MEXC Price</th>
-            <th>Volume (moeda base)</th>
-            <th>%Arb</th>
-            <th>$PnL</th>
-            <th><span data-spot-label>Gate</span> Order ID</th>
-            <th><span data-spot-label>Gate</span> Status</th>
-            <th>GRO</th>
-            <th>MEXC Order ID</th>
-            <th>MEXC Status</th>
-            <th>MRO</th>
-            <th>Status</th>
-            <th>Ações</th>
-          </tr>
-        </thead>
-        <tbody id="historyBody"></tbody>
-      </table>
-    </div>
-  </div>
 
-  <div class="card" id="positionEditCard">
-    <h3>Editar estado da posição</h3>
-    <div class="card-body">
-      <div class="position-edit-grid">
-        <div>
-          <label>Meta total
-            <input id="posEditTarget" type="number" step="any" class="mono" />
-          </label>
-          <label>Arb média (%)
-            <input id="posEditArb" type="number" step="any" class="mono" />
-          </label>
-          <label>PnL acumulado (USDT)
-            <input id="posEditPnl" type="number" step="any" class="mono" />
-          </label>
-        </div>
-        <div>
-          <div class="muted" style="margin-bottom:4px;"><strong data-spot-label>Gate</strong></div>
-          <label>Preenchido
-            <input id="posEditGateFilled" type="number" step="any" class="mono" />
-          </label>
-          <label>Preço médio
-            <input id="posEditGateAvg" type="number" step="any" class="mono" />
-          </label>
-        </div>
-        <div>
-          <div class="muted" style="margin-bottom:4px;"><strong>MEXC</strong></div>
-          <label>Preenchido
-            <input id="posEditMexcFilled" type="number" step="any" class="mono" />
-          </label>
-          <label>Preço médio
-            <input id="posEditMexcAvg" type="number" step="any" class="mono" />
-          </label>
+          <div class="quotes-section">
+            <h4>Open — <span data-spot-label>Gate</span> (asks) vs MEXC (bids)</h4>
+            <table class="quotes-table">
+              <thead>
+                <tr>
+                  <th class="col-check">Usar</th>
+                  <th>Nível</th>
+                  <th><span data-spot-label>Gate</span> preço</th>
+                  <th><span data-spot-label>Gate</span> base</th>
+                  <th><span data-spot-label>Gate</span> USDT</th>
+                  <th>MEXC preço</th>
+                  <th>MEXC base</th>
+                  <th>MEXC USDT</th>
+                  <th>Dif.%</th>
+                </tr>
+              </thead>
+              <tbody id="openQuotesBody"></tbody>
+            </table>
+          </div>
+
+          <div class="quotes-section">
+            <h4>Close — <span data-spot-label>Gate</span> (bids) vs MEXC (asks)</h4>
+            <table class="quotes-table">
+              <thead>
+                <tr>
+                  <th class="col-check">Usar</th>
+                  <th>Nível</th>
+                  <th><span data-spot-label>Gate</span> preço</th>
+                  <th><span data-spot-label>Gate</span> base</th>
+                  <th><span data-spot-label>Gate</span> USDT</th>
+                  <th>MEXC preço</th>
+                  <th>MEXC base</th>
+                  <th>MEXC USDT</th>
+                  <th>Dif.%</th>
+                </tr>
+              </thead>
+              <tbody id="closeQuotesBody"></tbody>
+            </table>
+          </div>
+
+          <div class="quote-controls">
+            <div class="quote-control-row">
+              <label><input type="checkbox" id="modeClose" /> Fechar posições (inverter lógica)</label>
+            </div>
+            <div class="quote-control-row">
+              <label><input type="checkbox" id="scientificToggle" /> Notação científica (&gt;6 decimais)</label>
+            </div>
+            <div class="quote-control-row">
+              <span>Alerta de dif. (%):</span>
+              <input id="alertMin" type="number" step="any" class="mono" placeholder="min" />
+              <input id="alertMax" type="number" step="any" class="mono" placeholder="max" />
+              <label><input type="checkbox" id="soundToggle" /> Som</label>
+              <label><input type="checkbox" id="telegramToggle" /> Telegram</label>
+            </div>
+            <div class="quote-control-row telegram-template-row">
+              <label><input type="checkbox" id="telegramVolumeGuard" /> Somente se volume ≥ mínimos</label>
+              <label><input type="checkbox" id="telegramIncludeSymbol" checked /> Nome do ativo</label>
+              <label><input type="checkbox" id="telegramIncludeDiff" checked /> Diferença (%)</label>
+              <label><input type="checkbox" id="telegramIncludeVolumes" /> Volumes (3 níveis)</label>
+            </div>
+            <div class="quote-actions">
+              <button id="executeTrade">Executar Ordem Simultânea</button>
+            </div>
+          </div>
+          <pre id="status" class="mono status"></pre>
         </div>
       </div>
-      <div class="position-edit-actions">
-        <textarea id="positionNote" placeholder="Anotação (opcional, usada ao desmontar)"></textarea>
-        <div class="position-edit-buttons">
-          <button id="positionSaveBtn">Salvar posição</button>
-          <button id="positionDismantleBtn">Desmontar posição</button>
+
+      <div class="card w66" id="positionCard">
+        <h3>Meta, Progresso &amp; Saldos</h3>
+        <div class="card-body">
+          <div class="form-row">
+            <label for="targetQty">Meta (qtd total moeda base):</label>
+            <input id="targetQty" type="number" step="1" min="0" class="mono" />
+            <button id="setTarget">Definir meta</button>
+          </div>
+
+          <div class="progress-section">
+            <div class="progress-bar">
+              <div class="progress-bar-fill" id="positionProgressFill"></div>
+              <div class="progress-bar-label" id="positionProgressLabel">0%</div>
+            </div>
+            <div class="progress-metrics">
+              <div>
+                <span class="label">Meta</span>
+                <span id="ppTarget">0</span>
+              </div>
+              <div>
+                <span class="label">Preenchido <span data-spot-label>Gate</span></span>
+                <span id="ppGateFilled">0</span>
+              </div>
+              <div>
+                <span class="label">Preço médio <span data-spot-label>Gate</span></span>
+                <span id="ppGateAvg">0</span>
+              </div>
+              <div>
+                <span class="label">Preenchido MEXC</span>
+                <span id="ppMexcFilled">0</span>
+              </div>
+              <div>
+                <span class="label">Preço médio MEXC</span>
+                <span id="ppMexcAvg">0</span>
+              </div>
+              <div>
+                <span class="label">Arb. média (%)</span>
+                <span id="ppArb">0</span>
+              </div>
+              <div>
+                <span class="label">PnL geral (USDT)</span>
+                <span id="ppPnl">0</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="balance-section">
+            <div class="balance-column">
+              <h4><span data-spot-label>Gate</span></h4>
+              <div class="balance-line">
+                <span class="balance-label">USDT</span>
+                <div class="balance-values">
+                  <span>disp <span id="gateUsdtAvailable">—</span></span>
+                  <span>ordem <span id="gateUsdtLocked">—</span></span>
+                </div>
+                <div class="balance-max">
+                  <span id="gateMaxBaseValue">Max: —</span>
+                  <button type="button" class="balance-target-button" id="gateMaxBaseBtn" title="Definir meta com este volume">&gt;</button>
+                </div>
+              </div>
+              <div class="balance-line">
+                <span class="balance-label" id="gateBaseLabel">BASE</span>
+                <div class="balance-values">
+                  <span>disp <span id="gateBaseAvailable">—</span></span>
+                  <span>ordem <span id="gateBaseLocked">—</span></span>
+                </div>
+              </div>
+              <div class="balance-message" id="gateBalanceMessage"></div>
+            </div>
+            <div class="balance-column">
+              <h4>MEXC</h4>
+              <div class="balance-line">
+                <span class="balance-label">USDT</span>
+                <div class="balance-values">
+                  <span>disp <span id="mexcUsdtAvailable">—</span></span>
+                  <span>ordem <span id="mexcUsdtLocked">—</span></span>
+                </div>
+                <div class="balance-max">
+                  <span id="mexcMaxBaseValue">Max: —</span>
+                  <button type="button" class="balance-target-button" id="mexcMaxBaseBtn" title="Definir meta com este volume">&gt;</button>
+                </div>
+              </div>
+              <div class="balance-line">
+                <span class="balance-label" id="mexcBaseLabel">BASE</span>
+                <div class="balance-values">
+                  <span>disp <span id="mexcBaseAvailable">—</span></span>
+                  <span>ordem <span id="mexcBaseLocked">—</span></span>
+                </div>
+              </div>
+              <div class="balance-message" id="mexcBalanceMessage"></div>
+            </div>
+          </div>
+
+          <div class="balance-actions">
+            <button id="refreshBalances">Atualizar saldos</button>
+          </div>
         </div>
       </div>
-      <div class="position-summaries">
-        <h4>Resumos recentes</h4>
+    </div>
+
+    <div class="card" id="executionLogsCard">
+      <h3>Logs de execução de ordens</h3>
+      <div class="card-body">
+        <div id="executionLogs" class="execution-logs"></div>
+      </div>
+    </div>
+
+    <div class="card" id="historyCard">
+      <h3>Histórico (ordens criadas pelo sistema)</h3>
+      <div class="card-body">
+        <details id="manualHistoryDetails" class="manual-history">
+          <summary>Adicionar/editar ordem manual</summary>
+          <div class="manual-history-form">
+            <div class="manual-history-grid">
+              <label>Modo
+                <select id="manualHistoryMode" class="mono">
+                  <option value="open">Open</option>
+                  <option value="close">Close</option>
+                </select>
+              </label>
+              <label>Volume (base)
+                <input id="manualHistoryVolume" type="number" step="any" class="mono" />
+              </label>
+              <label><span data-spot-label>Gate</span> preço
+                <input id="manualHistoryGatePrice" type="number" step="any" class="mono" />
+              </label>
+              <label>MEXC preço
+                <input id="manualHistoryMexcPrice" type="number" step="any" class="mono" />
+              </label>
+              <label>Data/Hora (opcional)
+                <input id="manualHistoryCreatedAt" type="text" class="mono" placeholder="Ex.: 01/01/2024 10:00:00" />
+              </label>
+            </div>
+            <div id="manualHistoryEditingLabel" class="manual-history-editing"></div>
+            <div class="manual-history-actions">
+              <button id="manualHistorySave">Salvar ordem manual</button>
+              <button type="button" id="manualHistoryCancel" class="button-ghost">Cancelar edição</button>
+            </div>
+            <div id="manualHistoryStatus" class="manual-history-status"></div>
+          </div>
+        </details>
         <table>
           <thead>
             <tr>
-              <th>ID</th>
-              <th>Ativo</th>
-              <th>Data/Hora Abertura</th>
-              <th>Data/Hora Fechamento</th>
-              <th>Tempo Total da posição</th>
-              <th>Meta</th>
-              <th><span data-spot-label>Gate</span></th>
-              <th>MEXC</th>
-              <th><span data-spot-label>Gate</span> Abertura</th>
-              <th>MEXC Abertura</th>
-              <th><span data-spot-label>Gate</span> Fechamento</th>
-              <th>MEXC Fechamento</th>
-              <th>Arb final (%)</th>
-              <th>PnL</th>
-              <th>Nota</th>
+              <th>Local ID</th>
+              <th>Hora</th>
+              <th>Sentido</th>
+              <th><span data-spot-label>Gate</span> Price</th>
+              <th>MEXC Price</th>
+              <th>Volume (moeda base)</th>
+              <th>%Arb</th>
+              <th>$PnL</th>
+              <th><span data-spot-label>Gate</span> Order ID</th>
+              <th><span data-spot-label>Gate</span> Status</th>
+              <th>GRO</th>
+              <th>MEXC Order ID</th>
+              <th>MEXC Status</th>
+              <th>MRO</th>
+              <th>Status</th>
+              <th>Ações</th>
             </tr>
           </thead>
-          <tbody id="positionSummariesBody"></tbody>
+          <tbody id="historyBody"></tbody>
         </table>
       </div>
     </div>
-  </div>
+
+    <div class="card" id="positionEditCard">
+      <h3>Editar estado da posição</h3>
+      <div class="card-body">
+        <div class="position-edit-grid">
+          <div>
+            <label>Meta total
+              <input id="posEditTarget" type="number" step="any" class="mono" />
+            </label>
+            <label>Arb média (%)
+              <input id="posEditArb" type="number" step="any" class="mono" />
+            </label>
+            <label>PnL acumulado (USDT)
+              <input id="posEditPnl" type="number" step="any" class="mono" />
+            </label>
+          </div>
+          <div>
+            <div class="muted"><strong data-spot-label>Gate</strong></div>
+            <label>Preenchido
+              <input id="posEditGateFilled" type="number" step="any" class="mono" />
+            </label>
+            <label>Preço médio
+              <input id="posEditGateAvg" type="number" step="any" class="mono" />
+            </label>
+          </div>
+          <div>
+            <div class="muted"><strong>MEXC</strong></div>
+            <label>Preenchido
+              <input id="posEditMexcFilled" type="number" step="any" class="mono" />
+            </label>
+            <label>Preço médio
+              <input id="posEditMexcAvg" type="number" step="any" class="mono" />
+            </label>
+          </div>
+        </div>
+        <div class="position-edit-actions">
+          <textarea id="positionNote" placeholder="Anotação (opcional, usada ao desmontar)"></textarea>
+          <div class="position-edit-buttons">
+            <button id="positionSaveBtn">Salvar posição</button>
+            <button id="positionDismantleBtn" class="button-danger">Desmontar posição</button>
+          </div>
+        </div>
+        <div class="position-summaries">
+          <h4>Resumos recentes</h4>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Ativo</th>
+                <th>Data/Hora Abertura</th>
+                <th>Data/Hora Fechamento</th>
+                <th>Tempo Total da posição</th>
+                <th>Meta</th>
+                <th><span data-spot-label>Gate</span></th>
+                <th>MEXC</th>
+                <th><span data-spot-label>Gate</span> Abertura</th>
+                <th>MEXC Abertura</th>
+                <th><span data-spot-label>Gate</span> Fechamento</th>
+                <th>MEXC Fechamento</th>
+                <th>Arb final (%)</th>
+                <th>PnL</th>
+                <th>Nota</th>
+              </tr>
+            </thead>
+            <tbody id="positionSummariesBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </main>
 
   <script src="scripts.js"></script>
 </body>
