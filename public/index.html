@@ -401,6 +401,17 @@
       font-size: 13px;
     }
 
+    .table-scroll {
+      width: 100%;
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .table-scroll table {
+      min-width: 960px;
+    }
+
     thead {
       background: linear-gradient(135deg, rgba(110, 88, 255, 0.35), rgba(37, 35, 74, 0.95));
       text-transform: uppercase;
@@ -1260,9 +1271,10 @@
           <div id="manualHistoryStatus" class="manual-history-status"></div>
         </div>
       </details>
-      <table>
-        <thead>
-          <tr>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
             <th>Local ID</th>
             <th>Hora</th>
             <th>Sentido</th>
@@ -1279,10 +1291,11 @@
             <th>MRO</th>
             <th>Status</th>
             <th>Ações</th>
-          </tr>
-        </thead>
-        <tbody id="historyBody"></tbody>
-      </table>
+            </tr>
+          </thead>
+          <tbody id="historyBody"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -1329,9 +1342,10 @@
       </div>
       <div class="position-summaries">
         <h4>Resumos recentes</h4>
-        <table>
-          <thead>
-            <tr>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
               <th>ID</th>
               <th>Ativo</th>
               <th>Data/Hora Abertura</th>
@@ -1347,10 +1361,11 @@
               <th>Arb final (%)</th>
               <th>PnL</th>
               <th>Nota</th>
-            </tr>
-          </thead>
-          <tbody id="positionSummariesBody"></tbody>
-        </table>
+              </tr>
+            </thead>
+            <tbody id="positionSummariesBody"></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
