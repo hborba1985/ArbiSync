@@ -103,6 +103,72 @@ function normalizeSpotExchangeKey(value) {
   return key === 'bitget' ? 'bitget' : 'gate';
 }
 
+function normalizeVolumeArray(source) {
+  const arr = [null, null, null];
+  if (!Array.isArray(source)) return arr;
+  for (let i = 0; i < 3; i += 1) {
+    const num = Number(source[i]);
+    arr[i] = Number.isFinite(num) && num > 0 ? num : null;
+  }
+  return arr;
+}
+
+function sanitizeVolumeSnapshot(value) {
+  if (value === undefined || value === null) return null;
+  let input = value;
+  if (typeof value === 'string') {
+    try {
+      input = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  const snapshot = { spot: [null, null, null], mexc: [null, null, null] };
+  let hasValue = false;
+  const assign = (source, target) => {
+    if (!Array.isArray(source)) return;
+    for (let i = 0; i < 3; i += 1) {
+      const num = Number(source[i]);
+      if (Number.isFinite(num) && num > 0) {
+        snapshot[target][i] = num;
+        hasValue = true;
+      }
+    }
+  };
+  if (Array.isArray(input)) {
+    assign(input, 'mexc');
+  } else if (input && typeof input === 'object') {
+    assign(input.spot ?? input.gate ?? input.spotVolumes ?? null, 'spot');
+    assign(input.mexc ?? input.futures ?? input.mexcVolumes ?? null, 'mexc');
+  }
+  return hasValue ? snapshot : null;
+}
+
+function serializeVolumeSnapshot(value) {
+  if (value === undefined || value === null) return null;
+  const normalized = sanitizeVolumeSnapshot(value);
+  if (!normalized) return null;
+  try {
+    return JSON.stringify({
+      spot: normalizeVolumeArray(normalized.spot),
+      mexc: normalizeVolumeArray(normalized.mexc)
+    });
+  } catch {
+    return null;
+  }
+}
+
+function parseVolumeSnapshot(value) {
+  const normalized = sanitizeVolumeSnapshot(value);
+  if (normalized) {
+    return {
+      spot: normalizeVolumeArray(normalized.spot),
+      mexc: normalizeVolumeArray(normalized.mexc)
+    };
+  }
+  return null;
+}
+
 const insertHistoryStmt = db.prepare(`
 INSERT OR REPLACE INTO history (
   local_id, created_at, executed_at, cancelled_at, symbol,
@@ -237,8 +303,8 @@ function saveSpreadSnapshot(symbol, spotExchange, ts, openSpread, closeSpread, o
     ts: Number.isFinite(ts) ? Math.trunc(ts) : Date.now(),
     open: Number.isFinite(openSpread) ? openSpread : null,
     close: Number.isFinite(closeSpread) ? closeSpread : null,
-    openVolumes: Array.isArray(openVolumes) && openVolumes.length ? JSON.stringify(openVolumes) : null,
-    closeVolumes: Array.isArray(closeVolumes) && closeVolumes.length ? JSON.stringify(closeVolumes) : null,
+    openVolumes: serializeVolumeSnapshot(openVolumes),
+    closeVolumes: serializeVolumeSnapshot(closeVolumes),
     positionArb: Number.isFinite(positionArb) ? positionArb : null
   };
   insertSpreadSnapshotStmt.run(payload);
@@ -256,11 +322,16 @@ function pruneSpreadSnapshots(symbol, spotExchange, cutoffTs) {
 function loadSpreadSnapshots(symbol, spotExchange, sinceTs) {
   if (!symbol) return [];
   const since = Number.isFinite(sinceTs) ? Math.trunc(sinceTs) : 0;
-  return loadSpreadSnapshotsStmt.all({
+  const rows = loadSpreadSnapshotsStmt.all({
     symbol: String(symbol).toUpperCase(),
     spotExchange: normalizeSpotExchangeKey(spotExchange),
     since
   });
+  return rows.map((row) => ({
+    ...row,
+    openVolumes: parseVolumeSnapshot(row.openVolumes),
+    closeVolumes: parseVolumeSnapshot(row.closeVolumes)
+  }));
 }
 
 function clearSpreadSnapshots(symbol, spotExchange) {
@@ -284,5 +355,6 @@ module.exports = {
   saveSpreadSnapshot,
   loadSpreadSnapshots,
   pruneSpreadSnapshots,
-  clearSpreadSnapshots
+  clearSpreadSnapshots,
+  parseVolumeSnapshot
 };
