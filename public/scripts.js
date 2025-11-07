@@ -22,6 +22,8 @@ let spreadSeriesBySpot = new Map();
 let lastSpreadFetchBySpot = new Map();
 let lastRequestedSpotKey = null;
 let spotGuardUntil = 0;
+let hasOpenPosition = false;
+const spreadLegendControls = new Map();
 
 const instances = new Map();
 let activeInstanceId = null;
@@ -31,14 +33,38 @@ const DEFAULT_DATASET_VISIBILITY = {
   open: true,
   close: false,
   positionArb: false,
-  openVol0: false,
-  openVol1: false,
-  openVol2: false,
-  closeVol0: false,
-  closeVol1: false,
-  closeVol2: false,
+  spotOpenVol0: false,
+  spotOpenVol1: false,
+  spotOpenVol2: false,
+  mexcOpenVol0: false,
+  mexcOpenVol1: false,
+  mexcOpenVol2: false,
+  spotCloseVol0: false,
+  spotCloseVol1: false,
+  spotCloseVol2: false,
+  mexcCloseVol0: false,
+  mexcCloseVol1: false,
+  mexcCloseVol2: false,
   cross: false
 };
+
+const VOLUME_LABEL_TEMPLATES = {
+  spotOpenVol0: (spot) => `Volume abertura ${spot} Nível 1`,
+  spotOpenVol1: (spot) => `Volume abertura ${spot} Nível 2`,
+  spotOpenVol2: (spot) => `Volume abertura ${spot} Nível 3`,
+  spotCloseVol0: (spot) => `Volume fechamento ${spot} Nível 1`,
+  spotCloseVol1: (spot) => `Volume fechamento ${spot} Nível 2`,
+  spotCloseVol2: (spot) => `Volume fechamento ${spot} Nível 3`
+};
+
+const SPREAD_LEGEND_GROUPS = [
+  { id: 'core', title: 'Linhas principais', datasetIds: ['open', 'close', 'positionArb'] },
+  { id: 'spot-open', titleHtml: 'Volumes <span data-spot-label></span> — Abertura', datasetIds: ['spotOpenVol0', 'spotOpenVol1', 'spotOpenVol2'] },
+  { id: 'mexc-open', title: 'Volumes MEXC — Abertura', datasetIds: ['mexcOpenVol0', 'mexcOpenVol1', 'mexcOpenVol2'] },
+  { id: 'spot-close', titleHtml: 'Volumes <span data-spot-label></span> — Fechamento', datasetIds: ['spotCloseVol0', 'spotCloseVol1', 'spotCloseVol2'] },
+  { id: 'mexc-close', title: 'Volumes MEXC — Fechamento', datasetIds: ['mexcCloseVol0', 'mexcCloseVol1', 'mexcCloseVol2'] },
+  { id: 'events', title: 'Eventos', datasetIds: ['cross'] }
+];
 
 function createDefaultDatasetVisibility() {
   return { ...DEFAULT_DATASET_VISIBILITY };
@@ -154,6 +180,10 @@ function ensureInstanceState(inst) {
   if (typeof state.metaLoading !== 'boolean') state.metaLoading = false;
   if (!state.hasOwnProperty('meta')) state.meta = state.meta || null;
   if (!state.hasOwnProperty('lastQuotes')) state.lastQuotes = state.lastQuotes || null;
+  if (!state.executionLogOpenState || typeof state.executionLogOpenState !== 'object') state.executionLogOpenState = {};
+  if (!state.riskDiscovery || typeof state.riskDiscovery !== 'object') {
+    state.riskDiscovery = { status: 'idle', lastSymbol: null, lastSpot: null, result: null, error: null };
+  }
 
   const configSource = state.alertConfig || inst.alertConfig;
   state.alertConfig = createDefaultAlertConfig(configSource);
@@ -182,7 +212,6 @@ function resetInstanceDataState(inst) {
 
 function captureChartVisibilityToState(state) {
   if (!state || !spreadChart) return;
-  if (spreadFilter !== 'all') return;
   const visibility = state.datasetVisibility || createDefaultDatasetVisibility();
   spreadChart.data.datasets.forEach((dataset, idx) => {
     const meta = spreadChart.getDatasetMeta(idx);
@@ -194,7 +223,6 @@ function captureChartVisibilityToState(state) {
 
 function applyChartVisibilityFromState(state) {
   if (!state || !spreadChart) return;
-  if (spreadFilter !== 'all') return;
   const visibility = state.datasetVisibility || createDefaultDatasetVisibility();
   spreadChart.data.datasets.forEach((dataset, idx) => {
     const visible = visibility[dataset.id];
@@ -410,7 +438,15 @@ function renderInstanceTabs() {
       alert('Use o formato BASE_QUOTE, por exemplo MGO_USDT.');
       return;
     }
-    addInstance({ symbol: sym, spotExchange: getSpotKey(), label: sym, draftSymbol: sym }, { switchTo: true });
+    const spotSuggested = getSpotKey();
+    const spotRaw = prompt('Qual corretora SPOT deseja usar? (gate/bitget)', spotSuggested);
+    if (!spotRaw) return;
+    const normalizedSpot = spotRaw.trim().toLowerCase();
+    if (!['gate', 'bitget'].includes(normalizedSpot)) {
+      alert('Use "gate" ou "bitget" para selecionar a corretora.');
+      return;
+    }
+    addInstance({ symbol: sym, spotExchange: normalizedSpot, label: sym, draftSymbol: sym }, { switchTo: true });
   });
 }
 
@@ -419,6 +455,13 @@ function addInstance({ id, symbol, spotExchange, label, draftSymbol, alerts } = 
   const sym = (symbol || 'BASE_USDT').toUpperCase();
   const spot = (spotExchange || getSpotKey() || DEFAULT_SPOT.key).toLowerCase();
   const draft = draftSymbol ? draftSymbol.toUpperCase() : sym;
+  for (const existing of instances.values()) {
+    if (!existing) continue;
+    if ((existing.symbol || '').toUpperCase() === sym && (existing.spotExchange || DEFAULT_SPOT.key) === spot) {
+      alert('Já existe uma aba aberta para este ativo com a mesma corretora SPOT.');
+      return null;
+    }
+  }
   const instance = {
     id: instId,
     symbol: sym,
@@ -498,6 +541,7 @@ function syncActiveInstanceSymbol(sym) {
     if (inst.label !== sym) changed = true;
     inst.label = sym;
   }
+  const symbolChanged = inst.symbol !== prevSymbol;
   if (changed) {
     persistInstances();
     renderInstanceTabs();
@@ -505,6 +549,7 @@ function syncActiveInstanceSymbol(sym) {
   const titleEl = document.getElementById('titleSymbol');
   if (titleEl) titleEl.textContent = sym;
   syncSymbolInput();
+  if (symbolChanged) markRiskDiscoveryStale(inst);
 }
 
 function syncActiveInstanceSpot(key) {
@@ -515,6 +560,7 @@ function syncActiveInstanceSpot(key) {
   inst.spotExchange = normalized;
   persistInstances();
   renderInstanceTabs();
+  markRiskDiscoveryStale(inst);
 }
 
 async function switchInstance(id, { skipPersist = false } = {}) {
@@ -603,10 +649,12 @@ async function switchInstance(id, { skipPersist = false } = {}) {
     await fetchSpreadData(true, getSpotKey());
     await refreshHistory();
     await refreshPosition();
+    ensureRiskDiscoveryForActiveInstance();
   } finally {
     switchingInstance = false;
   }
   startInstanceWatchers(inst);
+  ensureRiskDiscoveryForActiveInstance();
 }
 
 function getSpotLabel() {
@@ -793,6 +841,9 @@ function renderExecutionLogs(historyItems) {
   const container = document.getElementById('executionLogs');
   if (!container) return;
   container.innerHTML = '';
+  const inst = getActiveInstance();
+  const instState = ensureInstanceState(inst);
+  const openState = instState?.executionLogOpenState || {};
 
   if (!Array.isArray(historyItems) || historyItems.length === 0) {
     const empty = document.createElement('div');
@@ -823,7 +874,9 @@ function renderExecutionLogs(historyItems) {
 
     const detailsEl = document.createElement('details');
     detailsEl.className = 'log-block';
-    if (i === 0) detailsEl.open = true;
+    const entryKey = item?.localId || `idx-${i}`;
+    const savedOpen = Object.prototype.hasOwnProperty.call(openState, entryKey) ? !!openState[entryKey] : null;
+    detailsEl.open = savedOpen != null ? savedOpen : (i === 0);
 
     const summary = document.createElement('summary');
     const summaryTitle = document.createElement('span');
@@ -919,7 +972,18 @@ function renderExecutionLogs(historyItems) {
     }
 
     detailsEl.appendChild(content);
+    detailsEl.addEventListener('toggle', () => {
+      if (!instState) return;
+      if (!instState.executionLogOpenState) instState.executionLogOpenState = {};
+      instState.executionLogOpenState[entryKey] = detailsEl.open;
+    });
     container.appendChild(detailsEl);
+  }
+  if (instState && instState.executionLogOpenState) {
+    const validKeys = new Set(historyItems.slice(0, Math.min(historyItems.length, 6)).map((item, idx) => item?.localId || `idx-${idx}`));
+    Object.keys(instState.executionLogOpenState).forEach((key) => {
+      if (!validKeys.has(key)) delete instState.executionLogOpenState[key];
+    });
   }
 }
 
@@ -1201,7 +1265,6 @@ async function ensureInstanceMeta(inst) {
 
 async function refreshMetaUI(symbol) {
   const d = await fetchMarketMeta(symbol);
-  document.getElementById('metaBadge').textContent = 'meta: ' + d.symbol;
   document.getElementById('metaText').textContent =
     metaToText('Auto', d.auto) + '\n\n' +
     'Override: ' + (d.override ? JSON.stringify(d.override) : '(nenhum)') + '\n\n' +
@@ -1249,6 +1312,7 @@ document.getElementById('applySymbol').addEventListener('click', async () => {
   await refreshBalances();
   await fetchData();
   await fetchSpreadData(true, getSpotKey());
+  ensureRiskDiscoveryForActiveInstance({ force: true });
 });
 
 document.getElementById('autoCfg').addEventListener('click', async () => {
@@ -1365,7 +1429,6 @@ const levelSelections = {
 };
 let audioCtx = null;
 
-let spreadFilter = 'all';
 const SPREAD_RANGE_WINDOWS = {
   '5min': 5 * 60 * 1000,
   '15min': 15 * 60 * 1000,
@@ -2090,12 +2153,12 @@ function ensureSpreadChart() {
           spanGaps: true
         },
         {
-          id: 'openVol0',
-          label: 'Volume abertura Nível 1',
+          id: 'spotOpenVol0',
+          label: 'Volume abertura Spot Nível 1',
           data: [],
-          metaGroup: 'open-volume',
-          borderColor: 'rgba(31,119,180,0.45)',
-          backgroundColor: 'rgba(31,119,180,0.15)',
+          metaGroup: 'spot-open-volume',
+          borderColor: 'rgba(31,119,180,0.55)',
+          backgroundColor: 'rgba(31,119,180,0.18)',
           fill: false,
           pointRadius: 0,
           borderWidth: 1,
@@ -2104,12 +2167,12 @@ function ensureSpreadChart() {
           yAxisID: 'yVolume'
         },
         {
-          id: 'openVol1',
-          label: 'Volume abertura Nível 2',
+          id: 'spotOpenVol1',
+          label: 'Volume abertura Spot Nível 2',
           data: [],
-          metaGroup: 'open-volume',
-          borderColor: 'rgba(31,119,180,0.35)',
-          backgroundColor: 'rgba(31,119,180,0.12)',
+          metaGroup: 'spot-open-volume',
+          borderColor: 'rgba(31,119,180,0.4)',
+          backgroundColor: 'rgba(31,119,180,0.14)',
           fill: false,
           pointRadius: 0,
           borderWidth: 1,
@@ -2118,11 +2181,11 @@ function ensureSpreadChart() {
           yAxisID: 'yVolume'
         },
         {
-          id: 'openVol2',
-          label: 'Volume abertura Nível 3',
+          id: 'spotOpenVol2',
+          label: 'Volume abertura Spot Nível 3',
           data: [],
-          metaGroup: 'open-volume',
-          borderColor: 'rgba(31,119,180,0.25)',
+          metaGroup: 'spot-open-volume',
+          borderColor: 'rgba(31,119,180,0.28)',
           backgroundColor: 'rgba(31,119,180,0.08)',
           fill: false,
           pointRadius: 0,
@@ -2132,12 +2195,12 @@ function ensureSpreadChart() {
           yAxisID: 'yVolume'
         },
         {
-          id: 'closeVol0',
-          label: 'Volume fechamento Nível 1',
+          id: 'mexcOpenVol0',
+          label: 'Volume abertura MEXC Nível 1',
           data: [],
-          metaGroup: 'close-volume',
-          borderColor: 'rgba(255,127,14,0.5)',
-          backgroundColor: 'rgba(255,127,14,0.18)',
+          metaGroup: 'mexc-open-volume',
+          borderColor: 'rgba(148,103,189,0.55)',
+          backgroundColor: 'rgba(148,103,189,0.18)',
           fill: false,
           pointRadius: 0,
           borderWidth: 1,
@@ -2146,12 +2209,12 @@ function ensureSpreadChart() {
           yAxisID: 'yVolume'
         },
         {
-          id: 'closeVol1',
-          label: 'Volume fechamento Nível 2',
+          id: 'mexcOpenVol1',
+          label: 'Volume abertura MEXC Nível 2',
           data: [],
-          metaGroup: 'close-volume',
-          borderColor: 'rgba(255,127,14,0.4)',
-          backgroundColor: 'rgba(255,127,14,0.14)',
+          metaGroup: 'mexc-open-volume',
+          borderColor: 'rgba(148,103,189,0.42)',
+          backgroundColor: 'rgba(148,103,189,0.14)',
           fill: false,
           pointRadius: 0,
           borderWidth: 1,
@@ -2160,12 +2223,96 @@ function ensureSpreadChart() {
           yAxisID: 'yVolume'
         },
         {
-          id: 'closeVol2',
-          label: 'Volume fechamento Nível 3',
+          id: 'mexcOpenVol2',
+          label: 'Volume abertura MEXC Nível 3',
           data: [],
-          metaGroup: 'close-volume',
-          borderColor: 'rgba(255,127,14,0.3)',
-          backgroundColor: 'rgba(255,127,14,0.1)',
+          metaGroup: 'mexc-open-volume',
+          borderColor: 'rgba(148,103,189,0.3)',
+          backgroundColor: 'rgba(148,103,189,0.1)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'spotCloseVol0',
+          label: 'Volume fechamento Spot Nível 1',
+          data: [],
+          metaGroup: 'spot-close-volume',
+          borderColor: 'rgba(44,160,44,0.55)',
+          backgroundColor: 'rgba(44,160,44,0.18)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'spotCloseVol1',
+          label: 'Volume fechamento Spot Nível 2',
+          data: [],
+          metaGroup: 'spot-close-volume',
+          borderColor: 'rgba(44,160,44,0.4)',
+          backgroundColor: 'rgba(44,160,44,0.14)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'spotCloseVol2',
+          label: 'Volume fechamento Spot Nível 3',
+          data: [],
+          metaGroup: 'spot-close-volume',
+          borderColor: 'rgba(44,160,44,0.28)',
+          backgroundColor: 'rgba(44,160,44,0.1)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'mexcCloseVol0',
+          label: 'Volume fechamento MEXC Nível 1',
+          data: [],
+          metaGroup: 'mexc-close-volume',
+          borderColor: 'rgba(214,39,40,0.55)',
+          backgroundColor: 'rgba(214,39,40,0.18)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'mexcCloseVol1',
+          label: 'Volume fechamento MEXC Nível 2',
+          data: [],
+          metaGroup: 'mexc-close-volume',
+          borderColor: 'rgba(214,39,40,0.4)',
+          backgroundColor: 'rgba(214,39,40,0.14)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'mexcCloseVol2',
+          label: 'Volume fechamento MEXC Nível 3',
+          data: [],
+          metaGroup: 'mexc-close-volume',
+          borderColor: 'rgba(214,39,40,0.28)',
+          backgroundColor: 'rgba(214,39,40,0.1)',
           fill: false,
           pointRadius: 0,
           borderWidth: 1,
@@ -2228,16 +2375,12 @@ function ensureSpreadChart() {
         legend: {
           position: 'bottom',
           onClick: (evt, legendItem, legend) => {
-            if (typeof defaultLegendClick === 'function') {
-              defaultLegendClick.call(legend.chart, evt, legendItem, legend);
-            } else if (Chart?.defaults?.plugins?.legend?.onClick) {
-              Chart.defaults.plugins.legend.onClick.call(legend.chart, evt, legendItem, legend);
-            }
-            const inst = getActiveInstance();
-            if (inst) {
-              const state = ensureInstanceState(inst);
-              captureChartVisibilityToState(state);
-            }
+            const datasetIndex = legendItem?.datasetIndex;
+            if (datasetIndex == null) return;
+            const dataset = legend.chart?.data?.datasets?.[datasetIndex];
+            if (!dataset) return;
+            const currentlyVisible = legend.chart.isDatasetVisible(datasetIndex);
+            setDatasetVisibility(dataset.id, !currentlyVisible);
           }
         },
         tooltip: {
@@ -2302,46 +2445,130 @@ function computeSpreadCrossings(points) {
     const prev = points[i - 1];
     const curr = points[i];
     if (!prev || !curr) continue;
-    if (!Number.isFinite(prev.open) || !Number.isFinite(prev.close) || !Number.isFinite(curr.open) || !Number.isFinite(curr.close)) continue;
-    const prevDiff = prev.open - prev.close;
-    const currDiff = curr.open - curr.close;
+    const prevClose = Number(prev.close);
+    const prevArb = Number(prev.positionArb);
+    const currClose = Number(curr.close);
+    const currArb = Number(curr.positionArb);
+    if (!Number.isFinite(prevClose) || !Number.isFinite(prevArb) || !Number.isFinite(currClose) || !Number.isFinite(currArb)) continue;
+    const prevDiff = prevClose - prevArb;
+    const currDiff = currClose - currArb;
     if (!Number.isFinite(prevDiff) || !Number.isFinite(currDiff)) continue;
-    if (prevDiff === 0) {
-      out.push({ x: prev.ts, y: (prev.open + prev.close) / 2 });
-      continue;
-    }
-    if (currDiff === 0) {
-      out.push({ x: curr.ts, y: (curr.open + curr.close) / 2 });
-      continue;
-    }
-    if ((prevDiff > 0 && currDiff < 0) || (prevDiff < 0 && currDiff > 0)) {
-      const diffSpan = Math.abs(prevDiff) + Math.abs(currDiff);
-      if (diffSpan === 0) continue;
-      const ratio = Math.abs(prevDiff) / diffSpan;
+    if (prevDiff > 0 && currDiff <= 0) {
+      const denom = prevDiff - currDiff;
+      const ratio = denom !== 0 ? prevDiff / denom : 0;
       const tsDelta = Number(curr.ts) - Number(prev.ts);
       const crossTs = Number(prev.ts) + ratio * tsDelta;
-      const openVal = prev.open + (curr.open - prev.open) * ratio;
-      const closeVal = prev.close + (curr.close - prev.close) * ratio;
-      const y = (openVal + closeVal) / 2;
-      if (Number.isFinite(crossTs) && Number.isFinite(y)) out.push({ x: crossTs, y });
+      const closeVal = prevClose + (currClose - prevClose) * ratio;
+      if (Number.isFinite(crossTs) && Number.isFinite(closeVal)) {
+        out.push({ x: crossTs, y: closeVal });
+      }
     }
   }
   return out;
 }
 
-function applySpreadFilter(chart) {
+function updateVolumeDatasetLabels(chart) {
+  if (!chart) return;
+  const spotLabel = getSpotLabel();
   chart.data.datasets.forEach((dataset) => {
-    if (!dataset) return;
-    const group = dataset.metaGroup || dataset.id;
-    if (spreadFilter === 'all') {
-      dataset.hidden = false;
-    } else if (spreadFilter === 'open') {
-      dataset.hidden = !['open', 'open-volume'].includes(group);
-    } else if (spreadFilter === 'close') {
-      dataset.hidden = !['close', 'close-volume', 'position'].includes(group);
-    } else if (spreadFilter === 'cross') {
-      dataset.hidden = group !== 'cross';
+    const builder = VOLUME_LABEL_TEMPLATES[dataset.id];
+    if (typeof builder === 'function') {
+      dataset.label = builder(spotLabel);
     }
+  });
+}
+
+function setDatasetVisibility(datasetId, visible) {
+  const chart = ensureSpreadChart();
+  if (!chart) return;
+  const idx = chart.data.datasets.findIndex((d) => d.id === datasetId);
+  if (idx === -1) return;
+  const dataset = chart.data.datasets[idx];
+  dataset.hidden = !visible;
+  const meta = chart.getDatasetMeta(idx);
+  if (meta) meta.hidden = visible ? null : true;
+  const inst = getActiveInstance();
+  if (inst) {
+    const state = ensureInstanceState(inst);
+    if (state) {
+      const visibility = state.datasetVisibility || createDefaultDatasetVisibility();
+      visibility[datasetId] = visible;
+      state.datasetVisibility = visibility;
+    }
+  }
+  chart.update('none');
+  syncSpreadLegendControlsFromChart();
+}
+
+function ensureSpreadLegendControls() {
+  const container = document.getElementById('spreadLegendControls');
+  const chart = ensureSpreadChart();
+  if (!container || !chart) return;
+  if (container.dataset.rendered === '1' && spreadLegendControls.size === chart.data.datasets.length) {
+    return;
+  }
+  container.innerHTML = '';
+  spreadLegendControls.clear();
+  SPREAD_LEGEND_GROUPS.forEach((group) => {
+    const groupEl = document.createElement('div');
+    groupEl.className = 'spread-legend-group';
+    const titleEl = document.createElement('div');
+    titleEl.className = 'spread-legend-group-title';
+    if (group.titleHtml) {
+      titleEl.innerHTML = group.titleHtml;
+    } else if (typeof group.title === 'function') {
+      titleEl.textContent = group.title();
+    } else {
+      titleEl.textContent = group.title;
+    }
+    groupEl.appendChild(titleEl);
+    group.datasetIds.forEach((datasetId) => {
+      const datasetIndex = chart.data.datasets.findIndex((d) => d.id === datasetId);
+      if (datasetIndex === -1) return;
+      const dataset = chart.data.datasets[datasetIndex];
+      const option = document.createElement('label');
+      option.className = 'spread-legend-option';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.dataset.datasetId = datasetId;
+      const meta = chart.getDatasetMeta(datasetIndex);
+      const visible = meta ? meta.hidden !== true : dataset.hidden !== true;
+      input.checked = visible;
+      input.addEventListener('change', () => {
+        setDatasetVisibility(datasetId, input.checked);
+      });
+      const swatch = document.createElement('span');
+      swatch.style.display = 'inline-block';
+      swatch.style.width = '12px';
+      swatch.style.height = '12px';
+      swatch.style.borderRadius = '3px';
+      swatch.style.border = '1px solid rgba(255, 255, 255, 0.2)';
+      swatch.style.background = dataset.borderColor || '#ffffff';
+      const text = document.createElement('span');
+      text.textContent = dataset.label || datasetId;
+      option.appendChild(input);
+      option.appendChild(swatch);
+      option.appendChild(text);
+      groupEl.appendChild(option);
+      spreadLegendControls.set(datasetId, { checkbox: input, textEl: text, colorEl: swatch });
+    });
+    container.appendChild(groupEl);
+  });
+  container.dataset.rendered = '1';
+  updateSpotLabelElements();
+}
+
+function syncSpreadLegendControlsFromChart() {
+  const chart = spreadChart;
+  if (!chart) return;
+  chart.data.datasets.forEach((dataset, idx) => {
+    const entry = spreadLegendControls.get(dataset.id);
+    if (!entry) return;
+    const meta = chart.getDatasetMeta(idx);
+    const visible = meta ? meta.hidden !== true : dataset.hidden !== true;
+    entry.checkbox.checked = visible;
+    if (entry.textEl) entry.textEl.textContent = dataset.label || dataset.id;
+    if (entry.colorEl) entry.colorEl.style.background = dataset.borderColor || '#ffffff';
   });
 }
 
@@ -2422,8 +2649,10 @@ function renderSpreadChart() {
   const openData = [];
   const closeData = [];
   const positionArbData = [];
-  const openVolumeData = [[], [], []];
-  const closeVolumeData = [[], [], []];
+  const spotOpenVolumeData = [[], [], []];
+  const mexcOpenVolumeData = [[], [], []];
+  const spotCloseVolumeData = [[], [], []];
+  const mexcCloseVolumeData = [[], [], []];
   let latestFinalArb = null;
   for (const entry of filteredPoints) {
     if (Number.isFinite(entry.open)) openData.push({ x: entry.ts, y: entry.open });
@@ -2435,13 +2664,29 @@ function renderSpreadChart() {
         latestFinalArb = { ts: entry.ts, diff: arbValue - entry.close };
       }
     }
-    const openLevels = Array.isArray(entry.openVolumes) ? entry.openVolumes : [];
-    const closeLevels = Array.isArray(entry.closeVolumes) ? entry.closeVolumes : [];
+    const fallbackOpen = Array.isArray(entry.openVolumes) ? entry.openVolumes : [];
+    const fallbackClose = Array.isArray(entry.closeVolumes) ? entry.closeVolumes : [];
+    const spotOpenLevels = (Array.isArray(entry.openSpotVolumes) && entry.openSpotVolumes.some((v) => Number.isFinite(v)))
+      ? entry.openSpotVolumes
+      : fallbackOpen;
+    const mexcOpenLevels = (Array.isArray(entry.openMexcVolumes) && entry.openMexcVolumes.some((v) => Number.isFinite(v)))
+      ? entry.openMexcVolumes
+      : fallbackOpen;
+    const spotCloseLevels = (Array.isArray(entry.closeSpotVolumes) && entry.closeSpotVolumes.some((v) => Number.isFinite(v)))
+      ? entry.closeSpotVolumes
+      : fallbackClose;
+    const mexcCloseLevels = (Array.isArray(entry.closeMexcVolumes) && entry.closeMexcVolumes.some((v) => Number.isFinite(v)))
+      ? entry.closeMexcVolumes
+      : fallbackClose;
     for (let i = 0; i < 3; i++) {
-      const oVal = openLevels[i];
-      if (Number.isFinite(oVal) && oVal > 0) openVolumeData[i].push({ x: entry.ts, y: oVal });
-      const cVal = closeLevels[i];
-      if (Number.isFinite(cVal) && cVal > 0) closeVolumeData[i].push({ x: entry.ts, y: cVal });
+      const spotOpenVal = spotOpenLevels[i];
+      if (Number.isFinite(spotOpenVal) && spotOpenVal > 0) spotOpenVolumeData[i].push({ x: entry.ts, y: spotOpenVal });
+      const mexcOpenVal = mexcOpenLevels[i];
+      if (Number.isFinite(mexcOpenVal) && mexcOpenVal > 0) mexcOpenVolumeData[i].push({ x: entry.ts, y: mexcOpenVal });
+      const spotCloseVal = spotCloseLevels[i];
+      if (Number.isFinite(spotCloseVal) && spotCloseVal > 0) spotCloseVolumeData[i].push({ x: entry.ts, y: spotCloseVal });
+      const mexcCloseVal = mexcCloseLevels[i];
+      if (Number.isFinite(mexcCloseVal) && mexcCloseVal > 0) mexcCloseVolumeData[i].push({ x: entry.ts, y: mexcCloseVal });
     }
   }
   const crossData = computeSpreadCrossings(filteredPoints);
@@ -2450,29 +2695,42 @@ function renderSpreadChart() {
   if (datasetById.has('close')) {
     const closeDataset = datasetById.get('close');
     closeDataset.data = closeData;
+    const baseColor = hasOpenPosition ? '#ff7f0e' : '#f2b760';
+    closeDataset.borderColor = baseColor;
+    closeDataset.backgroundColor = hasOpenPosition ? 'rgba(255,127,14,0.1)' : 'rgba(242,183,96,0.16)';
     closeDataset.segment = closeDataset.segment || {};
-    closeDataset.segment.borderColor = (ctx) => {
-      const yVal = ctx?.p1?.parsed?.y ?? ctx?.p0?.parsed?.y;
-      const arbVal = ctx?.p1?.raw?.arbRef ?? ctx?.p0?.raw?.arbRef;
-      if (Number.isFinite(yVal) && Number.isFinite(arbVal)) {
-        return yVal > arbVal ? '#d62728' : '#2ca02c';
-      }
-      return '#ff7f0e';
-    };
+    if (hasOpenPosition) {
+      closeDataset.segment.borderColor = (ctx) => {
+        const yVal = ctx?.p1?.parsed?.y ?? ctx?.p0?.parsed?.y;
+        const arbVal = ctx?.p1?.raw?.arbRef ?? ctx?.p0?.raw?.arbRef;
+        if (Number.isFinite(yVal) && Number.isFinite(arbVal)) {
+          return yVal > arbVal ? '#d62728' : '#2ca02c';
+        }
+        return baseColor;
+      };
+    } else {
+      closeDataset.segment.borderColor = () => baseColor;
+    }
   }
   if (datasetById.has('cross')) datasetById.get('cross').data = crossData;
   if (datasetById.has('positionArb')) datasetById.get('positionArb').data = positionArbData;
   for (let i = 0; i < 3; i++) {
-    const openDs = datasetById.get(`openVol${i}`);
-    if (openDs) openDs.data = openVolumeData[i];
-    const closeDs = datasetById.get(`closeVol${i}`);
-    if (closeDs) closeDs.data = closeVolumeData[i];
+    const spotOpenDs = datasetById.get(`spotOpenVol${i}`);
+    if (spotOpenDs) spotOpenDs.data = spotOpenVolumeData[i];
+    const mexcOpenDs = datasetById.get(`mexcOpenVol${i}`);
+    if (mexcOpenDs) mexcOpenDs.data = mexcOpenVolumeData[i];
+    const spotCloseDs = datasetById.get(`spotCloseVol${i}`);
+    if (spotCloseDs) spotCloseDs.data = spotCloseVolumeData[i];
+    const mexcCloseDs = datasetById.get(`mexcCloseVol${i}`);
+    if (mexcCloseDs) mexcCloseDs.data = mexcCloseVolumeData[i];
   }
-  applySpreadFilter(chart);
   updateSpreadStats(calculateSpreadExtremes(filteredPoints));
   const finalArbEl = document.getElementById('spreadFinalArb');
   if (finalArbEl) {
-    if (latestFinalArb && Number.isFinite(latestFinalArb.diff)) {
+    if (!hasOpenPosition) {
+      finalArbEl.textContent = 'Nenhuma posição';
+      finalArbEl.style.color = '#ffffff';
+    } else if (latestFinalArb && Number.isFinite(latestFinalArb.diff)) {
       const diff = latestFinalArb.diff;
       const sign = diff > 0 ? '+' : diff < 0 ? '-' : '';
       const absValue = Math.abs(diff).toFixed(4);
@@ -2492,7 +2750,162 @@ function renderSpreadChart() {
     const state = ensureInstanceState(inst);
     applyChartVisibilityFromState(state);
   }
+  updateVolumeDatasetLabels(chart);
+  ensureSpreadLegendControls();
+  syncSpreadLegendControlsFromChart();
   chart.update('none');
+}
+
+function getRiskElements() {
+  return {
+    button: document.getElementById('discoverRiskBtn'),
+    info: document.getElementById('riskInfo'),
+    execute: document.getElementById('executeTrade')
+  };
+}
+
+function getInstanceRiskState(inst) {
+  if (!inst) return null;
+  const state = ensureInstanceState(inst);
+  if (!state) return null;
+  if (!state.riskDiscovery || typeof state.riskDiscovery !== 'object') {
+    state.riskDiscovery = { status: 'idle', lastSymbol: null, lastSpot: null, result: null, error: null };
+  }
+  return state.riskDiscovery;
+}
+
+function markRiskDiscoveryStale(inst) {
+  if (!inst) return;
+  const risk = getInstanceRiskState(inst);
+  if (!risk) return;
+  risk.status = 'stale';
+  risk.result = null;
+  risk.error = null;
+  risk.lastSymbol = null;
+  risk.lastSpot = null;
+  if (inst.id === activeInstanceId) updateRiskControlsUI();
+}
+
+function updateRiskControlsUI() {
+  const { button, info, execute } = getRiskElements();
+  const inst = getActiveInstance();
+  const risk = getInstanceRiskState(inst);
+  if (button) button.disabled = !inst || !risk || risk.status === 'running';
+  if (execute) execute.disabled = !inst || !risk || risk.status !== 'ready';
+  if (!info) return;
+  info.style.color = 'var(--text-muted)';
+  if (!inst || !risk) {
+    info.textContent = 'Limite ainda não verificado.';
+    return;
+  }
+  if (risk.status === 'running') {
+    info.textContent = 'Descobrindo limite na MEXC...';
+    return;
+  }
+  if (risk.status === 'ready' && risk.result) {
+    const baseSymbol = (inst.symbol || currentSymbol || 'BASE_USDT').split('_')[0] || 'BASE';
+    const baseText = formatVolumeValue(risk.result.baseLimit, 6, baseSymbol);
+    const quoteText = formatTwoDecimals(risk.result.quoteLimit);
+    let details = `Limite: ${baseText} • ${quoteText} USDT`;
+    if (risk.result.risk && Number.isFinite(risk.result.risk.level)) {
+      details += ` (nível ${risk.result.risk.level})`;
+    }
+    let warningMessage = null;
+    if (risk.result.orderError) {
+      const warn = risk.result.orderError.message || risk.result.orderError.msg || risk.result.orderError.error || risk.result.orderError;
+      if (warn) {
+        warningMessage = typeof warn === 'string' ? warn : JSON.stringify(warn);
+      }
+    }
+    if (warningMessage) {
+      details += ` — aviso: ${warningMessage}`;
+      info.style.color = 'var(--warning)';
+    } else {
+      info.style.color = 'var(--success)';
+    }
+    info.textContent = details;
+    return;
+  }
+  if (risk.status === 'error') {
+    info.textContent = `Falha ao descobrir limite: ${risk.error || 'erro desconhecido.'}`;
+    info.style.color = 'var(--danger)';
+    return;
+  }
+  info.textContent = 'Limite ainda não verificado.';
+}
+
+async function runRiskDiscovery(inst, { reason = 'manual' } = {}) {
+  if (!inst) return;
+  const risk = getInstanceRiskState(inst);
+  if (!risk || risk.status === 'running') return;
+  risk.status = 'running';
+  risk.error = null;
+  risk.result = null;
+  if (inst.id === activeInstanceId) updateRiskControlsUI();
+  try {
+    const symbol = inst.symbol || currentSymbol || 'BASE_USDT';
+    const spot = inst.spotExchange || getSpotKey();
+    const payload = {
+      symbol,
+      spotExchange: spot,
+      marginPct: 10,
+      reason
+    };
+    const resp = await fetch('/api/mexc-discover-risk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(resp);
+    if (!resp.ok || data?.ok === false) {
+      const message = data?.error || 'Falha ao descobrir limite de risco.';
+      risk.status = 'error';
+      risk.error = message;
+      risk.lastSymbol = symbol;
+      risk.lastSpot = spot;
+      return;
+    }
+    const baseLimit = Number(data?.baseLimit);
+    const quoteLimit = Number(data?.quoteLimit);
+    const orderError = data?.orderError || data?.errorMessage || null;
+    risk.status = 'ready';
+    risk.error = null;
+    risk.lastSymbol = symbol;
+    risk.lastSpot = spot;
+    risk.result = {
+      baseLimit: Number.isFinite(baseLimit) ? baseLimit : null,
+      quoteLimit: Number.isFinite(quoteLimit) ? quoteLimit : null,
+      risk: data?.risk || null,
+      testPrice: Number.isFinite(Number(data?.testPrice)) ? Number(data.testPrice) : null,
+      testContracts: Number.isFinite(Number(data?.testContracts)) ? Number(data.testContracts) : null,
+      orderError: orderError || null
+    };
+  } catch (err) {
+    risk.status = 'error';
+    risk.error = err?.message || 'Erro ao descobrir limite de risco.';
+  } finally {
+    if (inst.id === activeInstanceId) updateRiskControlsUI();
+  }
+}
+
+function ensureRiskDiscoveryForActiveInstance({ force = false } = {}) {
+  const inst = getActiveInstance();
+  const risk = getInstanceRiskState(inst);
+  if (!inst || !risk) {
+    updateRiskControlsUI();
+    return;
+  }
+  const spot = inst.spotExchange || getSpotKey();
+  const needs = force
+    || risk.status === 'idle'
+    || risk.status === 'stale'
+    || risk.lastSymbol !== (inst.symbol || currentSymbol)
+    || risk.lastSpot !== spot;
+  if (!needs) {
+    updateRiskControlsUI();
+    return;
+  }
+  runRiskDiscovery(inst, { reason: force ? 'auto-force' : 'auto' });
 }
 
 async function fetchSpreadDataForInstance(inst, force = false, spotKey = null) {
@@ -2541,7 +2954,11 @@ async function fetchSpreadDataForInstance(inst, force = false, spotKey = null) {
         close: (closeRaw === null || closeRaw === undefined || !Number.isFinite(closeNum)) ? null : closeNum,
         positionArb: Number.isFinite(positionArb) ? positionArb : null,
         openVolumes: parseVolumeArray(entry.openVolumes),
-        closeVolumes: parseVolumeArray(entry.closeVolumes)
+        closeVolumes: parseVolumeArray(entry.closeVolumes),
+        openSpotVolumes: parseVolumeArray(entry.openSpotVolumes),
+        openMexcVolumes: parseVolumeArray(entry.openMexcVolumes),
+        closeSpotVolumes: parseVolumeArray(entry.closeSpotVolumes),
+        closeMexcVolumes: parseVolumeArray(entry.closeMexcVolumes)
       };
     });
     mapped.sort((a, b) => Number(a.ts) - Number(b.ts));
@@ -2632,16 +3049,6 @@ async function fetchData() {
   if (!inst) return;
   await fetchDataForInstance(inst);
 }
-
-const spreadFilterButtons = document.querySelectorAll('[data-spread-filter]');
-spreadFilterButtons.forEach((btn) => {
-  btn.addEventListener('click', () => {
-    const filter = btn.dataset.spreadFilter || 'all';
-    spreadFilter = filter;
-    spreadFilterButtons.forEach((b) => b.classList.toggle('active', b === btn));
-    renderSpreadChart();
-  });
-});
 
 const spreadRangeButtons = document.querySelectorAll('[data-spread-range]');
 function syncSpreadRangeButtons() {
@@ -2990,6 +3397,20 @@ function computePositionSummaryMetrics(state) {
   const avgGateClose = accum.gate.close.qty > 0 ? accum.gate.close.value / accum.gate.close.qty : null;
   const avgMexcOpen = accum.mexc.open.qty > 0 ? accum.mexc.open.value / accum.mexc.open.qty : null;
   const avgMexcClose = accum.mexc.close.qty > 0 ? accum.mexc.close.value / accum.mexc.close.qty : null;
+  const baseCandidates = [
+    accum.gate.open.qty,
+    accum.gate.close.qty,
+    accum.mexc.open.qty,
+    accum.mexc.close.qty
+  ].filter((value) => Number.isFinite(value) && value > 0);
+  const quoteCandidates = [
+    accum.gate.open.value,
+    accum.gate.close.value,
+    accum.mexc.open.value,
+    accum.mexc.close.value
+  ].filter((value) => Number.isFinite(value) && value > 0);
+  const operatedBaseQty = baseCandidates.length ? Math.max(...baseCandidates) : null;
+  const operatedQuoteValue = quoteCandidates.length ? Math.max(...quoteCandidates) : null;
 
   let totalPnl = Number(state?.pnlUsd);
   if (!Number.isFinite(totalPnl)) totalPnl = null;
@@ -3021,7 +3442,9 @@ function computePositionSummaryMetrics(state) {
     openedAt,
     closedAt,
     durationMs,
-    symbol
+    symbol,
+    operatedBaseQty,
+    operatedQuoteValue
   };
 }
 
@@ -3052,15 +3475,22 @@ function renderPositionSummaries(list) {
     const durationText = formatDuration(durationMs);
     const rawSymbol = metrics?.symbol || state.symbol || item?.summary?.symbol || null;
     const symbolText = rawSymbol ? String(rawSymbol).toUpperCase() : '-';
+    const baseSymbol = symbolText.includes('_') ? symbolText.split('_')[0] : getCurrentBaseSymbol();
+    const operatedBase = Number(metrics?.operatedBaseQty);
+    const operatedQuote = Number(metrics?.operatedQuoteValue);
+    let volumeText = '-';
+    if (Number.isFinite(operatedBase) || Number.isFinite(operatedQuote)) {
+      const baseFormatted = Number.isFinite(operatedBase) ? formatSummaryNumber(operatedBase, 6) : '—';
+      const quoteFormatted = Number.isFinite(operatedQuote) ? formatSummaryNumber(operatedQuote, 2) : '—';
+      volumeText = `${baseFormatted} ${baseSymbol} • ${quoteFormatted} USDT`;
+    }
     const cells = [
       item?.id ?? '-',
       symbolText,
       openedAtText,
       closedAtText,
       durationText,
-      formatSummaryNumber(state.targetQty),
-      `${formatSummaryNumber(gate.filledQty)} @ ${formatSummaryNumber(gate.avgPrice, 8)}`,
-      `${formatSummaryNumber(mexc.filledQty)} @ ${formatSummaryNumber(mexc.avgPrice, 8)}`,
+      volumeText,
       formatSummaryNumber(gateOpenAvg, 8),
       formatSummaryNumber(mexcOpenAvg, 8),
       formatSummaryNumber(gateCloseAvg, 8),
@@ -3097,6 +3527,9 @@ async function refreshPosition() {
     const totalFilled = Number.isFinite(totalFilledRaw)
       ? totalFilledRaw
       : Math.max(gateFilled ?? 0, mexcFilled ?? 0);
+    const prevHasOpen = hasOpenPosition;
+    hasOpenPosition = (Number(gateFilled) || 0) > 0 || (Number(mexcFilled) || 0) > 0;
+    if (prevHasOpen !== hasOpenPosition) renderSpreadChart();
 
     const targetEl = document.getElementById('ppTarget');
     if (targetEl) targetEl.textContent = formatVolumeValue(targetQty, 6, baseSymbol);
@@ -3119,6 +3552,7 @@ async function refreshPosition() {
   } catch {}
 }
 setInterval(refreshPosition, 4000); refreshPosition();
+ensureRiskDiscoveryForActiveInstance();
 
 // ======== Execução (precheck + executar)
 document.getElementById('executeTrade').addEventListener('click', async () => {
@@ -3197,6 +3631,14 @@ document.getElementById('executeTrade').addEventListener('click', async () => {
     btn.disabled = false;
   }
 });
+
+const discoverRiskBtn = document.getElementById('discoverRiskBtn');
+if (discoverRiskBtn) {
+  discoverRiskBtn.addEventListener('click', () => {
+    const inst = getActiveInstance();
+    if (inst) runRiskDiscovery(inst, { reason: 'manual' });
+  });
+}
 
 // [FIX] handler "Definir meta"
 async function submitTargetQty(val) {

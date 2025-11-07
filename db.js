@@ -48,7 +48,14 @@ CREATE TABLE IF NOT EXISTS spread_snapshots (
   spot_exchange TEXT NOT NULL DEFAULT 'gate',
   ts INTEGER NOT NULL,
   open_spread REAL,
-  close_spread REAL
+  close_spread REAL,
+  open_volumes TEXT,
+  close_volumes TEXT,
+  position_arb_pct REAL,
+  open_spot_volumes TEXT,
+  close_spot_volumes TEXT,
+  open_mexc_volumes TEXT,
+  close_mexc_volumes TEXT
 );
 `);
 
@@ -62,6 +69,10 @@ try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN close_volumes TEXT'); } c
 try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN position_arb_pct REAL'); } catch {}
 try { db.exec("ALTER TABLE spread_snapshots ADD COLUMN spot_exchange TEXT DEFAULT 'gate'"); } catch {}
 try { db.exec("UPDATE spread_snapshots SET spot_exchange = 'gate' WHERE spot_exchange IS NULL OR spot_exchange = ''"); } catch {}
+try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN open_spot_volumes TEXT'); } catch {}
+try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN close_spot_volumes TEXT'); } catch {}
+try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN open_mexc_volumes TEXT'); } catch {}
+try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN close_mexc_volumes TEXT'); } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_spread_symbol_exchange_ts ON spread_snapshots(symbol, spot_exchange, ts)'); } catch {}
 
 const upsertOverrideStmt = db.prepare(`
@@ -207,8 +218,16 @@ function loadPositionSummaries(limit = 20) {
 }
 
 const insertSpreadSnapshotStmt = db.prepare(`
-INSERT INTO spread_snapshots(symbol, spot_exchange, ts, open_spread, close_spread, open_volumes, close_volumes, position_arb_pct)
-VALUES (@symbol, @spotExchange, @ts, @open, @close, @openVolumes, @closeVolumes, @positionArb)
+INSERT INTO spread_snapshots(
+  symbol, spot_exchange, ts, open_spread, close_spread,
+  open_volumes, close_volumes, position_arb_pct,
+  open_spot_volumes, close_spot_volumes, open_mexc_volumes, close_mexc_volumes
+)
+VALUES (
+  @symbol, @spotExchange, @ts, @open, @close,
+  @openVolumes, @closeVolumes, @positionArb,
+  @openSpotVolumes, @closeSpotVolumes, @openMexcVolumes, @closeMexcVolumes
+)
 `);
 
 const pruneSpreadSnapshotsStmt = db.prepare(`
@@ -219,7 +238,11 @@ WHERE symbol = @symbol AND spot_exchange = @spotExchange AND ts < @cutoff
 const loadSpreadSnapshotsStmt = db.prepare(`
 SELECT ts, open_spread AS open, close_spread AS close,
        open_volumes AS openVolumes, close_volumes AS closeVolumes,
-       position_arb_pct AS positionArb
+       position_arb_pct AS positionArb,
+       open_spot_volumes AS openSpotVolumes,
+       close_spot_volumes AS closeSpotVolumes,
+       open_mexc_volumes AS openMexcVolumes,
+       close_mexc_volumes AS closeMexcVolumes
 FROM spread_snapshots
 WHERE symbol = @symbol AND spot_exchange = @spotExchange AND ts >= @since
 ORDER BY ts ASC
@@ -229,17 +252,22 @@ const clearSpreadSnapshotsStmt = db.prepare(`
 DELETE FROM spread_snapshots WHERE symbol = @symbol AND spot_exchange = @spotExchange
 `);
 
-function saveSpreadSnapshot(symbol, spotExchange, ts, openSpread, closeSpread, openVolumes, closeVolumes, positionArb) {
+function saveSpreadSnapshot(symbol, spotExchange, ts, openSpread, closeSpread, openVolumes, closeVolumes, positionArb, extras = {}) {
   if (!symbol) return;
+  const toJsonArray = (value) => (Array.isArray(value) && value.length ? JSON.stringify(value) : null);
   const payload = {
     symbol: String(symbol).toUpperCase(),
     spotExchange: normalizeSpotExchangeKey(spotExchange),
     ts: Number.isFinite(ts) ? Math.trunc(ts) : Date.now(),
     open: Number.isFinite(openSpread) ? openSpread : null,
     close: Number.isFinite(closeSpread) ? closeSpread : null,
-    openVolumes: Array.isArray(openVolumes) && openVolumes.length ? JSON.stringify(openVolumes) : null,
-    closeVolumes: Array.isArray(closeVolumes) && closeVolumes.length ? JSON.stringify(closeVolumes) : null,
-    positionArb: Number.isFinite(positionArb) ? positionArb : null
+    openVolumes: toJsonArray(openVolumes),
+    closeVolumes: toJsonArray(closeVolumes),
+    positionArb: Number.isFinite(positionArb) ? positionArb : null,
+    openSpotVolumes: toJsonArray(extras.openSpotVolumes || extras.openSpot),
+    closeSpotVolumes: toJsonArray(extras.closeSpotVolumes || extras.closeSpot),
+    openMexcVolumes: toJsonArray(extras.openMexcVolumes || extras.openMexc),
+    closeMexcVolumes: toJsonArray(extras.closeMexcVolumes || extras.closeMexc)
   };
   insertSpreadSnapshotStmt.run(payload);
 }

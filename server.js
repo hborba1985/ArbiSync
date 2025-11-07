@@ -1882,6 +1882,19 @@ app.get('/api/data', async (req, res) => {
     };
     const openVolumesSnapshot = normalizeVolumeSnapshot(openLevels);
     const closeVolumesSnapshot = normalizeVolumeSnapshot(closeLevels);
+    const mapVolumeUsd = (levels, key) => {
+      const arr = [];
+      for (let i = 0; i < limit; i++) {
+        const level = levels[i];
+        const usd = Number(level?.[key]?.usdtVolume);
+        arr.push(Number.isFinite(usd) ? usd : null);
+      }
+      return arr;
+    };
+    const openSpotUsdVolumes = mapVolumeUsd(openLevels, 'gate');
+    const openMexcUsdVolumes = mapVolumeUsd(openLevels, 'mexc');
+    const closeSpotUsdVolumes = mapVolumeUsd(closeLevels, 'gate');
+    const closeMexcUsdVolumes = mapVolumeUsd(closeLevels, 'mexc');
     const positionArbSnapshot = Number(positionState?.arbPctAvg);
     try {
       db.saveSpreadSnapshot(requestedSymbol, spotInfo.normalized, nowTs,
@@ -1889,7 +1902,13 @@ app.get('/api/data', async (req, res) => {
         Number.isFinite(closeSpread) ? closeSpread : null,
         openVolumesSnapshot,
         closeVolumesSnapshot,
-        Number.isFinite(positionArbSnapshot) ? positionArbSnapshot : null
+        Number.isFinite(positionArbSnapshot) ? positionArbSnapshot : null,
+        {
+          openSpotVolumes: openSpotUsdVolumes,
+          openMexcVolumes: openMexcUsdVolumes,
+          closeSpotVolumes: closeSpotUsdVolumes,
+          closeMexcVolumes: closeMexcUsdVolumes
+        }
       );
       db.pruneSpreadSnapshots(requestedSymbol, spotInfo.normalized, nowTs - SPREAD_WINDOW_MS);
     } catch (err) {
@@ -1956,6 +1975,10 @@ app.get('/api/spreads', (req, res) => {
     close: row.close == null ? null : Number(row.close),
     openVolumes: parseVolumeColumn(row.openVolumes),
     closeVolumes: parseVolumeColumn(row.closeVolumes),
+    openSpotVolumes: parseVolumeColumn(row.openSpotVolumes),
+    closeSpotVolumes: parseVolumeColumn(row.closeSpotVolumes),
+    openMexcVolumes: parseVolumeColumn(row.openMexcVolumes),
+    closeMexcVolumes: parseVolumeColumn(row.closeMexcVolumes),
     positionArb: row.positionArb == null ? null : Number(row.positionArb)
   }));
 
@@ -2604,6 +2627,104 @@ app.post('/api/precheck', async (req, res) => {
   } catch (e) {
     console.error('[ERRO /api/precheck]:', e.response?.data || e.message);
     res.status(500).json({ ok: false, error: 'Falha no precheck.' });
+  }
+});
+
+app.post('/api/mexc-discover-risk', async (req, res) => {
+  try {
+    const symbol = String(req.body?.symbol || currentSymbol || '').toUpperCase();
+    if (!symbol) return res.status(400).json({ ok: false, error: 'Símbolo inválido.' });
+    if (!mexcClient) return res.status(503).json({ ok: false, error: 'Cliente MEXC não configurado.' });
+    const spotKey = normalizeSpotExchange(req.body?.spotExchange || currentSpotExchange);
+    const spotInfo = getSpotInfo(spotKey);
+    const meta = await getMergedMeta(symbol);
+    const leverage = Number(meta?.settings?.leverage || 1) || 1;
+    const cs = Number(meta?.mexc?.contractSize || 1) || 1;
+    const minContracts = Number(meta?.mexc?.minContracts || 1) || 1;
+    const priceScale = Number(meta?.mexc?.priceScale || 2);
+    const marginPct = Number.isFinite(Number(req.body?.marginPct)) ? Number(req.body.marginPct) : 10;
+
+    let referencePrice = null;
+    try {
+      const depth = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=1`);
+      const bestAsk = Number(depth.data?.data?.asks?.[0]?.[0]);
+      const bestBid = Number(depth.data?.data?.bids?.[0]?.[0]);
+      if (Number.isFinite(bestAsk) && bestAsk > 0) referencePrice = bestAsk;
+      else if (Number.isFinite(bestBid) && bestBid > 0) referencePrice = bestBid;
+    } catch (err) {
+      console.warn('[MEXC] Falha ao obter depth para risk discovery:', err?.message || err);
+    }
+    if (!Number.isFinite(referencePrice) || referencePrice <= 0) {
+      return res.status(500).json({ ok: false, error: 'Livro de ofertas MEXC indisponível para teste.' });
+    }
+    const testPriceRaw = referencePrice * (1 + (marginPct / 100));
+    const normalizedPrice = Number.isFinite(testPriceRaw)
+      ? Number(testPriceRaw.toFixed(Math.max(priceScale, 2)))
+      : null;
+    const contracts = Math.max(minContracts, 1);
+    let orderId = null;
+    let orderError = null;
+    if (Number.isFinite(normalizedPrice) && normalizedPrice > 0 && contracts > 0) {
+      const submit = await mexcSubmitOrder(symbol, normalizedPrice, contracts, leverage, 3, undefined);
+      if (submit?.id) {
+        orderId = submit.id;
+      } else if (submit?.error) {
+        orderError = submit.error;
+      } else if (submit && submit !== true) {
+        orderError = submit;
+      }
+    } else {
+      orderError = { message: 'Não foi possível calcular preço de teste.' };
+    }
+    if (orderId) {
+      try {
+        await mexcCancelOrder(symbol, orderId);
+      } catch (cancelErr) {
+        console.warn('[MEXC] Falha ao cancelar ordem de teste:', cancelErr?.message || cancelErr);
+      }
+    }
+
+    const vp = Number(meta?.mexc?.volPrecision || 0);
+    const factor = Math.pow(10, vp);
+    const floorContracts = (value) => {
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      if (factor > 1) return Math.floor(value * factor) / factor;
+      return Math.floor(value);
+    };
+    const normalizeContracts = (value) => {
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      return Number(value.toFixed(Math.max(vp, 0)));
+    };
+    const riskInfo = await evaluateMexcRiskLimit(
+      symbol,
+      leverage,
+      normalizedPrice,
+      cs,
+      floorContracts,
+      normalizeContracts
+    );
+    const maxContracts = Number.isFinite(riskInfo?.maxContracts) ? riskInfo.maxContracts : null;
+    const baseLimit = Number.isFinite(maxContracts) ? maxContracts * cs : null;
+    let quoteLimit = Number.isFinite(riskInfo?.riskLimit) ? riskInfo.riskLimit : null;
+    if (!Number.isFinite(quoteLimit) && Number.isFinite(baseLimit) && Number.isFinite(normalizedPrice)) {
+      quoteLimit = baseLimit * normalizedPrice;
+    }
+    res.json({
+      ok: true,
+      symbol,
+      spotExchange: { key: spotInfo.normalized, label: spotInfo.label },
+      orderId: orderId ? String(orderId) : null,
+      cancelled: !!orderId,
+      orderError: orderError ? serializeMexcError(orderError) : null,
+      risk: riskInfo,
+      baseLimit,
+      quoteLimit,
+      testPrice: normalizedPrice,
+      testContracts: contracts
+    });
+  } catch (err) {
+    console.error('[ERRO /api/mexc-discover-risk]:', err?.response?.data || err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || 'Erro ao descobrir limite de risco.' });
   }
 });
 
