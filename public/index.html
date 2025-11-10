@@ -154,6 +154,79 @@
       background: rgba(125, 97, 255, 0.12);
     }
 
+    .new-instance-popover {
+      position: absolute;
+      min-width: 240px;
+      padding: 16px;
+      border-radius: 16px;
+      border: 1px solid rgba(141, 108, 255, 0.45);
+      background: rgba(15, 18, 48, 0.96);
+      box-shadow: 0 20px 45px -28px rgba(125, 97, 255, 0.4);
+      backdrop-filter: blur(16px);
+      z-index: 50;
+      display: none;
+    }
+
+    .new-instance-popover.open {
+      display: block;
+    }
+
+    .new-instance-popover h4 {
+      margin: 0 0 12px;
+      font-size: 14px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .new-instance-popover label {
+      display: block;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 4px;
+      color: var(--text-muted);
+    }
+
+    .new-instance-popover input,
+    .new-instance-popover select {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid rgba(141, 108, 255, 0.35);
+      background: rgba(9, 12, 32, 0.9);
+      color: var(--text);
+      padding: 8px 10px;
+      font-family: inherit;
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+
+    .new-instance-popover-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    .new-instance-popover-actions button {
+      border: none;
+      border-radius: 999px;
+      padding: 8px 16px;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.04em;
+    }
+
+    #newInstanceConfirm {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #0b0f24;
+    }
+
+    #newInstanceCancel {
+      background: rgba(125, 97, 255, 0.12);
+      color: var(--text-muted);
+    }
+
     .row {
       display: flex;
       gap: 24px;
@@ -985,6 +1058,22 @@
   <h1>Arbitragem <span data-spot-label>Gate.io</span> x MEXC — <span id="titleSymbol">BASE_USDT</span></h1>
 
   <div class="instance-tabs" id="instanceTabs"></div>
+  <div class="new-instance-popover" id="newInstancePopover">
+    <h4>Nova aba</h4>
+    <form id="newInstanceForm">
+      <label for="newInstanceSymbol">Ativo (BASE_USDT)</label>
+      <input id="newInstanceSymbol" type="text" autocomplete="off" placeholder="Ex.: MGO_USDT" />
+      <label for="newInstanceSpot">Corretora SPOT</label>
+      <select id="newInstanceSpot">
+        <option value="gate">Gate.io</option>
+        <option value="bitget">Bitget</option>
+      </select>
+      <div class="new-instance-popover-actions">
+        <button type="button" id="newInstanceCancel">Cancelar</button>
+        <button type="submit" id="newInstanceConfirm">Adicionar</button>
+      </div>
+    </form>
+  </div>
 
   <div class="card top" id="configCard">
     <h3>Par &amp; Configurações</h3>

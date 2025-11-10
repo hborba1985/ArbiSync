@@ -24,6 +24,14 @@ let lastRequestedSpotKey = null;
 let spotGuardUntil = 0;
 let hasOpenPosition = false;
 const spreadLegendControls = new Map();
+let newInstancePopoverEl = null;
+let newInstanceFormEl = null;
+let newInstanceSymbolEl = null;
+let newInstanceSpotEl = null;
+let newInstanceCancelEl = null;
+let newInstanceAnchorEl = null;
+let newInstanceDocListenerBound = false;
+let newInstanceKeyListenerBound = false;
 
 const instances = new Map();
 let activeInstanceId = null;
@@ -58,13 +66,17 @@ const VOLUME_LABEL_TEMPLATES = {
 };
 
 const SPREAD_LEGEND_GROUPS = [
-  { id: 'core', title: 'Linhas principais', datasetIds: ['open', 'close', 'positionArb'] },
   { id: 'spot-open', titleHtml: 'Volumes <span data-spot-label></span> — Abertura', datasetIds: ['spotOpenVol0', 'spotOpenVol1', 'spotOpenVol2'] },
   { id: 'mexc-open', title: 'Volumes MEXC — Abertura', datasetIds: ['mexcOpenVol0', 'mexcOpenVol1', 'mexcOpenVol2'] },
   { id: 'spot-close', titleHtml: 'Volumes <span data-spot-label></span> — Fechamento', datasetIds: ['spotCloseVol0', 'spotCloseVol1', 'spotCloseVol2'] },
   { id: 'mexc-close', title: 'Volumes MEXC — Fechamento', datasetIds: ['mexcCloseVol0', 'mexcCloseVol1', 'mexcCloseVol2'] },
-  { id: 'events', title: 'Eventos', datasetIds: ['cross'] }
+  { id: 'core', title: 'Linhas principais', datasetIds: ['open', 'close', 'positionArb', 'cross'] }
 ];
+
+function normalizeSpotKey(value) {
+  const normalized = String(value || '').toLowerCase();
+  return normalized === 'bitget' ? 'bitget' : 'gate';
+}
 
 function createDefaultDatasetVisibility() {
   return { ...DEFAULT_DATASET_VISIBILITY };
@@ -184,6 +196,10 @@ function ensureInstanceState(inst) {
   if (!state.riskDiscovery || typeof state.riskDiscovery !== 'object') {
     state.riskDiscovery = { status: 'idle', lastSymbol: null, lastSpot: null, result: null, error: null };
   }
+  if (!state.positionPayload) {
+    state.positionPayload = createEmptyPositionPayload(inst.symbol || currentSymbol || 'BASE_USDT', inst.spotExchange || getSpotKey());
+  }
+  if (typeof state.hasOpenPosition !== 'boolean') state.hasOpenPosition = false;
 
   const configSource = state.alertConfig || inst.alertConfig;
   state.alertConfig = createDefaultAlertConfig(configSource);
@@ -429,24 +445,110 @@ function renderInstanceTabs() {
       removeInstance(id);
     });
   });
-  addBtn.addEventListener('click', () => {
-    const suggested = getActiveInstance()?.symbol || 'BASE_USDT';
-    const raw = prompt('Qual símbolo deseja negociar? (ex.: MGO_USDT)', suggested);
-    if (!raw) return;
-    const sym = raw.trim().toUpperCase();
-    if (!sym.includes('_')) {
-      alert('Use o formato BASE_QUOTE, por exemplo MGO_USDT.');
-      return;
+  bindNewInstanceButton(addBtn);
+}
+
+function ensureNewInstanceElements() {
+  if (!newInstancePopoverEl) newInstancePopoverEl = document.getElementById('newInstancePopover');
+  if (!newInstanceFormEl) newInstanceFormEl = document.getElementById('newInstanceForm');
+  if (!newInstanceSymbolEl) newInstanceSymbolEl = document.getElementById('newInstanceSymbol');
+  if (!newInstanceSpotEl) newInstanceSpotEl = document.getElementById('newInstanceSpot');
+  if (!newInstanceCancelEl) newInstanceCancelEl = document.getElementById('newInstanceCancel');
+  return !!(newInstancePopoverEl && newInstanceFormEl && newInstanceSymbolEl && newInstanceSpotEl);
+}
+
+function positionNewInstancePopover(anchor) {
+  if (!ensureNewInstanceElements() || !anchor) return;
+  const rect = anchor.getBoundingClientRect();
+  const top = window.scrollY + rect.bottom + 8;
+  const left = window.scrollX + rect.left;
+  newInstancePopoverEl.style.top = `${top}px`;
+  newInstancePopoverEl.style.left = `${left}px`;
+}
+
+function hideNewInstancePopover() {
+  if (!ensureNewInstanceElements()) return;
+  newInstancePopoverEl.classList.remove('open');
+  newInstancePopoverEl.setAttribute('aria-hidden', 'true');
+  newInstanceAnchorEl = null;
+}
+
+function handleNewInstanceDocumentClick(ev) {
+  if (!newInstancePopoverEl || !newInstancePopoverEl.classList.contains('open')) return;
+  if (newInstancePopoverEl.contains(ev.target)) return;
+  if (newInstanceAnchorEl && newInstanceAnchorEl.contains(ev.target)) return;
+  hideNewInstancePopover();
+}
+
+function handleNewInstanceKeydown(ev) {
+  if (ev.key === 'Escape') hideNewInstancePopover();
+}
+
+function bindNewInstanceFormHandlers() {
+  if (!ensureNewInstanceElements()) return;
+  if (!newInstanceFormEl.dataset.bound) {
+    newInstanceFormEl.dataset.bound = '1';
+    newInstanceFormEl.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (!ensureNewInstanceElements()) return;
+      const rawSymbol = newInstanceSymbolEl.value.trim().toUpperCase();
+      if (!rawSymbol || !rawSymbol.includes('_')) {
+        alert('Use o formato BASE_QUOTE, por exemplo MGO_USDT.');
+        newInstanceSymbolEl.focus();
+        return;
+      }
+      const spotKey = normalizeSpotKey(newInstanceSpotEl.value || getSpotKey());
+      const inst = addInstance({ symbol: rawSymbol, spotExchange: spotKey, label: rawSymbol, draftSymbol: rawSymbol }, { switchTo: true });
+      if (inst) {
+        hideNewInstancePopover();
+      }
+    });
+  }
+  if (newInstanceCancelEl && newInstanceCancelEl.dataset.bound !== '1') {
+    newInstanceCancelEl.dataset.bound = '1';
+    newInstanceCancelEl.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      hideNewInstancePopover();
+    });
+  }
+  if (!newInstanceDocListenerBound) {
+    document.addEventListener('click', handleNewInstanceDocumentClick);
+    newInstanceDocListenerBound = true;
+  }
+  if (!newInstanceKeyListenerBound) {
+    document.addEventListener('keydown', handleNewInstanceKeydown);
+    newInstanceKeyListenerBound = true;
+  }
+}
+
+function openNewInstancePopover(anchor) {
+  if (!ensureNewInstanceElements()) return;
+  bindNewInstanceFormHandlers();
+  newInstanceAnchorEl = anchor || null;
+  const suggested = (getActiveInstance()?.symbol || currentSymbol || 'BASE_USDT').toUpperCase();
+  newInstanceSymbolEl.value = suggested;
+  newInstanceSpotEl.value = normalizeSpotKey(getSpotKey());
+  positionNewInstancePopover(anchor);
+  newInstancePopoverEl.classList.add('open');
+  newInstancePopoverEl.setAttribute('aria-hidden', 'false');
+  setTimeout(() => {
+    if (newInstanceSymbolEl) {
+      newInstanceSymbolEl.focus();
+      newInstanceSymbolEl.select();
     }
-    const spotSuggested = getSpotKey();
-    const spotRaw = prompt('Qual corretora SPOT deseja usar? (gate/bitget)', spotSuggested);
-    if (!spotRaw) return;
-    const normalizedSpot = spotRaw.trim().toLowerCase();
-    if (!['gate', 'bitget'].includes(normalizedSpot)) {
-      alert('Use "gate" ou "bitget" para selecionar a corretora.');
-      return;
+  }, 0);
+}
+
+function bindNewInstanceButton(button) {
+  if (!button || button.dataset.bound === '1') return;
+  button.dataset.bound = '1';
+  button.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    if (newInstancePopoverEl && newInstancePopoverEl.classList.contains('open') && newInstanceAnchorEl === button) {
+      hideNewInstancePopover();
+    } else {
+      openNewInstancePopover(button);
     }
-    addInstance({ symbol: sym, spotExchange: normalizedSpot, label: sym, draftSymbol: sym }, { switchTo: true });
   });
 }
 
@@ -597,6 +699,7 @@ async function switchInstance(id, { skipPersist = false } = {}) {
   spreadPoints = state.spreadPoints;
   lastQuotes = state.lastQuotes;
   applyAlertConfigToUI(state.alertConfig);
+  hasOpenPosition = !!state.hasOpenPosition;
   const inputEl = document.getElementById('symbolInput');
   if (inputEl) inputEl.value = inst.draftSymbol || inst.symbol || '';
   setSpotExchangeState({ key: inst.spotExchange });
@@ -613,6 +716,7 @@ async function switchInstance(id, { skipPersist = false } = {}) {
   renderSpreadChart();
   renderQuotes();
   applyChartVisibilityFromState(state);
+  restorePositionFromInstance(inst);
 
   try {
     const normalized = await setSymbol(inst.symbol, inst.spotExchange);
@@ -627,8 +731,11 @@ async function switchInstance(id, { skipPersist = false } = {}) {
         if (state) {
           state.meta = null;
           state.metaSymbol = null;
+          state.positionPayload = createEmptyPositionPayload(normalized, inst.spotExchange);
+          state.hasOpenPosition = false;
         }
         ensureInstanceMeta(inst);
+        restorePositionFromInstance(inst);
       }
     }
   } catch (e) {
@@ -788,6 +895,119 @@ function toNumberOrNull(value) {
 function formatTwoDecimals(value) {
   if (!Number.isFinite(value)) return '—';
   return value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+function clonePositionPayload(payload, symbol, spot) {
+  const base = payload && typeof payload === 'object' ? payload : {};
+  const rawState = base.state && typeof base.state === 'object' ? base.state : {};
+  const normalizedSymbol = (rawState.symbol || symbol || currentSymbol || 'BASE_USDT').toUpperCase();
+  const normalizedSpot = normalizeSpotKey(rawState.spotExchange || spot || getSpotKey());
+  const gateRaw = rawState.gate && typeof rawState.gate === 'object' ? rawState.gate : {};
+  const mexcRaw = rawState.mexc && typeof rawState.mexc === 'object' ? rawState.mexc : {};
+  const gateFilled = toNumberOrNull(gateRaw.filledQty);
+  const mexcFilled = toNumberOrNull(mexcRaw.filledQty);
+  const filledQtyRaw = toNumberOrNull(rawState.filledQty);
+  const state = {
+    ...rawState,
+    symbol: normalizedSymbol,
+    spotExchange: normalizedSpot,
+    targetQty: toNumberOrNull(rawState.targetQty) ?? 0,
+    filledQty: Number.isFinite(filledQtyRaw)
+      ? filledQtyRaw
+      : (Number.isFinite(gateFilled) ? gateFilled : (Number.isFinite(mexcFilled) ? mexcFilled : 0)),
+    arbPctAvg: toNumberOrNull(rawState.arbPctAvg),
+    pnlUsd: toNumberOrNull(rawState.pnlUsd),
+    gate: {
+      ...gateRaw,
+      filledQty: gateFilled ?? 0,
+      avgPrice: toNumberOrNull(gateRaw.avgPrice),
+      exchange: normalizedSpot
+    },
+    mexc: {
+      ...mexcRaw,
+      filledQty: mexcFilled ?? 0,
+      avgPrice: toNumberOrNull(mexcRaw.avgPrice),
+      positionId: mexcRaw.positionId ?? null
+    },
+    series: Array.isArray(rawState.series) ? rawState.series : [],
+    trades: Array.isArray(rawState.trades) ? rawState.trades : []
+  };
+  const summaries = Array.isArray(base.summaries) ? base.summaries.slice() : [];
+  return { state, summaries };
+}
+
+function createEmptyPositionPayload(symbol, spot) {
+  const normalizedSymbol = (symbol || currentSymbol || 'BASE_USDT').toUpperCase();
+  const normalizedSpot = normalizeSpotKey(spot || getSpotKey());
+  return clonePositionPayload({
+    state: {
+      symbol: normalizedSymbol,
+      spotExchange: normalizedSpot,
+      targetQty: 0,
+      filledQty: 0,
+      arbPctAvg: null,
+      pnlUsd: null,
+      gate: { filledQty: 0, avgPrice: null, exchange: normalizedSpot },
+      mexc: { filledQty: 0, avgPrice: null, positionId: null },
+      series: [],
+      trades: []
+    },
+    summaries: []
+  }, normalizedSymbol, normalizedSpot);
+}
+
+function applyPositionPayloadToUI(payload, { fallbackSymbol, fallbackSpot } = {}) {
+  const normalizedPayload = payload && payload.state ? payload : clonePositionPayload(payload, fallbackSymbol, fallbackSpot);
+  const state = normalizedPayload.state || {};
+  const symbol = (state.symbol || fallbackSymbol || currentSymbol || '').toUpperCase();
+  const baseSymbol = symbol && symbol.includes('_') ? symbol.split('_')[0] : (symbol || getCurrentBaseSymbol());
+  const gate = state.gate || {};
+  const mexc = state.mexc || {};
+  const targetQty = toNumberOrNull(state.targetQty);
+  const gateFilled = toNumberOrNull(gate.filledQty);
+  const gateAvg = toNumberOrNull(gate.avgPrice);
+  const mexcFilled = toNumberOrNull(mexc.filledQty);
+  const mexcAvg = toNumberOrNull(mexc.avgPrice);
+  const arbPct = toNumberOrNull(state.arbPctAvg);
+  const pnl = toNumberOrNull(state.pnlUsd);
+  const totalFilledRaw = toNumberOrNull(state.filledQty);
+  const totalFilled = Number.isFinite(totalFilledRaw)
+    ? totalFilledRaw
+    : Math.max(gateFilled ?? 0, mexcFilled ?? 0);
+  const prevHasOpen = hasOpenPosition;
+  const computedHasOpen = (Number(gateFilled) || 0) > 0 || (Number(mexcFilled) || 0) > 0;
+  hasOpenPosition = computedHasOpen;
+  if (prevHasOpen !== hasOpenPosition) renderSpreadChart();
+
+  const targetEl = document.getElementById('ppTarget');
+  if (targetEl) targetEl.textContent = formatVolumeValue(targetQty, 6, baseSymbol);
+  const gateFilledEl = document.getElementById('ppGateFilled');
+  if (gateFilledEl) gateFilledEl.textContent = formatVolumeValue(gateFilled, 6, baseSymbol);
+  const gateAvgEl = document.getElementById('ppGateAvg');
+  if (gateAvgEl) gateAvgEl.textContent = formatNumberValue(gateAvg, 8);
+  const mexcFilledEl = document.getElementById('ppMexcFilled');
+  if (mexcFilledEl) mexcFilledEl.textContent = formatVolumeValue(mexcFilled, 6, baseSymbol);
+  const mexcAvgEl = document.getElementById('ppMexcAvg');
+  if (mexcAvgEl) mexcAvgEl.textContent = formatNumberValue(mexcAvg, 8);
+  const arbEl = document.getElementById('ppArb');
+  if (arbEl) arbEl.textContent = formatDiffValue(arbPct, 4);
+  const pnlEl = document.getElementById('ppPnl');
+  if (pnlEl) pnlEl.textContent = formatTwoDecimals(pnl);
+
+  updateProgressBar(targetQty, totalFilled);
+  fillPositionForm(state);
+  renderPositionSummaries(normalizedPayload.summaries || []);
+
+  return { hasOpen: computedHasOpen, payload: normalizedPayload };
+}
+
+function restorePositionFromInstance(inst) {
+  if (!inst) return;
+  const state = ensureInstanceState(inst);
+  if (!state) return;
+  const payload = state.positionPayload || createEmptyPositionPayload(inst.symbol, inst.spotExchange);
+  const applied = applyPositionPayloadToUI(payload, { fallbackSymbol: inst.symbol, fallbackSpot: inst.spotExchange });
+  state.hasOpenPosition = applied.hasOpen;
 }
 
 function formatDuration(ms) {
@@ -3512,43 +3732,27 @@ async function refreshPosition() {
   try {
     const r = await fetch('/api/position-progress');
     const payload = await r.json();
-    const s = payload?.state || payload || {};
-    const g = s.gate || {};
-    const m = s.mexc || {};
-    const baseSymbol = getCurrentBaseSymbol();
-    const targetQty = toNumberOrNull(s.targetQty);
-    const gateFilled = toNumberOrNull(g.filledQty);
-    const gateAvg = toNumberOrNull(g.avgPrice);
-    const mexcFilled = toNumberOrNull(m.filledQty);
-    const mexcAvg = toNumberOrNull(m.avgPrice);
-    const arbPct = toNumberOrNull(s.arbPctAvg);
-    const pnl = toNumberOrNull(s.pnlUsd);
-    const totalFilledRaw = toNumberOrNull(s.filledQty);
-    const totalFilled = Number.isFinite(totalFilledRaw)
-      ? totalFilledRaw
-      : Math.max(gateFilled ?? 0, mexcFilled ?? 0);
-    const prevHasOpen = hasOpenPosition;
-    hasOpenPosition = (Number(gateFilled) || 0) > 0 || (Number(mexcFilled) || 0) > 0;
-    if (prevHasOpen !== hasOpenPosition) renderSpreadChart();
-
-    const targetEl = document.getElementById('ppTarget');
-    if (targetEl) targetEl.textContent = formatVolumeValue(targetQty, 6, baseSymbol);
-    const gateFilledEl = document.getElementById('ppGateFilled');
-    if (gateFilledEl) gateFilledEl.textContent = formatVolumeValue(gateFilled, 6, baseSymbol);
-    const gateAvgEl = document.getElementById('ppGateAvg');
-    if (gateAvgEl) gateAvgEl.textContent = formatNumberValue(gateAvg, 8);
-    const mexcFilledEl = document.getElementById('ppMexcFilled');
-    if (mexcFilledEl) mexcFilledEl.textContent = formatVolumeValue(mexcFilled, 6, baseSymbol);
-    const mexcAvgEl = document.getElementById('ppMexcAvg');
-    if (mexcAvgEl) mexcAvgEl.textContent = formatNumberValue(mexcAvg, 8);
-    const arbEl = document.getElementById('ppArb');
-    if (arbEl) arbEl.textContent = formatDiffValue(arbPct, 4);
-    const pnlEl = document.getElementById('ppPnl');
-    if (pnlEl) pnlEl.textContent = formatTwoDecimals(pnl);
-
-    updateProgressBar(targetQty, totalFilled);
-    fillPositionForm(s);
-    renderPositionSummaries(payload?.summaries || []);
+    const inst = getActiveInstance();
+    const state = ensureInstanceState(inst);
+    const expectedSymbol = (inst?.symbol || currentSymbol || 'BASE_USDT').toUpperCase();
+    const expectedSpot = normalizeSpotKey(inst?.spotExchange || getSpotKey());
+    const rawState = payload?.state || payload || {};
+    const responseSymbol = typeof rawState.symbol === 'string' ? rawState.symbol.toUpperCase() : '';
+    const responseSpot = normalizeSpotKey(rawState.spotExchange || rawState.gate?.exchange || expectedSpot);
+    const symbolMatches = !responseSymbol || responseSymbol === expectedSymbol;
+    const spotMatches = responseSpot === expectedSpot;
+    if (!symbolMatches || !spotMatches) {
+      const fallback = state?.positionPayload || createEmptyPositionPayload(expectedSymbol, expectedSpot);
+      const applied = applyPositionPayloadToUI(fallback, { fallbackSymbol: expectedSymbol, fallbackSpot: expectedSpot });
+      if (state) state.hasOpenPosition = applied.hasOpen;
+      return;
+    }
+    const normalized = clonePositionPayload({ state: rawState, summaries: payload?.summaries || [] }, expectedSymbol, expectedSpot);
+    const applied = applyPositionPayloadToUI(normalized, { fallbackSymbol: expectedSymbol, fallbackSpot: expectedSpot });
+    if (state) {
+      state.positionPayload = normalized;
+      state.hasOpenPosition = applied.hasOpen;
+    }
   } catch {}
 }
 setInterval(refreshPosition, 4000); refreshPosition();
