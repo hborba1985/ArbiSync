@@ -57,19 +57,19 @@ const DEFAULT_DATASET_VISIBILITY = {
 };
 
 const VOLUME_LABEL_TEMPLATES = {
-  spotOpenVol0: (spot) => `Volume abertura ${spot} Nível 1`,
-  spotOpenVol1: (spot) => `Volume abertura ${spot} Nível 2`,
-  spotOpenVol2: (spot) => `Volume abertura ${spot} Nível 3`,
-  spotCloseVol0: (spot) => `Volume fechamento ${spot} Nível 1`,
-  spotCloseVol1: (spot) => `Volume fechamento ${spot} Nível 2`,
-  spotCloseVol2: (spot) => `Volume fechamento ${spot} Nível 3`
+  spotOpenVol0: (spot) => `Vol. abertura ${spot} Nível 1`,
+  spotOpenVol1: (spot) => `Vol. abertura ${spot} Nível 2`,
+  spotOpenVol2: (spot) => `Vol. abertura ${spot} Nível 3`,
+  spotCloseVol0: (spot) => `Vol. fechamento ${spot} Nível 1`,
+  spotCloseVol1: (spot) => `Vol. fechamento ${spot} Nível 2`,
+  spotCloseVol2: (spot) => `Vol. fechamento ${spot} Nível 3`
 };
 
 const SPREAD_LEGEND_GROUPS = [
-  { id: 'spot-open', titleHtml: 'Volumes <span data-spot-label></span> — Abertura', datasetIds: ['spotOpenVol0', 'spotOpenVol1', 'spotOpenVol2'] },
-  { id: 'mexc-open', title: 'Volumes MEXC — Abertura', datasetIds: ['mexcOpenVol0', 'mexcOpenVol1', 'mexcOpenVol2'] },
-  { id: 'spot-close', titleHtml: 'Volumes <span data-spot-label></span> — Fechamento', datasetIds: ['spotCloseVol0', 'spotCloseVol1', 'spotCloseVol2'] },
-  { id: 'mexc-close', title: 'Volumes MEXC — Fechamento', datasetIds: ['mexcCloseVol0', 'mexcCloseVol1', 'mexcCloseVol2'] },
+  { id: 'spot-open', titleHtml: 'Vol. <span data-spot-label></span> — Abertura', datasetIds: ['spotOpenVol0', 'spotOpenVol1', 'spotOpenVol2'] },
+  { id: 'mexc-open', title: 'Vol. MEXC — Abertura', datasetIds: ['mexcOpenVol0', 'mexcOpenVol1', 'mexcOpenVol2'] },
+  { id: 'spot-close', titleHtml: 'Vol. <span data-spot-label></span> — Fechamento', datasetIds: ['spotCloseVol0', 'spotCloseVol1', 'spotCloseVol2'] },
+  { id: 'mexc-close', title: 'Vol. MEXC — Fechamento', datasetIds: ['mexcCloseVol0', 'mexcCloseVol1', 'mexcCloseVol2'] },
   { id: 'core', title: 'Linhas principais', datasetIds: ['open', 'close', 'positionArb', 'cross'] }
 ];
 
@@ -895,6 +895,19 @@ function toNumberOrNull(value) {
 function formatTwoDecimals(value) {
   if (!Number.isFinite(value)) return '—';
   return value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+function formatSpreadTimestamp(ts) {
+  const num = Number(ts);
+  if (!Number.isFinite(num)) return '';
+  const date = new Date(num);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (val) => String(val).padStart(2, '0');
+  const day = pad(date.getDate());
+  const month = pad(date.getMonth() + 1);
+  const hours = pad(date.getHours());
+  const minutes = pad(date.getMinutes());
+  return `${day}/${month} ${hours}:${minutes}`;
 }
 
 function clonePositionPayload(payload, symbol, spot) {
@@ -2374,7 +2387,7 @@ function ensureSpreadChart() {
         },
         {
           id: 'spotOpenVol0',
-          label: 'Volume abertura Spot Nível 1',
+          label: 'Vol. abertura Spot Nível 1',
           data: [],
           metaGroup: 'spot-open-volume',
           borderColor: 'rgba(31,119,180,0.55)',
@@ -2388,7 +2401,7 @@ function ensureSpreadChart() {
         },
         {
           id: 'spotOpenVol1',
-          label: 'Volume abertura Spot Nível 2',
+          label: 'Vol. abertura Spot Nível 2',
           data: [],
           metaGroup: 'spot-open-volume',
           borderColor: 'rgba(31,119,180,0.4)',
@@ -2402,7 +2415,7 @@ function ensureSpreadChart() {
         },
         {
           id: 'spotOpenVol2',
-          label: 'Volume abertura Spot Nível 3',
+          label: 'Vol. abertura Spot Nível 3',
           data: [],
           metaGroup: 'spot-open-volume',
           borderColor: 'rgba(31,119,180,0.28)',
@@ -2416,7 +2429,7 @@ function ensureSpreadChart() {
         },
         {
           id: 'mexcOpenVol0',
-          label: 'Volume abertura MEXC Nível 1',
+          label: 'Vol. abertura MEXC Nível 1',
           data: [],
           metaGroup: 'mexc-open-volume',
           borderColor: 'rgba(148,103,189,0.55)',
@@ -2430,7 +2443,7 @@ function ensureSpreadChart() {
         },
         {
           id: 'mexcOpenVol1',
-          label: 'Volume abertura MEXC Nível 2',
+          label: 'Vol. abertura MEXC Nível 2',
           data: [],
           metaGroup: 'mexc-open-volume',
           borderColor: 'rgba(148,103,189,0.42)',
@@ -2444,7 +2457,7 @@ function ensureSpreadChart() {
         },
         {
           id: 'mexcOpenVol2',
-          label: 'Volume abertura MEXC Nível 3',
+          label: 'Vol. abertura MEXC Nível 3',
           data: [],
           metaGroup: 'mexc-open-volume',
           borderColor: 'rgba(148,103,189,0.3)',
@@ -2458,7 +2471,7 @@ function ensureSpreadChart() {
         },
         {
           id: 'spotCloseVol0',
-          label: 'Volume fechamento Spot Nível 1',
+          label: 'Vol. fechamento Spot Nível 1',
           data: [],
           metaGroup: 'spot-close-volume',
           borderColor: 'rgba(44,160,44,0.55)',
@@ -2472,7 +2485,7 @@ function ensureSpreadChart() {
         },
         {
           id: 'spotCloseVol1',
-          label: 'Volume fechamento Spot Nível 2',
+          label: 'Vol. fechamento Spot Nível 2',
           data: [],
           metaGroup: 'spot-close-volume',
           borderColor: 'rgba(44,160,44,0.4)',
@@ -2486,7 +2499,7 @@ function ensureSpreadChart() {
         },
         {
           id: 'spotCloseVol2',
-          label: 'Volume fechamento Spot Nível 3',
+          label: 'Vol. fechamento Spot Nível 3',
           data: [],
           metaGroup: 'spot-close-volume',
           borderColor: 'rgba(44,160,44,0.28)',
@@ -2500,7 +2513,7 @@ function ensureSpreadChart() {
         },
         {
           id: 'mexcCloseVol0',
-          label: 'Volume fechamento MEXC Nível 1',
+          label: 'Vol. fechamento MEXC Nível 1',
           data: [],
           metaGroup: 'mexc-close-volume',
           borderColor: 'rgba(214,39,40,0.55)',
@@ -2514,7 +2527,7 @@ function ensureSpreadChart() {
         },
         {
           id: 'mexcCloseVol1',
-          label: 'Volume fechamento MEXC Nível 2',
+          label: 'Vol. fechamento MEXC Nível 2',
           data: [],
           metaGroup: 'mexc-close-volume',
           borderColor: 'rgba(214,39,40,0.4)',
@@ -2528,7 +2541,7 @@ function ensureSpreadChart() {
         },
         {
           id: 'mexcCloseVol2',
-          label: 'Volume fechamento MEXC Nível 3',
+          label: 'Vol. fechamento MEXC Nível 3',
           data: [],
           metaGroup: 'mexc-close-volume',
           borderColor: 'rgba(214,39,40,0.28)',
@@ -2563,11 +2576,7 @@ function ensureSpreadChart() {
           type: 'linear',
           title: { display: true, text: 'Horário (24h)' },
           ticks: {
-            callback: (value) => {
-              const date = new Date(Number(value));
-              if (!Number.isFinite(date.getTime())) return '';
-              return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-            },
+            callback: (value) => formatSpreadTimestamp(value),
             maxRotation: 0
           },
           grid: { display: false }
@@ -2577,7 +2586,7 @@ function ensureSpreadChart() {
         },
         yVolume: {
           position: 'right',
-          title: { display: true, text: 'Volume (USDT)' },
+          title: { display: true, text: 'Vol. (USDT)' },
           beginAtZero: true,
           grid: { drawOnChartArea: false },
           ticks: {
@@ -2609,20 +2618,22 @@ function ensureSpreadChart() {
               const prefix = ctx.dataset?.label ? `${ctx.dataset.label}: ` : '';
               const value = Number(ctx.parsed.y);
               const ts = Number(ctx.parsed.x);
-              const time = Number.isFinite(ts)
-                ? new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
-                : '';
+              const time = Number.isFinite(ts) ? formatSpreadTimestamp(ts) : '';
               const group = ctx.dataset?.metaGroup;
-              if (group === 'open-volume' || group === 'close-volume') {
+              const isVolumeGroup = group === 'spot-open-volume'
+                || group === 'spot-close-volume'
+                || group === 'mexc-open-volume'
+                || group === 'mexc-close-volume';
+              if (isVolumeGroup) {
                 const formattedVol = Number.isFinite(value)
                   ? value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + ' USDT'
                   : '-';
-                return `${prefix}${formattedVol}${time ? ` às ${time}` : ''}`;
+                return `${prefix}${formattedVol}${time ? ` em ${time}` : ''}`;
               }
               const formatted = Number.isFinite(value)
                 ? value.toFixed(4) + '%'
                 : '-';
-              return `${prefix}${formatted}${time ? ` às ${time}` : ''}`;
+              return `${prefix}${formatted}${time ? ` em ${time}` : ''}`;
             }
           }
         },
@@ -2796,8 +2807,8 @@ function formatSpreadStat(entry) {
   if (!entry || !Number.isFinite(entry.value)) return '-';
   const value = `${entry.value.toFixed(4)}%`;
   if (!Number.isFinite(entry.ts)) return value;
-  const time = new Date(entry.ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-  return `${value} às ${time}`;
+  const time = formatSpreadTimestamp(entry.ts);
+  return time ? `${value} em ${time}` : value;
 }
 
 function updateSpreadStats(extremes) {
@@ -3848,16 +3859,43 @@ if (discoverRiskBtn) {
 async function submitTargetQty(val) {
   const num = Number(val);
   if (!Number.isFinite(num) || num < 0) throw new Error('Valor inválido para a meta.');
+  const inst = getActiveInstance();
+  const symbol = (inst?.symbol || currentSymbol || 'BASE_USDT').toUpperCase();
+  const spot = normalizeSpotKey(inst?.spotExchange || getSpotKey());
   const resp = await fetch('/api/position-target', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ targetQty: num })
+    body: JSON.stringify({ targetQty: num, symbol, spotExchange: spot })
   });
   const out = await safeJson(resp);
   if (!resp.ok || !out.ok) throw new Error('Falha ao definir meta.');
   const final = out.targetQty ?? num;
+  const baseSymbol = symbol.includes('_') ? symbol.split('_')[0] : getCurrentBaseSymbol();
   const targetEl = document.getElementById('ppTarget');
-  if (targetEl) targetEl.textContent = formatVolumeValue(final, 6, getCurrentBaseSymbol());
+  if (targetEl) targetEl.textContent = formatVolumeValue(final, 6, baseSymbol);
+
+  if (inst) {
+    const state = ensureInstanceState(inst);
+    if (state) {
+      const previous = state.positionPayload || createEmptyPositionPayload(symbol, spot);
+      const mergedState = {
+        ...(previous?.state || {}),
+        symbol,
+        spotExchange: spot,
+        targetQty: final,
+        gate: {
+          ...(previous?.state?.gate || {}),
+          exchange: spot
+        }
+      };
+      state.positionPayload = clonePositionPayload({
+        state: mergedState,
+        summaries: Array.isArray(previous?.summaries) ? previous.summaries : []
+      }, symbol, spot);
+      updateProgressBar(final, toNumberOrNull(previous?.state?.filledQty));
+    }
+  }
+
   return final;
 }
 

@@ -2208,6 +2208,19 @@ app.post('/api/notify-telegram', async (req, res) => {
 app.post('/api/position-target', (req, res) => {
   const t = Number(req.body?.targetQty);
   if (!Number.isFinite(t) || t < 0) return res.status(400).json({ error: 'targetQty inválido' });
+  const rawSymbol = typeof req.body?.symbol === 'string' ? req.body.symbol.toUpperCase() : null;
+  if (rawSymbol && rawSymbol.includes('_')) {
+    positionState.symbol = rawSymbol;
+  }
+  if (req.body?.spotExchange !== undefined) {
+    const normalizedSpot = normalizeSpotExchange(req.body.spotExchange);
+    positionState.spotExchange = normalizedSpot;
+    if (!positionState.gate || typeof positionState.gate !== 'object') {
+      positionState.gate = { filledQty: 0, avgPrice: 0, exchange: normalizedSpot };
+    } else {
+      positionState.gate.exchange = normalizedSpot;
+    }
+  }
   positionState.targetQty = t;
   persistPositionState('set-target');
   res.json({ ok: true, targetQty: t });
@@ -2334,9 +2347,15 @@ function updatePositionFromOrder(item, gFilled, gAvg, mFilled, mAvg, options = {
   // Aggregates
   const prevQty = state.filledQty;
   const prevAvg = state.avgPrice;
+  const prevArb = Number(state.arbPctAvg) || 0;
   const newQty = prevQty + adjQty;
   const newAvg = newQty > 0 ? ((prevAvg * prevQty) + (gatePrice * adjQty)) / newQty : 0;
-  const newArb = newQty > 0 ? (((state.arbPctAvg || 0) * prevQty) + (arbRaw * adjQty)) / newQty : 0;
+  let newArb = prevArb;
+  if (adjQty > 0) {
+    newArb = newQty > 0 ? ((prevArb * prevQty) + (arbRaw * adjQty)) / newQty : 0;
+  } else if (newQty <= 0) {
+    newArb = 0;
+  }
   state.filledQty = newQty;
   state.avgPrice = newAvg;
   state.arbPctAvg = newArb;
@@ -2643,6 +2662,23 @@ app.post('/api/mexc-discover-risk', async (req, res) => {
     const minContracts = Number(meta?.mexc?.minContracts || 1) || 1;
     const priceScale = Number(meta?.mexc?.priceScale || 2);
     const marginPct = Number.isFinite(Number(req.body?.marginPct)) ? Number(req.body.marginPct) : 10;
+    const vp = Number(meta?.mexc?.volPrecision || 0);
+    const factor = Math.pow(10, vp);
+    const step = factor > 1 ? 1 / factor : 1;
+    const floorContracts = (value) => {
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      if (factor > 1) return Math.floor(value * factor) / factor;
+      return Math.floor(value);
+    };
+    const ceilContracts = (value) => {
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      if (factor > 1) return Math.ceil(value * factor) / factor;
+      return Math.ceil(value);
+    };
+    const normalizeContracts = (value) => {
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      return Number(value.toFixed(Math.max(vp, 0)));
+    };
 
     let referencePrice = null;
     try {
@@ -2661,7 +2697,43 @@ app.post('/api/mexc-discover-risk', async (req, res) => {
     const normalizedPrice = Number.isFinite(testPriceRaw)
       ? Number(testPriceRaw.toFixed(Math.max(priceScale, 2)))
       : null;
-    const contracts = Math.max(minContracts, 1);
+    const desiredQuote = 50;
+    const tolerance = desiredQuote * 0.05;
+    let contracts = Math.max(minContracts, 1);
+    if (Number.isFinite(normalizedPrice) && normalizedPrice > 0 && Number.isFinite(cs) && cs > 0) {
+      const rawContracts = desiredQuote / (normalizedPrice * cs);
+      const candidateSet = new Set();
+      const pushCandidate = (value) => {
+        if (!Number.isFinite(value) || value <= 0) return;
+        const adjusted = normalizeContracts(Math.max(value, minContracts));
+        if (!Number.isFinite(adjusted) || adjusted <= 0) return;
+        candidateSet.add(adjusted);
+      };
+      pushCandidate(rawContracts);
+      pushCandidate(floorContracts(rawContracts));
+      pushCandidate(ceilContracts(rawContracts));
+      pushCandidate(floorContracts(rawContracts + step));
+      pushCandidate(ceilContracts(rawContracts - step));
+      pushCandidate(minContracts);
+      const candidates = Array.from(candidateSet).filter((val) => Number.isFinite(val) && val > 0);
+      const withinRange = [];
+      let fallback = null;
+      for (const candidate of candidates) {
+        const quoteValue = candidate * cs * normalizedPrice;
+        if (!Number.isFinite(quoteValue)) continue;
+        const diff = Math.abs(quoteValue - desiredQuote);
+        const info = { candidate, quoteValue, diff };
+        if (quoteValue >= desiredQuote - tolerance && quoteValue <= desiredQuote + tolerance) {
+          withinRange.push(info);
+        } else if (!fallback || diff < fallback.diff) {
+          fallback = info;
+        }
+      }
+      const chosen = withinRange.sort((a, b) => a.diff - b.diff)[0] || fallback;
+      if (chosen) {
+        contracts = normalizeContracts(Math.max(chosen.candidate, minContracts));
+      }
+    }
     let orderId = null;
     let orderError = null;
     if (Number.isFinite(normalizedPrice) && normalizedPrice > 0 && contracts > 0) {
@@ -2684,17 +2756,6 @@ app.post('/api/mexc-discover-risk', async (req, res) => {
       }
     }
 
-    const vp = Number(meta?.mexc?.volPrecision || 0);
-    const factor = Math.pow(10, vp);
-    const floorContracts = (value) => {
-      if (!Number.isFinite(value) || value <= 0) return 0;
-      if (factor > 1) return Math.floor(value * factor) / factor;
-      return Math.floor(value);
-    };
-    const normalizeContracts = (value) => {
-      if (!Number.isFinite(value) || value <= 0) return 0;
-      return Number(value.toFixed(Math.max(vp, 0)));
-    };
     const riskInfo = await evaluateMexcRiskLimit(
       symbol,
       leverage,
