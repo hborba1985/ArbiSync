@@ -247,6 +247,33 @@
       color: var(--text-muted);
     }
 
+    .monitoring-sources {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px dashed rgba(125, 97, 255, 0.35);
+      background: rgba(17, 20, 46, 0.55);
+      font-size: 12px;
+      line-height: 1.4;
+      margin-bottom: 16px;
+    }
+
+    .monitoring-sources strong {
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .monitoring-history-hint {
+      margin-top: 12px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-muted);
+    }
+
     .monitoring-table {
       width: 100%;
       border-collapse: collapse;
@@ -1839,6 +1866,12 @@
         <div class="card" id="monitoringTableCard">
           <h3>Oportunidades ativas</h3>
           <div class="card-body">
+            <div class="monitoring-sources">
+              <strong>Fontes em tempo real</strong>
+              <span>SPOT: Gate.io, MEXC, Bitget, KuCoin, Binance e Bybit.</span>
+              <span>FUTUROS perp: Gate.io, MEXC, Bitget, KuCoin, Binance e Bybit.</span>
+              <span>Os dados são normalizados pelo backend em <code>/api/monitoring/markets</code> e exibidos sem amostras artificiais.</span>
+            </div>
             <div class="monitoring-summary">
               <div class="summary-pill">
                 <span class="label">Moedas elegíveis</span>
@@ -1889,7 +1922,9 @@
             <div class="monitoring-chart-wrapper">
               <canvas id="monitoringChart"></canvas>
             </div>
-            <p class="muted" style="margin-top:12px;">Linhas de abertura/fechamento e barras de volume SPOT x FUTUROS ajudam a visualizar onde a arbitragem ganha força.</p>
+            <p class="monitoring-history-hint">
+              <strong>Fonte do histórico:</strong> candles de 1h da Gate.io (<code>/spot/candlesticks</code> x <code>/futures/usdt/candlesticks</code>). Para cada hora calculamos a % de arbitragem comparando o preço de fechamento (e abrimos a linha de abertura com o dado de abertura dos mesmos candles) entre o par SPOT e o contrato perp USDT correspondente. Os volumes plotados representam os volumes reportados pela Gate.io para cada candle SPOT e FUTUROS.
+            </p>
           </div>
         </div>
 
