@@ -4167,7 +4167,9 @@ const monitoringMeta = new Map([
 
 let trackedMonitoringSymbols = Array.from(monitoringMeta.keys());
 let monitoringRows = [];
-const monitoringHistory = {};
+const monitoringHistoryCache = new Map();
+const MONITORING_HISTORY_DEFAULTS = { interval: '1h', spot: 'gate_spot', futures: 'gate_futures' };
+const MONITORING_HISTORY_CACHE_TTL = 60 * 1000;
 let monitoringLoading = true;
 let monitoringLastFetchError = null;
 
@@ -4186,6 +4188,11 @@ const monitoringSummaryAvgEl = document.getElementById('monitoringSummaryAvg');
 const monitoringSummaryCountEl = document.getElementById('monitoringResultCount');
 const monitoringSummaryBlacklistEl = document.getElementById('monitoringSummaryBlacklist');
 const monitoringPairSelect = document.getElementById('monitoringPairSelect');
+const monitoringHistoryIntervalSelect = document.getElementById('monitoringHistoryInterval');
+const monitoringHistorySpotSelect = document.getElementById('monitoringHistorySpot');
+const monitoringHistoryFuturesSelect = document.getElementById('monitoringHistoryFutures');
+const monitoringHistorySourceEl = document.getElementById('monitoringHistorySource');
+const monitoringHistoryStatusEl = document.getElementById('monitoringHistoryStatus');
 const adminStatusLabel = document.getElementById('adminStatusLabel');
 const adminLoginFeedback = document.getElementById('adminLoginFeedback');
 const adminTools = document.getElementById('adminTools');
@@ -4217,7 +4224,105 @@ function getMonitoringName(symbol, fallbackLabel = null) {
 }
 
 function resetMonitoringHistory() {
-  Object.keys(monitoringHistory).forEach((key) => delete monitoringHistory[key]);
+  monitoringHistoryCache.clear();
+}
+
+function buildMonitoringHistoryCacheKey(symbol, intervalKey, spotKey, futuresKey) {
+  const base = String(symbol || '').toUpperCase();
+  return `${base}:${intervalKey}:${spotKey}:${futuresKey}`;
+}
+
+function purgeMonitoringHistoryCache(symbol) {
+  if (!symbol) return;
+  const prefix = `${String(symbol).toUpperCase()}:`;
+  Array.from(monitoringHistoryCache.keys()).forEach((key) => {
+    if (key.startsWith(prefix)) {
+      monitoringHistoryCache.delete(key);
+    }
+  });
+}
+
+function getCachedMonitoringHistory(cacheKey) {
+  const cached = monitoringHistoryCache.get(cacheKey);
+  if (!cached) return null;
+  if (Date.now() - cached.fetchedAt > MONITORING_HISTORY_CACHE_TTL) {
+    monitoringHistoryCache.delete(cacheKey);
+    return null;
+  }
+  return cached;
+}
+
+function formatHistoryLabel(timestamp) {
+  try {
+    return new Date(timestamp).toLocaleString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+  } catch {
+    return '';
+  }
+}
+
+function setMonitoringHistoryStatus(message, tone = 'muted') {
+  if (!monitoringHistoryStatusEl) return;
+  monitoringHistoryStatusEl.textContent = message || '';
+  monitoringHistoryStatusEl.classList.remove('error', 'success');
+  if (tone === 'error') {
+    monitoringHistoryStatusEl.classList.add('error');
+  } else if (tone === 'success') {
+    monitoringHistoryStatusEl.classList.add('success');
+  }
+}
+
+function updateMonitoringHistorySource(entry) {
+  if (!monitoringHistorySourceEl) return;
+  const parts = [];
+  if (entry?.meta?.spot?.label && entry?.meta?.futures?.label) {
+    parts.push(`${entry.meta.spot.label} (SPOT) × ${entry.meta.futures.label} (Futuros)`);
+  }
+  if (entry?.meta?.interval?.label) {
+    parts.push(`${entry.meta.interval.label} • ${entry.points?.length || 0} candles`);
+  }
+  monitoringHistorySourceEl.textContent = parts.length ? parts.join(' — ') : '';
+}
+
+async function fetchMonitoringHistorySeries(symbol, intervalKey, spotKey, futuresKey) {
+  const params = new URLSearchParams({ symbol, interval: intervalKey, spot: spotKey, futures: futuresKey });
+  const response = await fetch(`/api/monitoring/history?${params.toString()}`);
+  const data = await safeJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error || 'Erro ao buscar histórico');
+  }
+  const points = (Array.isArray(data?.points) ? data.points : [])
+    .map((point) => {
+      const ts = toFiniteNumber(point.timestamp);
+      const close = toFiniteNumber(point.closeArbPct ?? point.arbPct ?? point.closeArb);
+      const open = toFiniteNumber(point.openArbPct ?? point.arbPct ?? point.openArb);
+      if (!Number.isFinite(ts) || (!Number.isFinite(close) && !Number.isFinite(open))) return null;
+      return {
+        timestamp: ts,
+        label: formatHistoryLabel(ts),
+        arb: Number.isFinite(close) ? close : open || 0,
+        open: Number.isFinite(open) ? open : close || 0,
+        close: Number.isFinite(close) ? close : open || 0,
+        spotVol: toFiniteNumber(point.spotVolume) ?? 0,
+        futuresVol: toFiniteNumber(point.futuresVolume) ?? 0
+      };
+    })
+    .filter(Boolean);
+  return {
+    fetchedAt: Date.now(),
+    points,
+    meta: {
+      interval: data?.interval || null,
+      spot: data?.spot || null,
+      futures: data?.futures || null
+    },
+    errors: { spot: data?.spotError || null, futures: data?.futuresError || null }
+  };
 }
 
 async function loadMonitoringData({ focusSymbol = null, silent = false } = {}) {
@@ -4267,32 +4372,9 @@ async function loadMonitoringData({ focusSymbol = null, silent = false } = {}) {
       };
     }).filter(Boolean);
     resetMonitoringHistory();
-    entries.forEach((entry) => {
-      const symbol = (entry?.symbol || '').toUpperCase();
-      if (!symbol) return;
-      const points = Array.isArray(entry?.history?.points) ? entry.history.points : [];
-      monitoringHistory[symbol] = points.map((point) => {
-        const ts = toFiniteNumber(point.timestamp);
-        const label = ts
-          ? new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
-          : '';
-        const open = toFiniteNumber(point.openArbPct ?? point.arbPct);
-        const close = toFiniteNumber(point.arbPct ?? point.openArbPct);
-        return {
-          label,
-          open: open ?? close ?? 0,
-          close: close ?? open ?? 0,
-          arb: close ?? open ?? 0,
-          spotVol: toFiniteNumber(point.spotVolume) ?? 0,
-          futuresVol: toFiniteNumber(point.futuresVolume) ?? 0
-        };
-      });
-    });
     renderMonitoringTable();
     updateMonitoringSelectors();
-    const preferredSymbol = focusSymbol && monitoringHistory[focusSymbol]
-      ? focusSymbol
-      : (monitoringPairSelect?.value || monitoringRows[0]?.symbol || null);
+    const preferredSymbol = focusSymbol || monitoringPairSelect?.value || monitoringRows[0]?.symbol || null;
     if (preferredSymbol && monitoringPairSelect) {
       monitoringPairSelect.value = preferredSymbol;
     }
@@ -4458,16 +4540,38 @@ function ensureMonitoringChart() {
   return monitoringChart;
 }
 
-function updateMonitoringChart(symbol) {
+async function updateMonitoringChart(symbolInput) {
   const chart = ensureMonitoringChart();
   if (!chart) return;
-  const history = monitoringHistory[symbol] || [];
-  chart.data.labels = history.map((p) => p.label);
+  const fallbackSymbol = monitoringPairSelect?.value || monitoringRows[0]?.symbol || trackedMonitoringSymbols[0];
+  const symbol = String(symbolInput || fallbackSymbol || '').toUpperCase();
+  if (!symbol) return;
+  const intervalKey = monitoringHistoryIntervalSelect?.value || MONITORING_HISTORY_DEFAULTS.interval;
+  const spotKey = monitoringHistorySpotSelect?.value || MONITORING_HISTORY_DEFAULTS.spot;
+  const futuresKey = monitoringHistoryFuturesSelect?.value || MONITORING_HISTORY_DEFAULTS.futures;
+  const cacheKey = buildMonitoringHistoryCacheKey(symbol, intervalKey, spotKey, futuresKey);
+  let entry = getCachedMonitoringHistory(cacheKey);
+  if (!entry) {
+    setMonitoringHistoryStatus('Carregando histórico em tempo real...');
+    try {
+      entry = await fetchMonitoringHistorySeries(symbol, intervalKey, spotKey, futuresKey);
+      monitoringHistoryCache.set(cacheKey, entry);
+    } catch (err) {
+      updateMonitoringHistorySource(null);
+      chart.data.labels = [];
+      chart.data.datasets = [];
+      chart.update();
+      setMonitoringHistoryStatus(`Erro ao carregar histórico: ${err.message || err}`, 'error');
+      return;
+    }
+  }
+  const points = entry.points || [];
+  chart.data.labels = points.map((p) => p.label);
   chart.data.datasets = [
     {
       type: 'line',
       label: '% Arb médio',
-      data: history.map((p) => p.arb),
+      data: points.map((p) => p.arb),
       borderColor: '#8d6cff',
       backgroundColor: 'rgba(141, 108, 255, 0.2)',
       tension: 0.35,
@@ -4478,7 +4582,7 @@ function updateMonitoringChart(symbol) {
     {
       type: 'line',
       label: 'Linha de abertura',
-      data: history.map((p) => p.open),
+      data: points.map((p) => p.open),
       borderColor: '#3fe7c3',
       borderDash: [6, 6],
       tension: 0.3,
@@ -4489,7 +4593,7 @@ function updateMonitoringChart(symbol) {
     {
       type: 'line',
       label: 'Linha de fechamento',
-      data: history.map((p) => p.close),
+      data: points.map((p) => p.close),
       borderColor: '#f2b760',
       borderDash: [6, 6],
       tension: 0.3,
@@ -4500,7 +4604,7 @@ function updateMonitoringChart(symbol) {
     {
       type: 'bar',
       label: 'Volume Spot',
-      data: history.map((p) => p.spotVol),
+      data: points.map((p) => p.spotVol),
       backgroundColor: 'rgba(141, 108, 255, 0.35)',
       borderRadius: 4,
       yAxisID: 'yVolume'
@@ -4508,13 +4612,32 @@ function updateMonitoringChart(symbol) {
     {
       type: 'bar',
       label: 'Volume Futuros',
-      data: history.map((p) => p.futuresVol),
+      data: points.map((p) => p.futuresVol),
       backgroundColor: 'rgba(63, 231, 195, 0.35)',
       borderRadius: 4,
       yAxisID: 'yVolume'
     }
   ];
   chart.update();
+  updateMonitoringHistorySource(entry);
+  if (!points.length) {
+    const warning = entry.errors?.spot || entry.errors?.futures;
+    if (warning) {
+      setMonitoringHistoryStatus(`Sem candles para esta combinação (${warning})`, 'error');
+    } else {
+      setMonitoringHistoryStatus('Nenhum candle disponível nas últimas 24h para esta combinação.');
+    }
+    return;
+  }
+  const updatedAt = new Date(entry.fetchedAt || Date.now()).toLocaleTimeString('pt-BR', { hour12: false });
+  const errorParts = [];
+  if (entry.errors?.spot) errorParts.push(`SPOT: ${entry.errors.spot}`);
+  if (entry.errors?.futures) errorParts.push(`FUTUROS: ${entry.errors.futures}`);
+  if (errorParts.length) {
+    setMonitoringHistoryStatus(`Dados parciais — ${errorParts.join(' | ')}`, 'error');
+  } else {
+    setMonitoringHistoryStatus(`Atualizado às ${updatedAt}`, 'success');
+  }
 }
 
 const filterInputs = [filterSearchEl, filterVolumeEl, filterStabilityEl];
@@ -4552,13 +4675,25 @@ if (monitoringPairSelect) {
   monitoringPairSelect.addEventListener('change', () => updateMonitoringChart(monitoringPairSelect.value));
 }
 
+[monitoringHistoryIntervalSelect, monitoringHistorySpotSelect, monitoringHistoryFuturesSelect].forEach((select) => {
+  if (!select) return;
+  select.addEventListener('change', () => {
+    const symbol = monitoringPairSelect?.value || monitoringRows[0]?.symbol || trackedMonitoringSymbols[0];
+    if (symbol) updateMonitoringChart(symbol);
+  });
+});
+
 const refreshMonitoringChartBtn = document.getElementById('refreshMonitoringChart');
 if (refreshMonitoringChartBtn) {
   refreshMonitoringChartBtn.addEventListener('click', () => {
     const symbol = monitoringPairSelect?.value || monitoringRows[0]?.symbol || trackedMonitoringSymbols[0];
-    if (symbol) {
-      loadMonitoringData({ focusSymbol: symbol, silent: true });
-    }
+    if (!symbol) return;
+    const intervalKey = monitoringHistoryIntervalSelect?.value || MONITORING_HISTORY_DEFAULTS.interval;
+    const spotKey = monitoringHistorySpotSelect?.value || MONITORING_HISTORY_DEFAULTS.spot;
+    const futuresKey = monitoringHistoryFuturesSelect?.value || MONITORING_HISTORY_DEFAULTS.futures;
+    const cacheKey = buildMonitoringHistoryCacheKey(symbol, intervalKey, spotKey, futuresKey);
+    monitoringHistoryCache.delete(cacheKey);
+    updateMonitoringChart(symbol);
   });
 }
 
@@ -4641,7 +4776,7 @@ if (adminRemoveCoinForm) {
     if (idx >= 0) trackedMonitoringSymbols.splice(idx, 1);
     monitoringMeta.delete(symbol);
     blacklist.delete(symbol);
-    delete monitoringHistory[symbol];
+    purgeMonitoringHistoryCache(symbol);
     monitoringRows = monitoringRows.filter((coin) => coin.symbol !== symbol);
     updateMonitoringSelectors();
     renderMonitoringTable();

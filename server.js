@@ -4009,6 +4009,171 @@ function describeAxiosError(err) {
   return err.message || String(err);
 }
 
+const MONITORING_HISTORY_INTERVALS = {
+  '1m': {
+    label: '1 minuto',
+    minutes: 1,
+    gate: '1m',
+    mexc: '1m',
+    mexcFutures: 'Min1',
+    bitget: '1min',
+    bitgetFutures: '1m',
+    kucoin: '1min',
+    kucoinFutures: 1 * 60,
+    binance: '1m',
+    bybit: '1'
+  },
+  '5m': {
+    label: '5 minutos',
+    minutes: 5,
+    gate: '5m',
+    mexc: '5m',
+    mexcFutures: 'Min5',
+    bitget: '5min',
+    bitgetFutures: '5m',
+    kucoin: '5min',
+    kucoinFutures: 5 * 60,
+    binance: '5m',
+    bybit: '5'
+  },
+  '15m': {
+    label: '15 minutos',
+    minutes: 15,
+    gate: '15m',
+    mexc: '15m',
+    mexcFutures: 'Min15',
+    bitget: '15min',
+    bitgetFutures: '15m',
+    kucoin: '15min',
+    kucoinFutures: 15 * 60,
+    binance: '15m',
+    bybit: '15'
+  },
+  '30m': {
+    label: '30 minutos',
+    minutes: 30,
+    gate: '30m',
+    mexc: '30m',
+    mexcFutures: 'Min30',
+    bitget: '30min',
+    bitgetFutures: '30m',
+    kucoin: '30min',
+    kucoinFutures: 30 * 60,
+    binance: '30m',
+    bybit: '30'
+  },
+  '1h': {
+    label: '1 hora',
+    minutes: 60,
+    gate: '1h',
+    mexc: '1h',
+    mexcFutures: 'Min60',
+    bitget: '1hour',
+    bitgetFutures: '1h',
+    kucoin: '1hour',
+    kucoinFutures: 60 * 60,
+    binance: '1h',
+    bybit: '60'
+  },
+  '4h': {
+    label: '4 horas',
+    minutes: 240,
+    gate: '4h',
+    mexc: '4h',
+    mexcFutures: 'Hour4',
+    bitget: '4hour',
+    bitgetFutures: '4h',
+    kucoin: '4hour',
+    kucoinFutures: 240 * 60,
+    binance: '4h',
+    bybit: '240'
+  }
+};
+
+const MONITORING_HISTORY_DEFAULT_INTERVAL = '1h';
+
+function getHistoryIntervalConfig(key) {
+  return MONITORING_HISTORY_INTERVALS[key] || MONITORING_HISTORY_INTERVALS[MONITORING_HISTORY_DEFAULT_INTERVAL];
+}
+
+function computeHistoryLimit(intervalKey) {
+  const interval = getHistoryIntervalConfig(intervalKey);
+  const desired = Math.ceil((24 * 60) / interval.minutes);
+  return desired;
+}
+
+function computeHistoryWindow(intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey);
+  const seconds = interval.minutes * 60 * limit;
+  const end = Math.floor(Date.now() / 1000);
+  const start = Math.max(0, end - seconds);
+  return { start, end };
+}
+
+function toMsTimestamp(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  return num < 1e12 ? num * 1000 : num;
+}
+
+function normalizeHistoryPoint({ timestamp, open, close, volume }) {
+  const ts = toMsTimestamp(timestamp);
+  const o = toNumber(open);
+  const c = toNumber(close);
+  const v = toNumber(volume);
+  if (!Number.isFinite(ts) || !Number.isFinite(o) || !Number.isFinite(c)) return null;
+  return { timestamp: ts, open: o, close: c, volume: Number.isFinite(v) ? v : null };
+}
+
+function sortHistoryPoints(points) {
+  return points.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function bucketizeHistoryCandles(candles, bucketMs) {
+  const map = new Map();
+  for (const candle of candles) {
+    const bucket = Math.floor(candle.timestamp / bucketMs) * bucketMs;
+    if (!Number.isFinite(bucket)) continue;
+    map.set(bucket, candle);
+  }
+  return map;
+}
+
+function computeArbPct(futuresPrice, spotPrice) {
+  if (!Number.isFinite(futuresPrice) || !Number.isFinite(spotPrice) || spotPrice === 0) return null;
+  return ((futuresPrice - spotPrice) / spotPrice) * 100;
+}
+
+function buildHistorySeries(spotCandles, futuresCandles, intervalMinutes) {
+  if (!spotCandles.length || !futuresCandles.length) return [];
+  const bucketMs = intervalMinutes * 60 * 1000;
+  const futuresMap = bucketizeHistoryCandles(futuresCandles, bucketMs);
+  const points = [];
+  for (const spot of spotCandles) {
+    const bucket = Math.floor(spot.timestamp / bucketMs) * bucketMs;
+    const futures = futuresMap.get(bucket);
+    if (!futures) continue;
+    const openArb = computeArbPct(futures.open, spot.open);
+    const closeArb = computeArbPct(futures.close, spot.close);
+    if (!Number.isFinite(closeArb)) continue;
+    points.push({
+      timestamp: bucket,
+      openArbPct: Number.isFinite(openArb) ? Number(openArb.toFixed(4)) : Number(closeArb.toFixed(4)),
+      closeArbPct: Number(Number(closeArb).toFixed(4)),
+      spotVolume: spot.volume,
+      futuresVolume: futures.volume
+    });
+  }
+  return sortHistoryPoints(points);
+}
+
+function limitHistoryPoints(points, limit) {
+  if (!Array.isArray(points)) return [];
+  const sorted = sortHistoryPoints(points);
+  if (!Number.isFinite(limit) || limit <= 0 || sorted.length <= limit) return sorted;
+  return sorted.slice(sorted.length - limit);
+}
+
 async function fetchGateSpotTicker(meta) {
   const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/spot/tickers', {
     params: { currency_pair: meta.gateSpot }
@@ -4204,23 +4369,241 @@ async function fetchBybitFuturesTicker(meta) {
   };
 }
 
+async function fetchGateSpotHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).gate;
+  const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/spot/candlesticks', {
+    params: { currency_pair: meta.gateSpot, interval, limit }
+  });
+  const rows = Array.isArray(data) ? data : [];
+  const points = rows.map((row) => normalizeHistoryPoint({
+    timestamp: row?.[0],
+    open: row?.[5],
+    close: row?.[2],
+    volume: row?.[6] ?? row?.[1]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchGateFuturesHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).gate;
+  const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/candlesticks', {
+    params: { contract: meta.gateFutures, interval, limit }
+  });
+  const rows = Array.isArray(data) ? data : [];
+  const points = rows.map((row) => {
+    if (Array.isArray(row)) {
+      return normalizeHistoryPoint({ timestamp: row?.[0], open: row?.[5], close: row?.[2], volume: row?.[6] ?? row?.[1] });
+    }
+    return normalizeHistoryPoint({ timestamp: row?.t ?? row?.time, open: row?.o, close: row?.c, volume: row?.sum ?? row?.v });
+  }).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchMexcSpotHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).mexc;
+  const { data } = await monitoringHttp.get('https://api.mexc.com/api/v3/klines', {
+    params: { symbol: meta.mexcSpot, interval, limit }
+  });
+  if (!Array.isArray(data)) return [];
+  const points = data.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[4],
+    volume: entry?.[7] ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchMexcFuturesHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).mexcFutures;
+  const { data } = await monitoringHttp.get(`https://contract.mexc.com/api/v1/contract/kline/${meta.mexcFutures}`, {
+    params: { interval }
+  });
+  if (!data || data.code !== 0 || !data.data) return [];
+  const payload = data.data;
+  const times = Array.isArray(payload.time) ? payload.time : [];
+  const opens = Array.isArray(payload.open) ? payload.open : [];
+  const closes = Array.isArray(payload.close) ? payload.close : [];
+  const volumes = Array.isArray(payload.vol) ? payload.vol : payload.amount;
+  const startIndex = Math.max(0, times.length - limit);
+  const points = [];
+  for (let i = startIndex; i < times.length; i += 1) {
+    const point = normalizeHistoryPoint({
+      timestamp: times[i],
+      open: opens[i],
+      close: closes[i],
+      volume: volumes?.[i]
+    });
+    if (point) points.push(point);
+  }
+  return sortHistoryPoints(points);
+}
+
+async function fetchBitgetSpotHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).bitget;
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/spot/v1/market/candles', {
+    params: { symbol: meta.bitgetSpot, period: interval, limit }
+  });
+  if (!data || data.code !== '00000' || !Array.isArray(data.data)) return [];
+  const points = data.data.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.ts ?? entry?.[0],
+    open: entry?.open ?? entry?.[1],
+    close: entry?.close ?? entry?.[4],
+    volume: entry?.quoteVol ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchBitgetFuturesHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).bitgetFutures;
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/mix/market/candles', {
+    params: {
+      productType: 'umcbl',
+      symbol: `${meta.base}${meta.quote}`,
+      granularity: interval,
+      limit
+    }
+  });
+  if (!data || data.code !== '00000' || !Array.isArray(data.data)) return [];
+  const points = data.data.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[4],
+    volume: entry?.[6]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchKucoinSpotHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).kucoin;
+  const { start, end } = computeHistoryWindow(intervalKey, limit);
+  const { data } = await monitoringHttp.get('https://api.kucoin.com/api/v1/market/candles', {
+    params: { symbol: meta.dashed, type: interval, startAt: start, endAt: end }
+  });
+  if (!data || data.code !== '200000' || !Array.isArray(data.data)) return [];
+  const points = data.data.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[2],
+    volume: entry?.[6] ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchKucoinFuturesHistory(meta, intervalKey, limit) {
+  const granularity = getHistoryIntervalConfig(intervalKey).kucoinFutures;
+  const { start, end } = computeHistoryWindow(intervalKey, limit);
+  const { data } = await monitoringHttp.get('https://api-futures.kucoin.com/api/v1/kline/query', {
+    params: { symbol: meta.kucoinFutures, granularity, from: start, to: end }
+  });
+  if (!data || data.code !== '200000' || !Array.isArray(data.data)) return [];
+  const points = data.data.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[2],
+    volume: entry?.[6] ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchBinanceSpotHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).binance;
+  const { data } = await monitoringHttp.get('https://data-api.binance.vision/api/v3/klines', {
+    params: { symbol: meta.compact, interval, limit }
+  });
+  if (!Array.isArray(data)) return [];
+  const points = data.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[4],
+    volume: entry?.[7] ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchBinanceFuturesHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).binance;
+  const { data } = await monitoringHttp.get('https://fapi.binance.com/fapi/v1/klines', {
+    params: { symbol: meta.compact, interval, limit }
+  });
+  if (!Array.isArray(data)) return [];
+  const points = data.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[4],
+    volume: entry?.[7] ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchBybitSpotHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).bybit;
+  const { data } = await monitoringHttp.get('https://api.bybit.com/v5/market/kline', {
+    params: { category: 'spot', symbol: meta.bybit, interval, limit }
+  });
+  if (data?.retCode !== 0 || !Array.isArray(data?.result?.list)) return [];
+  const points = data.result.list.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[4],
+    volume: entry?.[6] ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchBybitFuturesHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).bybit;
+  const { data } = await monitoringHttp.get('https://api.bybit.com/v5/market/kline', {
+    params: { category: 'linear', symbol: meta.bybit, interval, limit }
+  });
+  if (data?.retCode !== 0 || !Array.isArray(data?.result?.list)) return [];
+  const points = data.result.list.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[4],
+    volume: entry?.[6] ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
 const monitoringSpotProviders = [
-  { key: 'gate_spot', label: 'Gate.io', type: 'spot', fetch: fetchGateSpotTicker },
-  { key: 'mexc_spot', label: 'MEXC', type: 'spot', fetch: fetchMexcSpotTicker },
-  { key: 'bitget_spot', label: 'Bitget', type: 'spot', fetch: fetchBitgetSpotTicker },
-  { key: 'kucoin_spot', label: 'KuCoin', type: 'spot', fetch: fetchKucoinSpotTicker },
-  { key: 'binance_spot', label: 'Binance', type: 'spot', fetch: fetchBinanceSpotTicker },
-  { key: 'bybit_spot', label: 'Bybit', type: 'spot', fetch: fetchBybitSpotTicker }
+  { key: 'gate_spot', label: 'Gate.io', type: 'spot', fetch: fetchGateSpotTicker, history: fetchGateSpotHistory },
+  { key: 'mexc_spot', label: 'MEXC', type: 'spot', fetch: fetchMexcSpotTicker, history: fetchMexcSpotHistory },
+  { key: 'bitget_spot', label: 'Bitget', type: 'spot', fetch: fetchBitgetSpotTicker, history: fetchBitgetSpotHistory },
+  { key: 'kucoin_spot', label: 'KuCoin', type: 'spot', fetch: fetchKucoinSpotTicker, history: fetchKucoinSpotHistory },
+  { key: 'binance_spot', label: 'Binance', type: 'spot', fetch: fetchBinanceSpotTicker, history: fetchBinanceSpotHistory },
+  { key: 'bybit_spot', label: 'Bybit', type: 'spot', fetch: fetchBybitSpotTicker, history: fetchBybitSpotHistory }
 ];
 
 const monitoringFuturesProviders = [
-  { key: 'gate_futures', label: 'Gate.io Futures', type: 'futures', fetch: fetchGateFuturesTicker },
-  { key: 'mexc_futures', label: 'MEXC Futures', type: 'futures', fetch: fetchMexcFuturesTicker },
-  { key: 'bitget_futures', label: 'Bitget Futures', type: 'futures', fetch: fetchBitgetFuturesTicker },
-  { key: 'kucoin_futures', label: 'KuCoin Futures', type: 'futures', fetch: fetchKucoinFuturesTicker },
-  { key: 'binance_futures', label: 'Binance Futures', type: 'futures', fetch: fetchBinanceFuturesTicker },
-  { key: 'bybit_futures', label: 'Bybit Futures', type: 'futures', fetch: fetchBybitFuturesTicker }
+  { key: 'gate_futures', label: 'Gate.io Futures', type: 'futures', fetch: fetchGateFuturesTicker, history: fetchGateFuturesHistory },
+  { key: 'mexc_futures', label: 'MEXC Futures', type: 'futures', fetch: fetchMexcFuturesTicker, history: fetchMexcFuturesHistory },
+  { key: 'bitget_futures', label: 'Bitget Futures', type: 'futures', fetch: fetchBitgetFuturesTicker, history: fetchBitgetFuturesHistory },
+  { key: 'kucoin_futures', label: 'KuCoin Futures', type: 'futures', fetch: fetchKucoinFuturesTicker, history: fetchKucoinFuturesHistory },
+  { key: 'binance_futures', label: 'Binance Futures', type: 'futures', fetch: fetchBinanceFuturesTicker, history: fetchBinanceFuturesHistory },
+  { key: 'bybit_futures', label: 'Bybit Futures', type: 'futures', fetch: fetchBybitFuturesTicker, history: fetchBybitFuturesHistory }
 ];
+
+function findSpotProvider(key) {
+  return monitoringSpotProviders.find((provider) => provider.key === key);
+}
+
+function findFuturesProvider(key) {
+  return monitoringFuturesProviders.find((provider) => provider.key === key);
+}
+
+async function fetchHistoryDataset(provider, meta, intervalKey, limit) {
+  if (!provider || typeof provider.history !== 'function') {
+    return { candles: [], error: 'Histórico não disponível para esta corretora' };
+  }
+  try {
+    const candles = await provider.history(meta, intervalKey, limit);
+    return { candles, error: null };
+  } catch (err) {
+    console.warn(`[monitoring] histórico ${provider.key} falhou`, err?.message || err);
+    return { candles: [], error: err?.message || String(err) };
+  }
+}
 
 async function fetchMonitoringTicker(provider, meta) {
   try {
@@ -4364,6 +4747,46 @@ app.get('/api/monitoring/markets', async (req, res) => {
     res.json({ updatedAt: new Date().toISOString(), symbols: results });
   } catch (err) {
     console.error('[monitoring] erro ao coletar mercados', err);
+    res.status(500).json({ error: err.message || err });
+  }
+});
+
+app.get('/api/monitoring/history', async (req, res) => {
+  try {
+    const symbolInput = req.query.symbol;
+    const meta = buildSymbolMeta(symbolInput);
+    if (!meta) {
+      return res.status(400).json({ error: 'Símbolo inválido' });
+    }
+    const intervalKeyRaw = String(req.query.interval || '').toLowerCase();
+    const intervalKey = MONITORING_HISTORY_INTERVALS[intervalKeyRaw] ? intervalKeyRaw : MONITORING_HISTORY_DEFAULT_INTERVAL;
+    const intervalConfig = getHistoryIntervalConfig(intervalKey);
+    const limit = computeHistoryLimit(intervalKey);
+    const spotKey = req.query.spot && findSpotProvider(req.query.spot) ? req.query.spot : monitoringSpotProviders[0].key;
+    const futuresKey = req.query.futures && findFuturesProvider(req.query.futures)
+      ? req.query.futures
+      : monitoringFuturesProviders[0].key;
+    const spotProvider = findSpotProvider(spotKey) || monitoringSpotProviders[0];
+    const futuresProvider = findFuturesProvider(futuresKey) || monitoringFuturesProviders[0];
+    const [spotResult, futuresResult] = await Promise.all([
+      fetchHistoryDataset(spotProvider, meta, intervalKey, limit),
+      fetchHistoryDataset(futuresProvider, meta, intervalKey, limit)
+    ]);
+    const points = buildHistorySeries(spotResult.candles, futuresResult.candles, intervalConfig.minutes);
+    res.json({
+      symbol: meta.symbol,
+      label: MONITORING_DEFAULT_LABELS[meta.symbol] || meta.symbol,
+      interval: { key: intervalKey, label: intervalConfig.label, minutes: intervalConfig.minutes },
+      spot: { key: spotProvider.key, label: spotProvider.label },
+      futures: { key: futuresProvider.key, label: futuresProvider.label },
+      points,
+      spotError: spotResult.error,
+      futuresError: futuresResult.error,
+      requestedCandles: limit,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('[monitoring] erro ao montar histórico', err);
     res.status(500).json({ error: err.message || err });
   }
 });

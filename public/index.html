@@ -274,6 +274,50 @@
       color: var(--text-muted);
     }
 
+    .monitoring-history-controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin: 16px 0;
+    }
+
+    .monitoring-history-controls label {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .monitoring-history-controls select {
+      border-radius: 10px;
+      border: 1px solid rgba(125, 97, 255, 0.4);
+      background: rgba(9, 11, 32, 0.8);
+      color: var(--text);
+      padding: 8px 10px;
+      font-size: 13px;
+    }
+
+    .monitoring-history-source {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .monitoring-history-status {
+      margin-top: 6px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .monitoring-history-status.success {
+      color: var(--success);
+    }
+
+    .monitoring-history-status.error {
+      color: var(--danger);
+    }
+
     .monitoring-table {
       width: 100%;
       border-collapse: collapse;
@@ -1919,11 +1963,47 @@
               <select id="monitoringPairSelect"></select>
               <button id="refreshMonitoringChart" type="button">Atualizar gráfico</button>
             </div>
+            <div class="monitoring-history-controls">
+              <label>Intervalo do candle
+                <select id="monitoringHistoryInterval">
+                  <option value="1m">1 min</option>
+                  <option value="5m">5 min</option>
+                  <option value="15m">15 min</option>
+                  <option value="30m">30 min</option>
+                  <option value="1h" selected>1 hora</option>
+                  <option value="4h">4 horas</option>
+                </select>
+              </label>
+              <label>Corretora SPOT
+                <select id="monitoringHistorySpot">
+                  <option value="gate_spot" selected>Gate.io (SPOT)</option>
+                  <option value="mexc_spot">MEXC (SPOT)</option>
+                  <option value="bitget_spot">Bitget (SPOT)</option>
+                  <option value="kucoin_spot">KuCoin (SPOT)</option>
+                  <option value="binance_spot">Binance (SPOT)</option>
+                  <option value="bybit_spot">Bybit (SPOT)</option>
+                </select>
+              </label>
+              <label>Corretora FUTUROS
+                <select id="monitoringHistoryFutures">
+                  <option value="gate_futures" selected>Gate.io Futures</option>
+                  <option value="mexc_futures">MEXC Futures</option>
+                  <option value="bitget_futures">Bitget Futures</option>
+                  <option value="kucoin_futures">KuCoin Futures</option>
+                  <option value="binance_futures">Binance Futures</option>
+                  <option value="bybit_futures">Bybit Futures</option>
+                </select>
+              </label>
+            </div>
+            <p id="monitoringHistorySource" class="monitoring-history-source">
+              Selecione um par, intervalo e corretoras para ver como a % de arbitragem evoluiu nas últimas 24 horas.
+            </p>
+            <p id="monitoringHistoryStatus" class="monitoring-history-status"></p>
             <div class="monitoring-chart-wrapper">
               <canvas id="monitoringChart"></canvas>
             </div>
             <p class="monitoring-history-hint">
-              <strong>Fonte do histórico:</strong> candles de 1h da Gate.io (<code>/spot/candlesticks</code> x <code>/futures/usdt/candlesticks</code>). Para cada hora calculamos a % de arbitragem comparando o preço de fechamento (e abrimos a linha de abertura com o dado de abertura dos mesmos candles) entre o par SPOT e o contrato perp USDT correspondente. Os volumes plotados representam os volumes reportados pela Gate.io para cada candle SPOT e FUTUROS.
+              <strong>Como calculamos:</strong> o endpoint <code>/api/monitoring/history</code> consulta em tempo real os candles oficiais das corretoras selecionadas (Gate.io, MEXC, Bitget, KuCoin, Binance e Bybit — SPOT e perp USDT). Cada candle traz os preços de abertura/fechamento e volumes de SPOT e FUTUROS; combinamos esses valores para gerar as linhas de abertura/fechamento do % de arbitragem e as barras de volume correspondentes para as últimas 24 horas.
             </p>
           </div>
         </div>
