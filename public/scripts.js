@@ -4130,3 +4130,472 @@ if (positionDismantleBtn) {
   persistInstances();
 
 })();
+
+// ======== Shell / Monitoring / Admin UI ========
+const appShellEl = document.getElementById('appShell');
+const sidebarToggleBtn = document.getElementById('sidebarToggle');
+if (sidebarToggleBtn && appShellEl) {
+  sidebarToggleBtn.addEventListener('click', () => {
+    appShellEl.classList.toggle('sidebar-hidden');
+  });
+}
+
+const navButtons = Array.from(document.querySelectorAll('.sidebar-link[data-view-target]'));
+function activateView(targetId) {
+  navButtons.forEach((btn) => {
+    const isActive = btn.dataset.viewTarget === targetId;
+    if (isActive) btn.classList.add('active'); else btn.classList.remove('active');
+  });
+  document.querySelectorAll('.view').forEach((view) => {
+    if (view.id === targetId) {
+      view.classList.add('active');
+    } else {
+      view.classList.remove('active');
+    }
+  });
+}
+
+navButtons.forEach((btn) => {
+  btn.addEventListener('click', () => activateView(btn.dataset.viewTarget));
+});
+
+const monitoringCoins = [
+  {
+    symbol: 'CPOOL_USDT',
+    name: 'Clearpool',
+    arb: 2.6,
+    spotExchanges: ['Gate.io', 'Binance'],
+    futuresExchanges: ['MEXC Futures', 'Gate.io Futures'],
+    volume24h: 680000,
+    depth: 'Alta',
+    funding: 0.018,
+    risk: 'Baixo',
+    stability: 'Estável'
+  },
+  {
+    symbol: 'MAT_USDT',
+    name: 'Mycelium',
+    arb: 1.4,
+    spotExchanges: ['Gate.io', 'KuCoin'],
+    futuresExchanges: ['Bybit', 'MEXC Futures'],
+    volume24h: 320000,
+    depth: 'Média',
+    funding: 0.011,
+    risk: 'Médio',
+    stability: 'Estável'
+  },
+  {
+    symbol: 'FARM_USDT',
+    name: 'Harvest Finance',
+    arb: 3.1,
+    spotExchanges: ['Gate.io', 'Binance'],
+    futuresExchanges: ['MEXC Futures'],
+    volume24h: 1500000,
+    depth: 'Alta',
+    funding: 0.024,
+    risk: 'Baixo',
+    stability: 'Volátil'
+  }
+];
+
+const monitoringHistory = {};
+function generateHistory(symbol, baseArb) {
+  const points = [];
+  const now = Date.now();
+  let last = baseArb;
+  for (let i = 24; i >= 0; i -= 1) {
+    const ts = now - i * 60 * 60 * 1000;
+    const open = Number((last + (Math.random() - 0.5) * 0.6).toFixed(2));
+    const close = Number((open + (Math.random() - 0.5) * 0.5).toFixed(2));
+    const arb = Number((close + (Math.random() - 0.5) * 0.4).toFixed(2));
+    const spotVol = Math.round((0.8 + Math.random() * 0.5) * 100000);
+    const futuresVol = Math.round((0.6 + Math.random() * 0.6) * 90000);
+    points.push({
+      label: new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+      open,
+      close,
+      arb,
+      spotVol,
+      futuresVol
+    });
+    last = arb;
+  }
+  return points;
+}
+
+monitoringCoins.forEach((coin) => {
+  monitoringHistory[coin.symbol] = generateHistory(coin.symbol, coin.arb);
+});
+
+const blacklist = new Set();
+const ADMIN_PASSWORD = 'arbisync@2024';
+let isAdmin = false;
+
+const monitoringTableBody = document.getElementById('monitoringTableBody');
+const filterSearchEl = document.getElementById('filterSearch');
+const filterMinArbEl = document.getElementById('filterMinArb');
+const filterMinArbValueEl = document.getElementById('filterMinArbValue');
+const filterVolumeEl = document.getElementById('filterVolume');
+const filterStabilityEl = document.getElementById('filterStability');
+const monitoringSummaryBestEl = document.getElementById('monitoringSummaryBest');
+const monitoringSummaryAvgEl = document.getElementById('monitoringSummaryAvg');
+const monitoringSummaryCountEl = document.getElementById('monitoringResultCount');
+const monitoringSummaryBlacklistEl = document.getElementById('monitoringSummaryBlacklist');
+const monitoringPairSelect = document.getElementById('monitoringPairSelect');
+const adminStatusLabel = document.getElementById('adminStatusLabel');
+const adminLoginFeedback = document.getElementById('adminLoginFeedback');
+const adminTools = document.getElementById('adminTools');
+const adminLoginForm = document.getElementById('adminLoginForm');
+const adminPasswordInput = document.getElementById('adminPassword');
+const adminAddCoinForm = document.getElementById('adminAddCoinForm');
+const adminRemoveCoinForm = document.getElementById('adminRemoveCoinForm');
+const adminRemoveCoinSelect = document.getElementById('adminRemoveCoinSelect');
+const blacklistForm = document.getElementById('blacklistForm');
+const blacklistInput = document.getElementById('blacklistInput');
+const blacklistList = document.getElementById('blacklistList');
+
+function getCheckedValues(selector) {
+  return Array.from(document.querySelectorAll(selector))
+    .filter((el) => el.checked)
+    .map((el) => el.value);
+}
+
+function formatVolume(value) {
+  if (!Number.isFinite(value)) return '-';
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return value.toFixed(0);
+}
+
+function renderMonitoringSummary(filtered) {
+  if (monitoringSummaryCountEl) monitoringSummaryCountEl.textContent = filtered.length;
+  if (monitoringSummaryBlacklistEl) monitoringSummaryBlacklistEl.textContent = blacklist.size;
+  if (monitoringSummaryBestEl) {
+    const best = filtered.reduce((acc, coin) => (coin.arb > (acc?.arb || 0) ? coin : acc), null);
+    monitoringSummaryBestEl.textContent = best ? `${best.symbol} • ${best.arb.toFixed(2)}%` : '-';
+  }
+  if (monitoringSummaryAvgEl) {
+    const avg = filtered.length
+      ? (filtered.reduce((acc, coin) => acc + coin.arb, 0) / filtered.length).toFixed(2)
+      : '0.00';
+    monitoringSummaryAvgEl.textContent = `${avg}%`;
+  }
+}
+
+function renderMonitoringTable() {
+  if (!monitoringTableBody) return;
+  const searchTerm = (filterSearchEl?.value || '').trim().toUpperCase();
+  const minArb = Number(filterMinArbEl?.value) || 0;
+  const minVolume = Number(filterVolumeEl?.value) || 0;
+  const selectedSpot = getCheckedValues('.filter-spot');
+  const selectedFutures = getCheckedValues('.filter-futures');
+  const selectedRisks = getCheckedValues('.filter-risk');
+  const stabilityFilter = filterStabilityEl?.value || 'flex';
+
+  const filtered = monitoringCoins
+    .filter((coin) => !blacklist.has(coin.symbol))
+    .filter((coin) => (searchTerm ? coin.symbol.includes(searchTerm) || coin.name.toUpperCase().includes(searchTerm) : true))
+    .filter((coin) => coin.arb >= minArb)
+    .filter((coin) => coin.volume24h >= minVolume)
+    .filter((coin) => !selectedSpot.length || coin.spotExchanges.some((ex) => selectedSpot.includes(ex)))
+    .filter((coin) => !selectedFutures.length || coin.futuresExchanges.some((ex) => selectedFutures.includes(ex)))
+    .filter((coin) => !selectedRisks.length || selectedRisks.includes(coin.risk))
+    .filter((coin) => stabilityFilter === 'flex' || coin.stability === stabilityFilter);
+
+  filtered.sort((a, b) => b.arb - a.arb);
+
+  monitoringTableBody.innerHTML = filtered.map((coin) => `
+      <tr>
+        <td><strong>${coin.symbol}</strong><br/><span class="muted">${coin.name}</span></td>
+        <td>${coin.arb.toFixed(2)}%</td>
+        <td>${coin.spotExchanges.join(', ')}</td>
+        <td>${coin.futuresExchanges.join(', ')}</td>
+        <td>${formatVolume(coin.volume24h)} USDT</td>
+        <td>${coin.depth}</td>
+        <td>${(coin.funding * 100).toFixed(2)}%</td>
+        <td>${coin.risk}</td>
+        <td><button type="button" class="monitoring-view-chart" data-symbol="${coin.symbol}">Ver gráfico</button></td>
+      </tr>
+    `).join('');
+
+  renderMonitoringSummary(filtered);
+
+  if (filtered.length && monitoringPairSelect && !monitoringPairSelect.value) {
+    monitoringPairSelect.value = filtered[0].symbol;
+    updateMonitoringChart(filtered[0].symbol);
+  }
+}
+
+function renderBlacklist() {
+  if (!blacklistList) return;
+  const entries = Array.from(blacklist).sort();
+  blacklistList.innerHTML = entries.length
+    ? entries.map((symbol) => `<span>${symbol} <button type="button" data-remove-symbol="${symbol}">×</button></span>`).join('')
+    : '<span class="muted">Nenhuma moeda bloqueada.</span>';
+}
+
+function updateMonitoringSelectors() {
+  const previousSymbol = monitoringPairSelect?.value;
+  if (monitoringPairSelect) {
+    monitoringPairSelect.innerHTML = monitoringCoins.map((coin) => `<option value="${coin.symbol}">${coin.symbol} — ${coin.name}</option>`).join('');
+    if (previousSymbol && monitoringCoins.some((coin) => coin.symbol === previousSymbol)) {
+      monitoringPairSelect.value = previousSymbol;
+    }
+  }
+  if (adminRemoveCoinSelect) {
+    adminRemoveCoinSelect.innerHTML = monitoringCoins.map((coin) => `<option value="${coin.symbol}">${coin.symbol}</option>`).join('');
+  }
+}
+
+let monitoringChart = null;
+function ensureMonitoringChart() {
+  if (monitoringChart) return monitoringChart;
+  const ctx = document.getElementById('monitoringChart');
+  if (!ctx) return null;
+  monitoringChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: [], datasets: [] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      scales: {
+        y: { ticks: { callback: (value) => `${value}%` } },
+        yVolume: { position: 'right', grid: { drawOnChartArea: false }, ticks: { callback: (value) => `${formatVolume(value)} USDT` } }
+      }
+    }
+  });
+  return monitoringChart;
+}
+
+function updateMonitoringChart(symbol) {
+  const chart = ensureMonitoringChart();
+  if (!chart) return;
+  const history = monitoringHistory[symbol] || [];
+  chart.data.labels = history.map((p) => p.label);
+  chart.data.datasets = [
+    {
+      type: 'line',
+      label: '% Arb médio',
+      data: history.map((p) => p.arb),
+      borderColor: '#8d6cff',
+      backgroundColor: 'rgba(141, 108, 255, 0.2)',
+      tension: 0.35,
+      yAxisID: 'y',
+      fill: false,
+      borderWidth: 2
+    },
+    {
+      type: 'line',
+      label: 'Linha de abertura',
+      data: history.map((p) => p.open),
+      borderColor: '#3fe7c3',
+      borderDash: [6, 6],
+      tension: 0.3,
+      yAxisID: 'y',
+      fill: false,
+      borderWidth: 1.5
+    },
+    {
+      type: 'line',
+      label: 'Linha de fechamento',
+      data: history.map((p) => p.close),
+      borderColor: '#f2b760',
+      borderDash: [6, 6],
+      tension: 0.3,
+      yAxisID: 'y',
+      fill: false,
+      borderWidth: 1.5
+    },
+    {
+      type: 'bar',
+      label: 'Volume Spot',
+      data: history.map((p) => p.spotVol),
+      backgroundColor: 'rgba(141, 108, 255, 0.35)',
+      borderRadius: 4,
+      yAxisID: 'yVolume'
+    },
+    {
+      type: 'bar',
+      label: 'Volume Futuros',
+      data: history.map((p) => p.futuresVol),
+      backgroundColor: 'rgba(63, 231, 195, 0.35)',
+      borderRadius: 4,
+      yAxisID: 'yVolume'
+    }
+  ];
+  chart.update();
+}
+
+const filterInputs = [filterSearchEl, filterVolumeEl, filterStabilityEl];
+filterInputs.forEach((input) => {
+  if (!input) return;
+  input.addEventListener('input', () => renderMonitoringTable());
+});
+
+if (filterMinArbEl) {
+  filterMinArbEl.addEventListener('input', () => {
+    if (filterMinArbValueEl) filterMinArbValueEl.textContent = `${filterMinArbEl.value}%`;
+    renderMonitoringTable();
+  });
+}
+
+['.filter-spot', '.filter-futures', '.filter-risk'].forEach((selector) => {
+  document.querySelectorAll(selector).forEach((input) => {
+    input.addEventListener('change', () => renderMonitoringTable());
+  });
+});
+
+if (monitoringTableBody) {
+  monitoringTableBody.addEventListener('click', (event) => {
+    const button = event.target.closest('.monitoring-view-chart');
+    if (!button) return;
+    const { symbol } = button.dataset;
+    if (!symbol) return;
+    if (monitoringPairSelect) monitoringPairSelect.value = symbol;
+    updateMonitoringChart(symbol);
+    activateView('monitoringView');
+  });
+}
+
+if (monitoringPairSelect) {
+  monitoringPairSelect.addEventListener('change', () => updateMonitoringChart(monitoringPairSelect.value));
+}
+
+const refreshMonitoringChartBtn = document.getElementById('refreshMonitoringChart');
+if (refreshMonitoringChartBtn) {
+  refreshMonitoringChartBtn.addEventListener('click', () => {
+    const symbol = monitoringPairSelect?.value || monitoringCoins[0]?.symbol;
+    if (symbol) updateMonitoringChart(symbol);
+  });
+}
+
+if (adminLoginForm) {
+  adminLoginForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const password = adminPasswordInput?.value || '';
+    if (password === ADMIN_PASSWORD) {
+      isAdmin = true;
+      adminLoginFeedback.textContent = 'Acesso liberado';
+      adminLoginFeedback.classList.remove('muted');
+      adminLoginFeedback.style.color = '#3fe7c3';
+      adminStatusLabel.textContent = 'Conectado';
+      if (adminTools) adminTools.classList.remove('hidden');
+    } else {
+      isAdmin = false;
+      adminLoginFeedback.textContent = 'Senha incorreta';
+      adminLoginFeedback.classList.add('muted');
+      adminStatusLabel.textContent = 'Visitante';
+      if (adminTools) adminTools.classList.add('hidden');
+    }
+    if (adminPasswordInput) adminPasswordInput.value = '';
+  });
+}
+
+function requireAdmin() {
+  if (isAdmin) return true;
+  if (adminLoginFeedback) {
+    adminLoginFeedback.textContent = 'Faça login como administrador para continuar.';
+    adminLoginFeedback.classList.remove('muted');
+    adminLoginFeedback.style.color = '#ff6b9a';
+  }
+  return false;
+}
+
+if (adminAddCoinForm) {
+  adminAddCoinForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!requireAdmin()) return;
+    const symbolInput = document.getElementById('adminCoinSymbol');
+    const nameInput = document.getElementById('adminCoinName');
+    const spotInput = document.getElementById('adminCoinSpot');
+    const futuresInput = document.getElementById('adminCoinFutures');
+    const arbInput = document.getElementById('adminCoinArb');
+    const riskInput = document.getElementById('adminCoinRisk');
+    if (!symbolInput || !nameInput) return;
+    const symbol = symbolInput.value.trim().toUpperCase();
+    const name = nameInput.value.trim() || symbol;
+    if (!symbol) return;
+    const existing = monitoringCoins.find((coin) => coin.symbol === symbol);
+    const newCoin = {
+      symbol,
+      name,
+      arb: Number(arbInput?.value) || 1,
+      spotExchanges: (spotInput?.value || 'Gate.io').split(',').map((s) => s.trim()).filter(Boolean),
+      futuresExchanges: (futuresInput?.value || 'MEXC Futures').split(',').map((s) => s.trim()).filter(Boolean),
+      volume24h: Math.round(200000 + Math.random() * 900000),
+      depth: 'Custom',
+      funding: 0.01,
+      risk: riskInput?.value || 'Médio',
+      stability: 'Estável'
+    };
+    if (existing) {
+      Object.assign(existing, newCoin);
+    } else {
+      monitoringCoins.push(newCoin);
+    }
+    monitoringHistory[symbol] = generateHistory(symbol, newCoin.arb);
+    symbolInput.value = '';
+    nameInput.value = '';
+    if (spotInput) spotInput.value = '';
+    if (futuresInput) futuresInput.value = '';
+    if (arbInput) arbInput.value = '1.5';
+    renderMonitoringTable();
+    updateMonitoringSelectors();
+    renderBlacklist();
+  });
+}
+
+if (adminRemoveCoinForm) {
+  adminRemoveCoinForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!requireAdmin()) return;
+    const symbol = adminRemoveCoinSelect?.value;
+    if (!symbol) return;
+    const idx = monitoringCoins.findIndex((coin) => coin.symbol === symbol);
+    if (idx >= 0) {
+      monitoringCoins.splice(idx, 1);
+      blacklist.delete(symbol);
+      delete monitoringHistory[symbol];
+    }
+    updateMonitoringSelectors();
+    renderMonitoringTable();
+    renderBlacklist();
+  });
+}
+
+if (blacklistForm) {
+  blacklistForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!requireAdmin()) return;
+    const symbol = (blacklistInput?.value || '').trim().toUpperCase();
+    if (!symbol) return;
+    blacklist.add(symbol);
+    if (blacklistInput) blacklistInput.value = '';
+    renderBlacklist();
+    renderMonitoringTable();
+  });
+}
+
+if (blacklistList) {
+  blacklistList.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-remove-symbol]');
+    if (!button) return;
+    if (!requireAdmin()) return;
+    const symbol = button.dataset.removeSymbol;
+    blacklist.delete(symbol);
+    renderBlacklist();
+    renderMonitoringTable();
+  });
+}
+
+function bootstrapMonitoring() {
+  updateMonitoringSelectors();
+  renderMonitoringTable();
+  const initialSymbol = monitoringPairSelect?.value || monitoringCoins[0]?.symbol;
+  if (initialSymbol) updateMonitoringChart(initialSymbol);
+  if (filterMinArbValueEl && filterMinArbEl) filterMinArbValueEl.textContent = `${filterMinArbEl.value}%`;
+  renderBlacklist();
+}
+
+bootstrapMonitoring();

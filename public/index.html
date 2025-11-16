@@ -46,6 +46,107 @@
       display: flex;
       justify-content: center;
       line-height: 1.5;
+      padding: 0 16px;
+    }
+
+    .app-shell {
+      width: min(1400px, 100%);
+      display: flex;
+      gap: 24px;
+      align-items: flex-start;
+      padding: 56px 0 80px;
+      position: relative;
+      z-index: 1;
+      transition: padding-left 0.3s ease;
+    }
+
+    .app-shell.sidebar-hidden .sidebar {
+      transform: translateX(-120%);
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .app-shell.sidebar-hidden .sidebar-toggle {
+      left: 8px;
+    }
+
+    .sidebar {
+      width: 240px;
+      background: rgba(15, 18, 48, 0.85);
+      border: 1px solid rgba(125, 97, 255, 0.35);
+      border-radius: 20px;
+      padding: 20px;
+      box-shadow: 0 25px 50px -30px var(--card-glow);
+      backdrop-filter: blur(18px);
+      position: sticky;
+      top: 40px;
+      height: fit-content;
+      transition: transform 0.3s ease, opacity 0.3s ease;
+    }
+
+    .sidebar-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      gap: 12px;
+    }
+
+    .sidebar-header strong {
+      font-family: 'Rajdhani', 'Inter', sans-serif;
+      font-size: 20px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .sidebar-toggle {
+      border-radius: 999px;
+      border: 1px solid rgba(125, 97, 255, 0.35);
+      background: rgba(125, 97, 255, 0.12);
+      color: var(--text);
+      padding: 6px 14px;
+      font-size: 12px;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+    }
+
+    .sidebar-nav {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .sidebar-link {
+      width: 100%;
+      text-align: left;
+      background: rgba(18, 22, 54, 0.8);
+      border: 1px solid rgba(125, 97, 255, 0.25);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+
+    .sidebar-link.active {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #050712;
+      box-shadow: 0 12px 26px -12px var(--card-glow);
+    }
+
+    .sidebar-footer {
+      margin-top: 24px;
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    .app-main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+      align-items: center;
     }
 
     body::before {
@@ -61,13 +162,165 @@
     }
 
     .page {
-      width: min(1180px, 100% - 48px);
-      margin: 56px 0 80px;
+      width: min(1180px, 100%);
+      margin: 0 auto;
       display: flex;
       flex-direction: column;
       gap: 24px;
       position: relative;
       z-index: 1;
+    }
+
+    .view {
+      display: none;
+    }
+
+    .view.active {
+      display: flex;
+    }
+
+    #monitoringView {
+      gap: 20px;
+    }
+
+    .monitoring-filters {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }
+
+    .filter-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    .filter-group label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+    }
+
+    .chip-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .chip-list label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(26, 28, 60, 0.8);
+      border: 1px solid rgba(125, 97, 255, 0.25);
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+    }
+
+    .monitoring-summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+      font-size: 13px;
+    }
+
+    .summary-pill {
+      border-radius: 14px;
+      border: 1px solid rgba(125, 97, 255, 0.25);
+      padding: 12px;
+      background: rgba(20, 22, 52, 0.6);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .summary-pill span.label {
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .monitoring-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .monitoring-table th,
+    .monitoring-table td {
+      padding: 8px 10px;
+      text-align: left;
+      border-bottom: 1px solid rgba(125, 97, 255, 0.12);
+    }
+
+    .monitoring-table th {
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .monitoring-table td strong {
+      font-family: 'Rajdhani', 'Inter', sans-serif;
+      letter-spacing: 0.04em;
+    }
+
+    .monitoring-table button {
+      padding: 4px 10px;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+    }
+
+    .monitoring-chart-wrapper {
+      width: 100%;
+      height: 320px;
+    }
+
+    .admin-tools {
+      margin-top: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .admin-tools.hidden {
+      display: none;
+    }
+
+    .admin-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 18px;
+    }
+
+    .blacklist-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .blacklist-list span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 12px;
+      background: rgba(255, 107, 154, 0.15);
+      border: 1px solid rgba(255, 107, 154, 0.4);
+      font-size: 12px;
+    }
+
+    .monitoring-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
     }
 
     h1 {
@@ -1054,7 +1307,26 @@
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"></script>
 </head>
 <body>
-  <div class="page">
+  <div class="app-shell" id="appShell">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div>
+          <strong>ArbiSync</strong>
+          <div class="muted" style="font-size:12px; letter-spacing:0.08em; text-transform:uppercase;">Painel</div>
+        </div>
+        <button class="sidebar-toggle" id="sidebarToggle" type="button">Mostrar/Ocultar</button>
+      </div>
+      <nav class="sidebar-nav">
+        <button class="sidebar-link active" data-view-target="executionView" id="navExecution">Execução</button>
+        <button class="sidebar-link" data-view-target="monitoringView" id="navMonitoring">Monitoramento</button>
+      </nav>
+      <div class="sidebar-footer">
+        <div>Status administrador: <strong id="adminStatusLabel">Visitante</strong></div>
+        <div>Use o login no painel para liberar cadastro de moedas e blacklist.</div>
+      </div>
+    </aside>
+    <main class="app-main">
+      <section class="page view active" id="executionView">
   <h1>Arbitragem <span data-spot-label>Gate.io</span> x MEXC — <span id="titleSymbol">BASE_USDT</span></h1>
 
   <div class="instance-tabs" id="instanceTabs"></div>
@@ -1503,7 +1775,179 @@
     </div>
   </div>
 
-  <script src="scripts.js"></script>
+      </section>
+
+      <section class="page view" id="monitoringView">
+        <h1>Monitoramento inteligente de arbitragem</h1>
+
+        <div class="card" id="monitoringFiltersCard">
+          <h3>Filtros avançados</h3>
+          <div class="card-body monitoring-filters">
+            <div class="filter-group">
+              <label for="filterSearch">Buscar moeda</label>
+              <input type="text" id="filterSearch" placeholder="Ex.: CPOOL" />
+            </div>
+            <div class="filter-group">
+              <label for="filterMinArb">% de Arb mínima</label>
+              <input type="range" id="filterMinArb" min="0" max="10" step="0.5" value="0" />
+              <span id="filterMinArbValue" class="muted">0%</span>
+            </div>
+            <div class="filter-group">
+              <label>Corretoras SPOT</label>
+              <div class="chip-list">
+                <label><input type="checkbox" class="filter-spot" value="Gate.io" checked /> Gate.io</label>
+                <label><input type="checkbox" class="filter-spot" value="Binance" checked /> Binance</label>
+                <label><input type="checkbox" class="filter-spot" value="KuCoin" checked /> KuCoin</label>
+              </div>
+            </div>
+            <div class="filter-group">
+              <label>Corretoras FUTUROS</label>
+              <div class="chip-list">
+                <label><input type="checkbox" class="filter-futures" value="MEXC Futures" checked /> MEXC</label>
+                <label><input type="checkbox" class="filter-futures" value="Gate.io Futures" checked /> Gate.io</label>
+                <label><input type="checkbox" class="filter-futures" value="Bybit" checked /> Bybit</label>
+              </div>
+            </div>
+            <div class="filter-group">
+              <label for="filterVolume">Volume mínimo (24h)</label>
+              <select id="filterVolume">
+                <option value="0">Sem filtro</option>
+                <option value="100000">≥ 100k USDT</option>
+                <option value="500000">≥ 500k USDT</option>
+                <option value="1000000">≥ 1M USDT</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label>Perfil de risco</label>
+              <div class="chip-list">
+                <label><input type="checkbox" class="filter-risk" value="Baixo" checked /> Baixo</label>
+                <label><input type="checkbox" class="filter-risk" value="Médio" checked /> Médio</label>
+                <label><input type="checkbox" class="filter-risk" value="Alto" /> Alto</label>
+              </div>
+            </div>
+            <div class="filter-group">
+              <label for="filterStability">Estabilidade mínima</label>
+              <select id="filterStability">
+                <option value="flex">Qualquer</option>
+                <option value="Estável">Estável</option>
+                <option value="Volátil">Volátil apenas</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="monitoringTableCard">
+          <h3>Oportunidades ativas</h3>
+          <div class="card-body">
+            <div class="monitoring-summary">
+              <div class="summary-pill">
+                <span class="label">Moedas elegíveis</span>
+                <strong id="monitoringResultCount">0</strong>
+              </div>
+              <div class="summary-pill">
+                <span class="label">Melhor arb</span>
+                <strong id="monitoringSummaryBest">-</strong>
+              </div>
+              <div class="summary-pill">
+                <span class="label">Média filtrada</span>
+                <strong id="monitoringSummaryAvg">0%</strong>
+              </div>
+              <div class="summary-pill">
+                <span class="label">Blacklist ativa</span>
+                <strong id="monitoringSummaryBlacklist">0</strong>
+              </div>
+            </div>
+            <div class="table-scroll">
+              <table class="monitoring-table">
+                <thead>
+                  <tr>
+                    <th>Par</th>
+                    <th>% Arb</th>
+                    <th>Corretoras SPOT</th>
+                    <th>Corretoras FUTUROS</th>
+                    <th>Volume 24h</th>
+                    <th>Profundidade</th>
+                    <th>Funding</th>
+                    <th>Risco</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="monitoringTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="monitoringChartCard">
+          <h3>Histórico de % de Arb (24h)</h3>
+          <div class="card-body">
+            <div class="monitoring-actions">
+              <label for="monitoringPairSelect">Moeda:</label>
+              <select id="monitoringPairSelect"></select>
+              <button id="refreshMonitoringChart" type="button">Atualizar gráfico</button>
+            </div>
+            <div class="monitoring-chart-wrapper">
+              <canvas id="monitoringChart"></canvas>
+            </div>
+            <p class="muted" style="margin-top:12px;">Linhas de abertura/fechamento e barras de volume SPOT x FUTUROS ajudam a visualizar onde a arbitragem ganha força.</p>
+          </div>
+        </div>
+
+        <div class="card" id="adminCard">
+          <h3>Painel do administrador</h3>
+          <div class="card-body">
+            <form id="adminLoginForm" class="monitoring-actions" autocomplete="off">
+              <label for="adminPassword">Senha de acesso:</label>
+              <input id="adminPassword" type="password" placeholder="Digite a senha" />
+              <button type="submit">Entrar</button>
+              <span id="adminLoginFeedback" class="muted"></span>
+            </form>
+            <div id="adminTools" class="admin-tools hidden">
+              <div class="admin-grid">
+                <form id="adminAddCoinForm">
+                  <label>Moeda
+                    <input type="text" id="adminCoinSymbol" placeholder="FARM_USDT" required />
+                  </label>
+                  <label>Nome amigável
+                    <input type="text" id="adminCoinName" placeholder="Harvest Finance" required />
+                  </label>
+                  <label>Corretoras spot (separadas por vírgula)
+                    <input type="text" id="adminCoinSpot" placeholder="Gate.io, Binance" />
+                  </label>
+                  <label>Corretoras futuros (separadas por vírgula)
+                    <input type="text" id="adminCoinFutures" placeholder="MEXC Futures" />
+                  </label>
+                  <label>Meta de % arb
+                    <input type="number" id="adminCoinArb" min="0" step="0.1" value="1.5" />
+                  </label>
+                  <label>Nível de risco
+                    <select id="adminCoinRisk">
+                      <option value="Baixo">Baixo</option>
+                      <option value="Médio">Médio</option>
+                      <option value="Alto">Alto</option>
+                    </select>
+                  </label>
+                  <button type="submit">Cadastrar moeda</button>
+                </form>
+                <form id="adminRemoveCoinForm">
+                  <label for="adminRemoveCoinSelect">Descadastrar moeda</label>
+                  <select id="adminRemoveCoinSelect"></select>
+                  <button type="submit">Remover</button>
+                </form>
+                <form id="blacklistForm">
+                  <label for="blacklistInput">Adicionar à blacklist</label>
+                  <input type="text" id="blacklistInput" placeholder="Ex.: TOKEN_USDT" />
+                  <button type="submit">Adicionar</button>
+                  <div class="blacklist-list" id="blacklistList"></div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
   </div>
+
+  <script src="scripts.js"></script>
 </body>
 </html>
