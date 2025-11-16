@@ -1545,7 +1545,8 @@ document.getElementById('applySymbol').addEventListener('click', async () => {
   await refreshBalances();
   await fetchData();
   await fetchSpreadData(true, getSpotKey());
-  ensureRiskDiscoveryForActiveInstance({ force: true });
+  if (inst) markRiskDiscoveryStale(inst);
+  updateRiskControlsUI();
 });
 
 document.getElementById('autoCfg').addEventListener('click', async () => {
@@ -2614,6 +2615,7 @@ function ensureSpreadChart() {
         },
         tooltip: {
           callbacks: {
+            title: () => '',
             label: (ctx) => {
               const prefix = ctx.dataset?.label ? `${ctx.dataset.label}: ` : '';
               const value = Number(ctx.parsed.y);
@@ -2995,6 +2997,62 @@ function getRiskElements() {
   };
 }
 
+function normalizeOrderError(error) {
+  if (!error) return null;
+  if (typeof error === 'string') return { message: error };
+  if (typeof error === 'object') return error;
+  return { message: String(error) };
+}
+
+function extractRiskLimitContracts(orderError) {
+  const normalized = normalizeOrderError(orderError);
+  if (!normalized) return null;
+  const candidates = [];
+  const pushCandidate = (value) => {
+    const num = Number(value);
+    if (Number.isFinite(num) && num >= 0) candidates.push(num);
+  };
+  const extend = normalized._extend || normalized.extend;
+  if (extend && typeof extend === 'object') {
+    for (const [key, value] of Object.entries(extend)) {
+      if (/limit|amount|contract|position|max/i.test(key)) {
+        pushCandidate(value);
+      }
+    }
+  }
+  ['limit', 'max', 'maxContracts', 'maxAmount', 'amount'].forEach((key) => {
+    if (normalized[key] != null) pushCandidate(normalized[key]);
+  });
+  if (normalized.response && typeof normalized.response === 'object') {
+    ['limit', 'max', 'maxContracts', 'amount'].forEach((key) => {
+      if (normalized.response[key] != null) pushCandidate(normalized.response[key]);
+    });
+  }
+  if (candidates.length) return candidates[0];
+  const rawMessage = normalized.message || normalized.msg || normalized.error || normalized.rawMessage;
+  if (typeof rawMessage === 'string') {
+    const sanitized = rawMessage.replace(/,/g, '.');
+    if (/(上限|limit|contrat|张数|posição)/i.test(sanitized)) {
+      const matches = sanitized.match(/(\d+(?:\.\d+)?)/g);
+      if (matches && matches.length) {
+        const last = matches[matches.length - 1];
+        const num = Number(last);
+        if (Number.isFinite(num)) return num;
+      }
+    }
+  }
+  return null;
+}
+
+function formatContractCount(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '0';
+  const options = (num % 1 === 0)
+    ? { minimumFractionDigits: 0, maximumFractionDigits: 0 }
+    : { minimumFractionDigits: 0, maximumFractionDigits: 2 };
+  return num.toLocaleString('en-US', options);
+}
+
 function getInstanceRiskState(inst) {
   if (!inst) return null;
   const state = ensureInstanceState(inst);
@@ -3022,47 +3080,39 @@ function updateRiskControlsUI() {
   const inst = getActiveInstance();
   const risk = getInstanceRiskState(inst);
   if (button) button.disabled = !inst || !risk || risk.status === 'running';
-  if (execute) execute.disabled = !inst || !risk || risk.status !== 'ready';
-  if (!info) return;
-  info.style.color = 'var(--text-muted)';
+  const orderError = risk?.result ? normalizeOrderError(risk.result.orderError) : null;
+  let canExecute = false;
+  let message = 'Realize o teste de risco para liberar a execução.';
+  let color = 'var(--text-muted)';
   if (!inst || !risk) {
-    info.textContent = 'Limite ainda não verificado.';
-    return;
-  }
-  if (risk.status === 'running') {
-    info.textContent = 'Descobrindo limite na MEXC...';
-    return;
-  }
-  if (risk.status === 'ready' && risk.result) {
-    const baseSymbol = (inst.symbol || currentSymbol || 'BASE_USDT').split('_')[0] || 'BASE';
-    const baseText = formatVolumeValue(risk.result.baseLimit, 6, baseSymbol);
-    const quoteText = formatTwoDecimals(risk.result.quoteLimit);
-    let details = `Limite: ${baseText} • ${quoteText} USDT`;
-    if (risk.result.risk && Number.isFinite(risk.result.risk.level)) {
-      details += ` (nível ${risk.result.risk.level})`;
-    }
-    let warningMessage = null;
-    if (risk.result.orderError) {
-      const warn = risk.result.orderError.message || risk.result.orderError.msg || risk.result.orderError.error || risk.result.orderError;
-      if (warn) {
-        warningMessage = typeof warn === 'string' ? warn : JSON.stringify(warn);
-      }
-    }
-    if (warningMessage) {
-      details += ` — aviso: ${warningMessage}`;
-      info.style.color = 'var(--warning)';
+    message = 'Selecione uma aba para descobrir o limite.';
+  } else if (risk.status === 'running') {
+    message = 'Descobrindo limite na MEXC...';
+  } else if (risk.status === 'error') {
+    message = `Falha ao descobrir limite: ${risk.error || 'erro desconhecido.'}`;
+    color = 'var(--danger)';
+  } else if (risk.status === 'ready') {
+    const limitContracts = extractRiskLimitContracts(orderError);
+    if (limitContracts != null) {
+      const formatted = formatContractCount(limitContracts);
+      const plural = limitContracts === 1 ? '' : 's';
+      message = `Há limite de ${formatted} contrato${plural} nesta moeda, escolha outra.`;
+      color = 'var(--danger)';
+    } else if (orderError) {
+      const warn = orderError.message || orderError.msg || orderError.error || 'Falha no teste de risco.';
+      message = `Falha ao enviar ordem de teste: ${warn}`;
+      color = 'var(--danger)';
     } else {
-      info.style.color = 'var(--success)';
+      message = 'Não há limites de contratos nesta moeda.';
+      color = '#ffffff';
+      canExecute = true;
     }
-    info.textContent = details;
-    return;
   }
-  if (risk.status === 'error') {
-    info.textContent = `Falha ao descobrir limite: ${risk.error || 'erro desconhecido.'}`;
-    info.style.color = 'var(--danger)';
-    return;
+  if (execute) execute.disabled = !canExecute;
+  if (info) {
+    info.textContent = message;
+    info.style.color = color;
   }
-  info.textContent = 'Limite ainda não verificado.';
 }
 
 async function runRiskDiscovery(inst, { reason = 'manual' } = {}) {
@@ -3098,7 +3148,7 @@ async function runRiskDiscovery(inst, { reason = 'manual' } = {}) {
     }
     const baseLimit = Number(data?.baseLimit);
     const quoteLimit = Number(data?.quoteLimit);
-    const orderError = data?.orderError || data?.errorMessage || null;
+    const orderError = normalizeOrderError(data?.orderError || data?.errorMessage || null);
     risk.status = 'ready';
     risk.error = null;
     risk.lastSymbol = symbol;
@@ -3121,22 +3171,24 @@ async function runRiskDiscovery(inst, { reason = 'manual' } = {}) {
 
 function ensureRiskDiscoveryForActiveInstance({ force = false } = {}) {
   const inst = getActiveInstance();
+  if (!inst) {
+    updateRiskControlsUI();
+    return;
+  }
   const risk = getInstanceRiskState(inst);
-  if (!inst || !risk) {
+  if (!risk) {
     updateRiskControlsUI();
     return;
   }
-  const spot = inst.spotExchange || getSpotKey();
-  const needs = force
-    || risk.status === 'idle'
-    || risk.status === 'stale'
-    || risk.lastSymbol !== (inst.symbol || currentSymbol)
-    || risk.lastSpot !== spot;
-  if (!needs) {
-    updateRiskControlsUI();
+  const expectedSymbol = (inst.symbol || currentSymbol || '').toUpperCase();
+  const expectedSpot = normalizeSpotKey(inst.spotExchange || getSpotKey());
+  const symbolMismatch = risk.lastSymbol && risk.lastSymbol !== expectedSymbol;
+  const spotMismatch = risk.lastSpot && normalizeSpotKey(risk.lastSpot) !== expectedSpot;
+  if (force || symbolMismatch || spotMismatch) {
+    markRiskDiscoveryStale(inst);
     return;
   }
-  runRiskDiscovery(inst, { reason: force ? 'auto-force' : 'auto' });
+  updateRiskControlsUI();
 }
 
 async function fetchSpreadDataForInstance(inst, force = false, spotKey = null) {
