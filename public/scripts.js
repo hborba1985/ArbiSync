@@ -1457,15 +1457,18 @@ function fillOverridesUI(merged) {
   set('ov_set_gate_extra', s.gateOpenExtraPct);
   const minResidual = (s.minCloseResidualQuote != null) ? s.minCloseResidualQuote : 4;
   set('ov_set_min_residual', minResidual);
+  const riskQuote = (s.riskTestQuote != null) ? s.riskTestQuote : 50;
+  set('ov_set_risk_quote', riskQuote);
 }
 function metaToText(label, meta) {
   const spotMeta = (meta && meta[getSpotKey()]) || meta?.gate || {};
   const gateExtra = (meta.settings && meta.settings.gateOpenExtraPct != null) ? meta.settings.gateOpenExtraPct : 0;
   const minResidual = meta.settings?.minCloseResidualQuote != null ? meta.settings.minCloseResidualQuote : 0;
+  const riskTestQuote = meta.settings?.riskTestQuote != null ? meta.settings.riskTestQuote : 50;
   return `${label}
 Spot(${getSpotLabel()}): priceScale=${spotMeta.priceScale}, qtyScale=${spotMeta.qtyScale}, minQty=${spotMeta.minQty}, minQuote=${spotMeta.minQuote}
 MEXC: priceScale=${meta.mexc.priceScale}, volPrecision=${meta.mexc.volPrecision}, contractSize=${meta.mexc.contractSize}, minContracts=${meta.mexc.minContracts}
-Settings: margem=${meta.settings.marginPct}%, lev=${meta.settings.leverage}, spotExtra=${gateExtra}%, minCloseResidualQuote=${minResidual}`;
+Settings: margem=${meta.settings.marginPct}%, lev=${meta.settings.leverage}, spotExtra=${gateExtra}%, minCloseResidualQuote=${minResidual}, riskTestQuote=${riskTestQuote}`;
 }
 async function fetchMarketMeta(symbol) {
   const resp = await fetch('/api/market-meta?symbol=' + encodeURIComponent(symbol));
@@ -1590,6 +1593,7 @@ document.getElementById('saveOverride').addEventListener('click', async () => {
       leverage: numOrUndef('ov_set_lev'),
       gateOpenExtraPct: numOrUndef('ov_set_gate_extra'),
       minCloseResidualQuote: numOrUndef('ov_set_min_residual'),
+      riskTestQuote: numOrUndef('ov_set_risk_quote'),
       parityVolumes: true
     }
   };
@@ -3081,6 +3085,25 @@ function updateRiskControlsUI() {
   const risk = getInstanceRiskState(inst);
   if (button) button.disabled = !inst || !risk || risk.status === 'running';
   const orderError = risk?.result ? normalizeOrderError(risk.result.orderError) : null;
+  const testedQuote = Number(risk?.result?.testQuote);
+  let limitSummary = '';
+  if (inst && risk?.status === 'ready') {
+    const baseSymbol = (inst.symbol && inst.symbol.includes('_'))
+      ? inst.symbol.split('_')[0]
+      : getCurrentBaseSymbol();
+    const baseLimit = Number(risk?.result?.baseLimit);
+    const quoteLimit = Number(risk?.result?.quoteLimit);
+    const parts = [];
+    if (Number.isFinite(baseLimit) && baseLimit > 0 && baseSymbol) {
+      parts.push(formatVolumeValue(baseLimit, 6, baseSymbol));
+    }
+    if (Number.isFinite(quoteLimit) && quoteLimit > 0) {
+      parts.push(formatVolumeValue(quoteLimit, 2, 'USDT'));
+    }
+    if (parts.length) {
+      limitSummary = `Limite: ${parts.join(' • ')}`;
+    }
+  }
   let canExecute = false;
   let message = 'Realize o teste de risco para liberar a execução.';
   let color = 'var(--text-muted)';
@@ -3089,28 +3112,40 @@ function updateRiskControlsUI() {
   } else if (risk.status === 'running') {
     message = 'Descobrindo limite na MEXC...';
   } else if (risk.status === 'error') {
-    message = `Falha ao descobrir limite: ${risk.error || 'erro desconhecido.'}`;
+    const rawError = (risk.error || '').toString().trim();
+    if (rawError && /livro de ofertas mexc indisponível para teste/i.test(rawError)) {
+      message = 'Esta moeda foi deslistada da MEXC.';
+    } else if (rawError) {
+      message = `Falha ao descobrir limite: ${rawError}`;
+    } else {
+      message = 'Falha ao descobrir limite.';
+    }
     color = 'var(--danger)';
   } else if (risk.status === 'ready') {
     const limitContracts = extractRiskLimitContracts(orderError);
+    const warn = (orderError?.message || orderError?.msg || orderError?.error || '').toString().trim();
     if (limitContracts != null) {
       const formatted = formatContractCount(limitContracts);
       const plural = limitContracts === 1 ? '' : 's';
       message = `Há limite de ${formatted} contrato${plural} nesta moeda, escolha outra.`;
       color = 'var(--danger)';
+    } else if (warn && /exceeds the maximum order amount allowed for a single order/i.test(warn)) {
+      const testedQuoteText = Number.isFinite(testedQuote) ? formatTwoDecimals(testedQuote) : '50.00';
+      message = `Há limite de contratos para esta moeda abaixo de $${testedQuoteText}.`;
+      color = 'var(--danger)';
     } else if (orderError) {
-      const warn = orderError.message || orderError.msg || orderError.error || 'Falha no teste de risco.';
-      message = `Falha ao enviar ordem de teste: ${warn}`;
+      const fallbackWarn = warn || 'Falha no teste de risco.';
+      message = `Falha ao enviar ordem de teste: ${fallbackWarn}`;
       color = 'var(--danger)';
     } else {
       message = 'Não há limites de contratos nesta moeda.';
-      color = '#ffffff';
+      color = 'var(--success)';
       canExecute = true;
     }
   }
   if (execute) execute.disabled = !canExecute;
   if (info) {
-    info.textContent = message;
+    info.textContent = limitSummary ? `${limitSummary} — ${message}` : message;
     info.style.color = color;
   }
 }
@@ -3159,6 +3194,7 @@ async function runRiskDiscovery(inst, { reason = 'manual' } = {}) {
       risk: data?.risk || null,
       testPrice: Number.isFinite(Number(data?.testPrice)) ? Number(data.testPrice) : null,
       testContracts: Number.isFinite(Number(data?.testContracts)) ? Number(data.testContracts) : null,
+      testQuote: Number.isFinite(Number(data?.testQuote)) ? Number(data.testQuote) : null,
       orderError: orderError || null
     };
   } catch (err) {

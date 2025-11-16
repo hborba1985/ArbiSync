@@ -13,6 +13,11 @@ const { MexcFuturesClient } = require('mexc-futures-sdk');
 const config = require('./config');
 const db = require('./db'); // SQLite util
 
+const DEFAULT_RISK_TEST_QUOTE = (() => {
+  const raw = Number(config?.execution?.riskTestQuote);
+  return Number.isFinite(raw) && raw > 0 ? raw : 50;
+})();
+
 const app = express();
 const PORT = 3000;
 
@@ -1310,7 +1315,8 @@ async function autoDiscoverMeta(symbol) {
     marginPct: Number(config.execution?.marginPct ?? 10),
     leverage: Number(config.mexc?.leverage ?? 1),
     gateOpenExtraPct: Number(config.execution?.gateOpenExtraPct ?? 0),
-    minCloseResidualQuote: Number(config.execution?.minCloseResidualQuote ?? 4)
+    minCloseResidualQuote: Number(config.execution?.minCloseResidualQuote ?? 4),
+    riskTestQuote: DEFAULT_RISK_TEST_QUOTE
   };
   return { symbolSpot: symbol, symbolFut: symbol, gate, bitget, mexc, settings };
 }
@@ -2658,6 +2664,7 @@ app.post('/api/mexc-discover-risk', async (req, res) => {
     const spotInfo = getSpotInfo(spotKey);
     const meta = await getMergedMeta(symbol);
     const leverage = Number(meta?.settings?.leverage || 1) || 1;
+    const riskSettings = meta?.settings || {};
     const cs = Number(meta?.mexc?.contractSize || 1) || 1;
     const minContracts = Number(meta?.mexc?.minContracts || 1) || 1;
     const priceScale = Number(meta?.mexc?.priceScale || 2);
@@ -2697,7 +2704,10 @@ app.post('/api/mexc-discover-risk', async (req, res) => {
     const normalizedPrice = Number.isFinite(testPriceRaw)
       ? Number(testPriceRaw.toFixed(Math.max(priceScale, 2)))
       : null;
-    const desiredQuote = 50;
+    const desiredQuoteInput = Number(riskSettings?.riskTestQuote);
+    const desiredQuote = (Number.isFinite(desiredQuoteInput) && desiredQuoteInput > 0)
+      ? desiredQuoteInput
+      : DEFAULT_RISK_TEST_QUOTE;
     const tolerance = desiredQuote * 0.05;
     let contracts = Math.max(minContracts, 1);
     if (Number.isFinite(normalizedPrice) && normalizedPrice > 0 && Number.isFinite(cs) && cs > 0) {
@@ -2781,7 +2791,8 @@ app.post('/api/mexc-discover-risk', async (req, res) => {
       baseLimit,
       quoteLimit,
       testPrice: normalizedPrice,
-      testContracts: contracts
+      testContracts: contracts,
+      testQuote: desiredQuote
     });
   } catch (err) {
     console.error('[ERRO /api/mexc-discover-risk]:', err?.response?.data || err?.message || err);
