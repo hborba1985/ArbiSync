@@ -21,6 +21,20 @@ const DEFAULT_RISK_TEST_QUOTE = (() => {
 const app = express();
 const PORT = 3000;
 
+const MONITORING_DEFAULT_SYMBOLS = ['CPOOL_USDT', 'MAT_USDT', 'FARM_USDT'];
+const MONITORING_DEFAULT_LABELS = {
+  CPOOL_USDT: 'Clearpool',
+  MAT_USDT: 'Mycelium',
+  FARM_USDT: 'Harvest Finance'
+};
+
+const monitoringHttp = axios.create({
+  timeout: 9000,
+  headers: {
+    'User-Agent': 'ArbiSync-Monitor/1.0'
+  }
+});
+
 const SPOT_EXCHANGES = {
   gate: { key: 'gate', label: 'Gate.io' },
   bitget: { key: 'bitget', label: 'Bitget' }
@@ -3937,6 +3951,422 @@ async function pollOpenOrders() {
 setInterval(() => {
   pollOpenOrders().catch(err => console.error('[POLL]', err));
 }, 4000);
+
+function normalizeMonitoringSymbol(value) {
+  if (!value && value !== 0) return null;
+  const str = String(value).trim().toUpperCase();
+  if (!str) return null;
+  if (str.includes('-')) return str.replace(/-/g, '_');
+  if (str.includes('_')) return str;
+  const match = str.match(/^([A-Z0-9]+)(USDT)$/);
+  if (match) return `${match[1]}_${match[2]}`;
+  return str;
+}
+
+function buildSymbolMeta(raw) {
+  const normalized = normalizeMonitoringSymbol(raw);
+  if (!normalized) return null;
+  const [base, quote] = normalized.split('_');
+  if (!base || !quote) return null;
+  const baseUpper = base.toUpperCase();
+  const quoteUpper = quote.toUpperCase();
+  const compact = `${baseUpper}${quoteUpper}`;
+  return {
+    symbol: `${baseUpper}_${quoteUpper}`,
+    base: baseUpper,
+    quote: quoteUpper,
+    compact,
+    dashed: `${baseUpper}-${quoteUpper}`,
+    gateSpot: `${baseUpper}_${quoteUpper}`,
+    gateFutures: `${baseUpper}_${quoteUpper}`,
+    mexcSpot: `${baseUpper}${quoteUpper}`,
+    mexcFutures: `${baseUpper}_${quoteUpper}`,
+    bitgetSpot: `${compact}_SPBL`,
+    bitgetFutures: `${compact}_UMCBL`,
+    kucoinFutures: `${compact}M`,
+    bybit: compact
+  };
+}
+
+function toNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function describeAxiosError(err) {
+  if (!err) return 'erro desconhecido';
+  if (err.response) {
+    const { status, statusText, data } = err.response;
+    const prefix = [status, statusText].filter(Boolean).join(' ').trim();
+    if (typeof data === 'string') {
+      return [prefix, data.slice(0, 160)].filter(Boolean).join(' — ');
+    }
+    if (data && typeof data === 'object') {
+      return [prefix, JSON.stringify(data).slice(0, 160)].filter(Boolean).join(' — ');
+    }
+    return prefix || err.message || 'erro HTTP';
+  }
+  return err.message || String(err);
+}
+
+async function fetchGateSpotTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/spot/tickers', {
+    params: { currency_pair: meta.gateSpot }
+  });
+  const payload = Array.isArray(data) ? data[0] : data;
+  if (!payload) throw new Error('Resposta vazia');
+  return {
+    bid: toNumber(payload.highest_bid),
+    ask: toNumber(payload.lowest_ask),
+    last: toNumber(payload.last),
+    volume: toNumber(payload.quote_volume ?? payload.base_volume),
+    changePct: toNumber(payload.change_percentage)
+  };
+}
+
+async function fetchMexcSpotTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.mexc.com/api/v3/ticker/24hr', {
+    params: { symbol: meta.mexcSpot }
+  });
+  if (!data || data.code) throw new Error(data?.msg || 'Sem dados MEXC');
+  return {
+    bid: toNumber(data.bidPrice),
+    ask: toNumber(data.askPrice),
+    last: toNumber(data.lastPrice),
+    volume: toNumber(data.quoteVolume),
+    changePct: toNumber(data.priceChangePercent)
+  };
+}
+
+async function fetchBitgetSpotTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/spot/v1/market/ticker', {
+    params: { symbol: meta.bitgetSpot }
+  });
+  if (!data || data.code !== '00000' || !data.data) {
+    throw new Error(data?.msg || 'Erro Bitget spot');
+  }
+  const payload = data.data;
+  return {
+    bid: toNumber(payload.buyOne),
+    ask: toNumber(payload.sellOne),
+    last: toNumber(payload.close),
+    volume: toNumber(payload.usdtVol ?? payload.quoteVol),
+    changePct: toNumber(payload.change ?? payload.changeUtc)
+  };
+}
+
+async function fetchKucoinSpotTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.kucoin.com/api/v1/market/stats', {
+    params: { symbol: meta.dashed }
+  });
+  if (!data || data.code !== '200000' || !data.data) {
+    throw new Error(data?.msg || 'Erro KuCoin spot');
+  }
+  const payload = data.data;
+  return {
+    bid: toNumber(payload.buy),
+    ask: toNumber(payload.sell),
+    last: toNumber(payload.last),
+    volume: toNumber(payload.volValue),
+    changePct: toNumber(payload.changeRate) ? toNumber(payload.changeRate) * 100 : null
+  };
+}
+
+async function fetchBinanceSpotTicker(meta) {
+  const { data } = await monitoringHttp.get('https://data-api.binance.vision/api/v3/ticker/24hr', {
+    params: { symbol: meta.compact }
+  });
+  if (data?.code && data?.code !== 200) throw new Error(data.msg || 'Erro Binance spot');
+  if (!data?.lastPrice) throw new Error('Ticker indisponível');
+  return {
+    bid: toNumber(data.bidPrice),
+    ask: toNumber(data.askPrice),
+    last: toNumber(data.lastPrice),
+    volume: toNumber(data.quoteVolume),
+    changePct: toNumber(data.priceChangePercent)
+  };
+}
+
+async function fetchBybitSpotTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.bybit.com/v5/market/tickers', {
+    params: { category: 'spot', symbol: meta.bybit }
+  });
+  if (data?.retCode !== 0) throw new Error(data?.retMsg || 'Erro Bybit spot');
+  const first = data?.result?.list?.[0];
+  if (!first) throw new Error('Ticker não encontrado');
+  return {
+    bid: toNumber(first.bid1Price),
+    ask: toNumber(first.ask1Price),
+    last: toNumber(first.lastPrice),
+    volume: toNumber(first.turnover24h),
+    changePct: toNumber(first.price24hPcnt) ? toNumber(first.price24hPcnt) * 100 : null
+  };
+}
+
+async function fetchGateFuturesTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/tickers', {
+    params: { contract: meta.gateFutures }
+  });
+  const payload = Array.isArray(data) ? data[0] : data;
+  if (!payload) throw new Error('Resposta vazia');
+  return {
+    bid: toNumber(payload.highest_bid),
+    ask: toNumber(payload.lowest_ask),
+    last: toNumber(payload.last),
+    volume: toNumber(payload.volume_24h_quote ?? payload.volume_24h),
+    fundingRate: toNumber(payload.funding_rate),
+    changePct: toNumber(payload.change_percentage)
+  };
+}
+
+async function fetchMexcFuturesTicker(meta) {
+  const { data } = await monitoringHttp.get('https://contract.mexc.com/api/v1/contract/ticker', {
+    params: { symbol: meta.mexcFutures }
+  });
+  if (!data || data.code !== 0 || !data.data) throw new Error(data?.msg || 'Erro MEXC futures');
+  const payload = data.data;
+  return {
+    bid: toNumber(payload.bid1),
+    ask: toNumber(payload.ask1),
+    last: toNumber(payload.lastPrice),
+    volume: toNumber(payload.amount24),
+    fundingRate: toNumber(payload.fundingRate),
+    changePct: toNumber(payload.riseFallRate) ? toNumber(payload.riseFallRate) * 100 : null
+  };
+}
+
+async function fetchBitgetFuturesTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/mix/v1/market/ticker', {
+    params: { symbol: meta.bitgetFutures }
+  });
+  if (!data || data.code !== '00000' || !data.data) {
+    throw new Error(data?.msg || 'Erro Bitget futures');
+  }
+  const payload = data.data;
+  return {
+    bid: toNumber(payload.bestBid),
+    ask: toNumber(payload.bestAsk),
+    last: toNumber(payload.last),
+    volume: toNumber(payload.quoteVolume ?? payload.usdtVolume),
+    fundingRate: toNumber(payload.fundingRate),
+    changePct: toNumber(payload.priceChangePercent)
+  };
+}
+
+async function fetchKucoinFuturesTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api-futures.kucoin.com/api/v1/ticker', {
+    params: { symbol: meta.kucoinFutures }
+  });
+  if (!data || data.code !== '200000' || !data.data) {
+    throw new Error(data?.msg || 'Erro KuCoin futures');
+  }
+  const payload = data.data;
+  return {
+    bid: toNumber(payload.bestBidPrice),
+    ask: toNumber(payload.bestAskPrice),
+    last: toNumber(payload.price),
+    volume: toNumber(payload.turnover),
+    fundingRate: toNumber(payload.fundingRate),
+    changePct: toNumber(payload.changeRate) ? toNumber(payload.changeRate) * 100 : null
+  };
+}
+
+async function fetchBinanceFuturesTicker(meta) {
+  const { data } = await monitoringHttp.get('https://fapi.binance.com/fapi/v1/ticker/24hr', {
+    params: { symbol: meta.compact }
+  });
+  if (data?.code && data?.code !== 200) throw new Error(data.msg || 'Erro Binance futures');
+  if (!data?.lastPrice) throw new Error('Ticker indisponível');
+  return {
+    bid: toNumber(data.bidPrice),
+    ask: toNumber(data.askPrice),
+    last: toNumber(data.lastPrice),
+    volume: toNumber(data.quoteVolume),
+    fundingRate: null,
+    changePct: toNumber(data.priceChangePercent)
+  };
+}
+
+async function fetchBybitFuturesTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.bybit.com/v5/market/tickers', {
+    params: { category: 'linear', symbol: meta.bybit }
+  });
+  if (data?.retCode !== 0) throw new Error(data?.retMsg || 'Erro Bybit futures');
+  const payload = data?.result?.list?.[0];
+  if (!payload) throw new Error('Ticker não encontrado');
+  return {
+    bid: toNumber(payload.bid1Price),
+    ask: toNumber(payload.ask1Price),
+    last: toNumber(payload.lastPrice),
+    volume: toNumber(payload.turnover24h),
+    fundingRate: toNumber(payload.fundingRate),
+    changePct: toNumber(payload.price24hPcnt) ? toNumber(payload.price24hPcnt) * 100 : null
+  };
+}
+
+const monitoringSpotProviders = [
+  { key: 'gate_spot', label: 'Gate.io', type: 'spot', fetch: fetchGateSpotTicker },
+  { key: 'mexc_spot', label: 'MEXC', type: 'spot', fetch: fetchMexcSpotTicker },
+  { key: 'bitget_spot', label: 'Bitget', type: 'spot', fetch: fetchBitgetSpotTicker },
+  { key: 'kucoin_spot', label: 'KuCoin', type: 'spot', fetch: fetchKucoinSpotTicker },
+  { key: 'binance_spot', label: 'Binance', type: 'spot', fetch: fetchBinanceSpotTicker },
+  { key: 'bybit_spot', label: 'Bybit', type: 'spot', fetch: fetchBybitSpotTicker }
+];
+
+const monitoringFuturesProviders = [
+  { key: 'gate_futures', label: 'Gate.io Futures', type: 'futures', fetch: fetchGateFuturesTicker },
+  { key: 'mexc_futures', label: 'MEXC Futures', type: 'futures', fetch: fetchMexcFuturesTicker },
+  { key: 'bitget_futures', label: 'Bitget Futures', type: 'futures', fetch: fetchBitgetFuturesTicker },
+  { key: 'kucoin_futures', label: 'KuCoin Futures', type: 'futures', fetch: fetchKucoinFuturesTicker },
+  { key: 'binance_futures', label: 'Binance Futures', type: 'futures', fetch: fetchBinanceFuturesTicker },
+  { key: 'bybit_futures', label: 'Bybit Futures', type: 'futures', fetch: fetchBybitFuturesTicker }
+];
+
+async function fetchMonitoringTicker(provider, meta) {
+  try {
+    const payload = await provider.fetch(meta);
+    return { key: provider.key, exchange: provider.label, type: provider.type, symbol: meta.symbol, ...payload };
+  } catch (err) {
+    return {
+      key: provider.key,
+      exchange: provider.label,
+      type: provider.type,
+      symbol: meta.symbol,
+      error: describeAxiosError(err)
+    };
+  }
+}
+
+function pickBestSpot(tickers) {
+  return tickers
+    .filter((ticker) => !ticker.error && Number.isFinite(ticker.ask) && ticker.ask > 0)
+    .reduce((best, ticker) => (!best || ticker.ask < best.ask ? ticker : best), null);
+}
+
+function pickBestFutures(tickers) {
+  return tickers
+    .filter((ticker) => !ticker.error && Number.isFinite(ticker.bid))
+    .reduce((best, ticker) => (!best || ticker.bid > best.bid ? ticker : best), null);
+}
+
+function buildMonitoringMetrics(spotTickers, futuresTickers, historyPoints) {
+  const bestSpot = pickBestSpot(spotTickers);
+  const bestFutures = pickBestFutures(futuresTickers);
+  let arbPct = null;
+  if (bestSpot && bestFutures && bestSpot.ask > 0) {
+    arbPct = ((bestFutures.bid - bestSpot.ask) / bestSpot.ask) * 100;
+  }
+  const volume24h = spotTickers.reduce((acc, ticker) => acc + (Number.isFinite(ticker.volume) ? ticker.volume : 0), 0);
+  const fundingRates = futuresTickers
+    .map((ticker) => ticker.fundingRate)
+    .filter((value) => Number.isFinite(value));
+  const fundingRate = fundingRates.length ? fundingRates.reduce((sum, value) => sum + value, 0) / fundingRates.length : null;
+  const arbValues = historyPoints.map((point) => toNumber(point.arbPct)).filter((value) => Number.isFinite(value));
+  const volatilityPct = arbValues.length ? Math.max(...arbValues) - Math.min(...arbValues) : null;
+  const stability = Number.isFinite(volatilityPct) ? (volatilityPct > 6 ? 'Volátil' : 'Estável') : 'Indefinido';
+  let riskLabel = 'Indefinido';
+  if (Number.isFinite(volatilityPct)) {
+    if (volatilityPct > 10) riskLabel = 'Alto';
+    else if (volatilityPct > 5) riskLabel = 'Médio';
+    else riskLabel = 'Baixo';
+  }
+  const depthLabel = volume24h >= 1_000_000 ? 'Alta' : volume24h >= 300_000 ? 'Média' : 'Baixa';
+  return {
+    arbPct,
+    bestSpotExchange: bestSpot?.exchange || null,
+    bestFuturesExchange: bestFutures?.exchange || null,
+    volume24h,
+    depthLabel,
+    fundingRate,
+    volatilityPct,
+    stability,
+    riskLabel
+  };
+}
+
+async function fetchArbHistory(meta) {
+  try {
+    const [spotResp, futuresResp] = await Promise.all([
+      monitoringHttp.get('https://api.gateio.ws/api/v4/spot/candlesticks', {
+        params: { currency_pair: meta.gateSpot, interval: '1h', limit: 24 }
+      }),
+      monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/candlesticks', {
+        params: { contract: meta.gateFutures, interval: '1h', limit: 24 }
+      })
+    ]);
+    const spotCandles = Array.isArray(spotResp.data) ? spotResp.data : [];
+    const futuresCandles = Array.isArray(futuresResp.data) ? futuresResp.data : [];
+    const futuresByTs = new Map();
+    for (const candle of futuresCandles) {
+      const ts = Number(candle?.t);
+      if (Number.isFinite(ts)) futuresByTs.set(ts, candle);
+    }
+    const points = [];
+    for (const entry of spotCandles) {
+      const ts = Number(entry?.[0]);
+      if (!Number.isFinite(ts)) continue;
+      const futuresEntry = futuresByTs.get(ts);
+      if (!futuresEntry) continue;
+      const spotOpen = toNumber(entry?.[5]);
+      const spotClose = toNumber(entry?.[2]);
+      const futuresOpen = toNumber(futuresEntry?.o);
+      const futuresClose = toNumber(futuresEntry?.c);
+      if (!Number.isFinite(spotClose) || !Number.isFinite(futuresClose) || spotClose <= 0) continue;
+      const closeArb = ((futuresClose - spotClose) / spotClose) * 100;
+      const openArb = Number.isFinite(spotOpen) && Number.isFinite(futuresOpen) && spotOpen > 0
+        ? ((futuresOpen - spotOpen) / spotOpen) * 100
+        : closeArb;
+      points.push({
+        timestamp: ts * 1000,
+        arbPct: Number(closeArb.toFixed(4)),
+        openArbPct: Number(openArb.toFixed(4)),
+        spotVolume: toNumber(entry?.[6] ?? entry?.[1]),
+        futuresVolume: toNumber(futuresEntry?.sum ?? futuresEntry?.v)
+      });
+    }
+    points.sort((a, b) => a.timestamp - b.timestamp);
+    return points;
+  } catch (err) {
+    console.warn('[monitoring] histórico indisponível', meta.symbol, err.message || err);
+    return [];
+  }
+}
+
+async function fetchMonitoringSymbol(symbolInput) {
+  const meta = buildSymbolMeta(symbolInput);
+  if (!meta) return { symbol: null, error: 'Símbolo inválido' };
+  const [spot, futures, history] = await Promise.all([
+    Promise.all(monitoringSpotProviders.map((provider) => fetchMonitoringTicker(provider, meta))),
+    Promise.all(monitoringFuturesProviders.map((provider) => fetchMonitoringTicker(provider, meta))),
+    fetchArbHistory(meta)
+  ]);
+  return {
+    symbol: meta.symbol,
+    label: MONITORING_DEFAULT_LABELS[meta.symbol] || meta.symbol,
+    spot,
+    futures,
+    metrics: buildMonitoringMetrics(spot, futures, history),
+    history: { interval: '1h', source: 'Gate.io', points: history }
+  };
+}
+
+app.get('/api/monitoring/markets', async (req, res) => {
+  try {
+    const symbolsParam = String(req.query.symbols || '').trim();
+    const requested = symbolsParam
+      ? symbolsParam.split(',').map((s) => normalizeMonitoringSymbol(s)).filter(Boolean)
+      : MONITORING_DEFAULT_SYMBOLS;
+    const uniqueSymbols = Array.from(new Set(requested));
+    if (!uniqueSymbols.length) {
+      return res.json({ updatedAt: new Date().toISOString(), symbols: [] });
+    }
+    const results = await Promise.all(uniqueSymbols.map((symbol) => fetchMonitoringSymbol(symbol)));
+    res.json({ updatedAt: new Date().toISOString(), symbols: results });
+  } catch (err) {
+    console.error('[monitoring] erro ao coletar mercados', err);
+    res.status(500).json({ error: err.message || err });
+  }
+});
 
 app.get('/api/history', async (_req, res) => {
   try { await pollOpenOrders(); } catch {}
