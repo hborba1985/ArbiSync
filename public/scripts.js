@@ -22,6 +22,16 @@ let spreadSeriesBySpot = new Map();
 let lastSpreadFetchBySpot = new Map();
 let lastRequestedSpotKey = null;
 let spotGuardUntil = 0;
+let hasOpenPosition = false;
+const spreadLegendControls = new Map();
+let newInstancePopoverEl = null;
+let newInstanceFormEl = null;
+let newInstanceSymbolEl = null;
+let newInstanceSpotEl = null;
+let newInstanceCancelEl = null;
+let newInstanceAnchorEl = null;
+let newInstanceDocListenerBound = false;
+let newInstanceKeyListenerBound = false;
 
 const instances = new Map();
 let activeInstanceId = null;
@@ -31,14 +41,42 @@ const DEFAULT_DATASET_VISIBILITY = {
   open: true,
   close: false,
   positionArb: false,
-  openVol0: false,
-  openVol1: false,
-  openVol2: false,
-  closeVol0: false,
-  closeVol1: false,
-  closeVol2: false,
+  spotOpenVol0: false,
+  spotOpenVol1: false,
+  spotOpenVol2: false,
+  mexcOpenVol0: false,
+  mexcOpenVol1: false,
+  mexcOpenVol2: false,
+  spotCloseVol0: false,
+  spotCloseVol1: false,
+  spotCloseVol2: false,
+  mexcCloseVol0: false,
+  mexcCloseVol1: false,
+  mexcCloseVol2: false,
   cross: false
 };
+
+const VOLUME_LABEL_TEMPLATES = {
+  spotOpenVol0: (spot) => `Vol. abertura ${spot} Nível 1`,
+  spotOpenVol1: (spot) => `Vol. abertura ${spot} Nível 2`,
+  spotOpenVol2: (spot) => `Vol. abertura ${spot} Nível 3`,
+  spotCloseVol0: (spot) => `Vol. fechamento ${spot} Nível 1`,
+  spotCloseVol1: (spot) => `Vol. fechamento ${spot} Nível 2`,
+  spotCloseVol2: (spot) => `Vol. fechamento ${spot} Nível 3`
+};
+
+const SPREAD_LEGEND_GROUPS = [
+  { id: 'spot-open', titleHtml: 'Vol. <span data-spot-label></span> — Abertura', datasetIds: ['spotOpenVol0', 'spotOpenVol1', 'spotOpenVol2'] },
+  { id: 'mexc-open', title: 'Vol. MEXC — Abertura', datasetIds: ['mexcOpenVol0', 'mexcOpenVol1', 'mexcOpenVol2'] },
+  { id: 'spot-close', titleHtml: 'Vol. <span data-spot-label></span> — Fechamento', datasetIds: ['spotCloseVol0', 'spotCloseVol1', 'spotCloseVol2'] },
+  { id: 'mexc-close', title: 'Vol. MEXC — Fechamento', datasetIds: ['mexcCloseVol0', 'mexcCloseVol1', 'mexcCloseVol2'] },
+  { id: 'core', title: 'Linhas principais', datasetIds: ['open', 'close', 'positionArb', 'cross'] }
+];
+
+function normalizeSpotKey(value) {
+  const normalized = String(value || '').toLowerCase();
+  return normalized === 'bitget' ? 'bitget' : 'gate';
+}
 
 function createDefaultDatasetVisibility() {
   return { ...DEFAULT_DATASET_VISIBILITY };
@@ -154,6 +192,14 @@ function ensureInstanceState(inst) {
   if (typeof state.metaLoading !== 'boolean') state.metaLoading = false;
   if (!state.hasOwnProperty('meta')) state.meta = state.meta || null;
   if (!state.hasOwnProperty('lastQuotes')) state.lastQuotes = state.lastQuotes || null;
+  if (!state.executionLogOpenState || typeof state.executionLogOpenState !== 'object') state.executionLogOpenState = {};
+  if (!state.riskDiscovery || typeof state.riskDiscovery !== 'object') {
+    state.riskDiscovery = { status: 'idle', lastSymbol: null, lastSpot: null, result: null, error: null };
+  }
+  if (!state.positionPayload) {
+    state.positionPayload = createEmptyPositionPayload(inst.symbol || currentSymbol || 'BASE_USDT', inst.spotExchange || getSpotKey());
+  }
+  if (typeof state.hasOpenPosition !== 'boolean') state.hasOpenPosition = false;
 
   const configSource = state.alertConfig || inst.alertConfig;
   state.alertConfig = createDefaultAlertConfig(configSource);
@@ -182,7 +228,6 @@ function resetInstanceDataState(inst) {
 
 function captureChartVisibilityToState(state) {
   if (!state || !spreadChart) return;
-  if (spreadFilter !== 'all') return;
   const visibility = state.datasetVisibility || createDefaultDatasetVisibility();
   spreadChart.data.datasets.forEach((dataset, idx) => {
     const meta = spreadChart.getDatasetMeta(idx);
@@ -194,7 +239,6 @@ function captureChartVisibilityToState(state) {
 
 function applyChartVisibilityFromState(state) {
   if (!state || !spreadChart) return;
-  if (spreadFilter !== 'all') return;
   const visibility = state.datasetVisibility || createDefaultDatasetVisibility();
   spreadChart.data.datasets.forEach((dataset, idx) => {
     const visible = visibility[dataset.id];
@@ -401,16 +445,110 @@ function renderInstanceTabs() {
       removeInstance(id);
     });
   });
-  addBtn.addEventListener('click', () => {
-    const suggested = getActiveInstance()?.symbol || 'BASE_USDT';
-    const raw = prompt('Qual símbolo deseja negociar? (ex.: MGO_USDT)', suggested);
-    if (!raw) return;
-    const sym = raw.trim().toUpperCase();
-    if (!sym.includes('_')) {
-      alert('Use o formato BASE_QUOTE, por exemplo MGO_USDT.');
-      return;
+  bindNewInstanceButton(addBtn);
+}
+
+function ensureNewInstanceElements() {
+  if (!newInstancePopoverEl) newInstancePopoverEl = document.getElementById('newInstancePopover');
+  if (!newInstanceFormEl) newInstanceFormEl = document.getElementById('newInstanceForm');
+  if (!newInstanceSymbolEl) newInstanceSymbolEl = document.getElementById('newInstanceSymbol');
+  if (!newInstanceSpotEl) newInstanceSpotEl = document.getElementById('newInstanceSpot');
+  if (!newInstanceCancelEl) newInstanceCancelEl = document.getElementById('newInstanceCancel');
+  return !!(newInstancePopoverEl && newInstanceFormEl && newInstanceSymbolEl && newInstanceSpotEl);
+}
+
+function positionNewInstancePopover(anchor) {
+  if (!ensureNewInstanceElements() || !anchor) return;
+  const rect = anchor.getBoundingClientRect();
+  const top = window.scrollY + rect.bottom + 8;
+  const left = window.scrollX + rect.left;
+  newInstancePopoverEl.style.top = `${top}px`;
+  newInstancePopoverEl.style.left = `${left}px`;
+}
+
+function hideNewInstancePopover() {
+  if (!ensureNewInstanceElements()) return;
+  newInstancePopoverEl.classList.remove('open');
+  newInstancePopoverEl.setAttribute('aria-hidden', 'true');
+  newInstanceAnchorEl = null;
+}
+
+function handleNewInstanceDocumentClick(ev) {
+  if (!newInstancePopoverEl || !newInstancePopoverEl.classList.contains('open')) return;
+  if (newInstancePopoverEl.contains(ev.target)) return;
+  if (newInstanceAnchorEl && newInstanceAnchorEl.contains(ev.target)) return;
+  hideNewInstancePopover();
+}
+
+function handleNewInstanceKeydown(ev) {
+  if (ev.key === 'Escape') hideNewInstancePopover();
+}
+
+function bindNewInstanceFormHandlers() {
+  if (!ensureNewInstanceElements()) return;
+  if (!newInstanceFormEl.dataset.bound) {
+    newInstanceFormEl.dataset.bound = '1';
+    newInstanceFormEl.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (!ensureNewInstanceElements()) return;
+      const rawSymbol = newInstanceSymbolEl.value.trim().toUpperCase();
+      if (!rawSymbol || !rawSymbol.includes('_')) {
+        alert('Use o formato BASE_QUOTE, por exemplo MGO_USDT.');
+        newInstanceSymbolEl.focus();
+        return;
+      }
+      const spotKey = normalizeSpotKey(newInstanceSpotEl.value || getSpotKey());
+      const inst = addInstance({ symbol: rawSymbol, spotExchange: spotKey, label: rawSymbol, draftSymbol: rawSymbol }, { switchTo: true });
+      if (inst) {
+        hideNewInstancePopover();
+      }
+    });
+  }
+  if (newInstanceCancelEl && newInstanceCancelEl.dataset.bound !== '1') {
+    newInstanceCancelEl.dataset.bound = '1';
+    newInstanceCancelEl.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      hideNewInstancePopover();
+    });
+  }
+  if (!newInstanceDocListenerBound) {
+    document.addEventListener('click', handleNewInstanceDocumentClick);
+    newInstanceDocListenerBound = true;
+  }
+  if (!newInstanceKeyListenerBound) {
+    document.addEventListener('keydown', handleNewInstanceKeydown);
+    newInstanceKeyListenerBound = true;
+  }
+}
+
+function openNewInstancePopover(anchor) {
+  if (!ensureNewInstanceElements()) return;
+  bindNewInstanceFormHandlers();
+  newInstanceAnchorEl = anchor || null;
+  const suggested = (getActiveInstance()?.symbol || currentSymbol || 'BASE_USDT').toUpperCase();
+  newInstanceSymbolEl.value = suggested;
+  newInstanceSpotEl.value = normalizeSpotKey(getSpotKey());
+  positionNewInstancePopover(anchor);
+  newInstancePopoverEl.classList.add('open');
+  newInstancePopoverEl.setAttribute('aria-hidden', 'false');
+  setTimeout(() => {
+    if (newInstanceSymbolEl) {
+      newInstanceSymbolEl.focus();
+      newInstanceSymbolEl.select();
     }
-    addInstance({ symbol: sym, spotExchange: getSpotKey(), label: sym, draftSymbol: sym }, { switchTo: true });
+  }, 0);
+}
+
+function bindNewInstanceButton(button) {
+  if (!button || button.dataset.bound === '1') return;
+  button.dataset.bound = '1';
+  button.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    if (newInstancePopoverEl && newInstancePopoverEl.classList.contains('open') && newInstanceAnchorEl === button) {
+      hideNewInstancePopover();
+    } else {
+      openNewInstancePopover(button);
+    }
   });
 }
 
@@ -419,6 +557,13 @@ function addInstance({ id, symbol, spotExchange, label, draftSymbol, alerts } = 
   const sym = (symbol || 'BASE_USDT').toUpperCase();
   const spot = (spotExchange || getSpotKey() || DEFAULT_SPOT.key).toLowerCase();
   const draft = draftSymbol ? draftSymbol.toUpperCase() : sym;
+  for (const existing of instances.values()) {
+    if (!existing) continue;
+    if ((existing.symbol || '').toUpperCase() === sym && (existing.spotExchange || DEFAULT_SPOT.key) === spot) {
+      alert('Já existe uma aba aberta para este ativo com a mesma corretora SPOT.');
+      return null;
+    }
+  }
   const instance = {
     id: instId,
     symbol: sym,
@@ -498,6 +643,7 @@ function syncActiveInstanceSymbol(sym) {
     if (inst.label !== sym) changed = true;
     inst.label = sym;
   }
+  const symbolChanged = inst.symbol !== prevSymbol;
   if (changed) {
     persistInstances();
     renderInstanceTabs();
@@ -505,6 +651,7 @@ function syncActiveInstanceSymbol(sym) {
   const titleEl = document.getElementById('titleSymbol');
   if (titleEl) titleEl.textContent = sym;
   syncSymbolInput();
+  if (symbolChanged) markRiskDiscoveryStale(inst);
 }
 
 function syncActiveInstanceSpot(key) {
@@ -515,6 +662,7 @@ function syncActiveInstanceSpot(key) {
   inst.spotExchange = normalized;
   persistInstances();
   renderInstanceTabs();
+  markRiskDiscoveryStale(inst);
 }
 
 async function switchInstance(id, { skipPersist = false } = {}) {
@@ -551,6 +699,7 @@ async function switchInstance(id, { skipPersist = false } = {}) {
   spreadPoints = state.spreadPoints;
   lastQuotes = state.lastQuotes;
   applyAlertConfigToUI(state.alertConfig);
+  hasOpenPosition = !!state.hasOpenPosition;
   const inputEl = document.getElementById('symbolInput');
   if (inputEl) inputEl.value = inst.draftSymbol || inst.symbol || '';
   setSpotExchangeState({ key: inst.spotExchange });
@@ -567,6 +716,7 @@ async function switchInstance(id, { skipPersist = false } = {}) {
   renderSpreadChart();
   renderQuotes();
   applyChartVisibilityFromState(state);
+  restorePositionFromInstance(inst);
 
   try {
     const normalized = await setSymbol(inst.symbol, inst.spotExchange);
@@ -581,8 +731,11 @@ async function switchInstance(id, { skipPersist = false } = {}) {
         if (state) {
           state.meta = null;
           state.metaSymbol = null;
+          state.positionPayload = createEmptyPositionPayload(normalized, inst.spotExchange);
+          state.hasOpenPosition = false;
         }
         ensureInstanceMeta(inst);
+        restorePositionFromInstance(inst);
       }
     }
   } catch (e) {
@@ -603,10 +756,12 @@ async function switchInstance(id, { skipPersist = false } = {}) {
     await fetchSpreadData(true, getSpotKey());
     await refreshHistory();
     await refreshPosition();
+    ensureRiskDiscoveryForActiveInstance();
   } finally {
     switchingInstance = false;
   }
   startInstanceWatchers(inst);
+  ensureRiskDiscoveryForActiveInstance();
 }
 
 function getSpotLabel() {
@@ -742,6 +897,132 @@ function formatTwoDecimals(value) {
   return value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
+function formatSpreadTimestamp(ts) {
+  const num = Number(ts);
+  if (!Number.isFinite(num)) return '';
+  const date = new Date(num);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (val) => String(val).padStart(2, '0');
+  const day = pad(date.getDate());
+  const month = pad(date.getMonth() + 1);
+  const hours = pad(date.getHours());
+  const minutes = pad(date.getMinutes());
+  return `${day}/${month} ${hours}:${minutes}`;
+}
+
+function clonePositionPayload(payload, symbol, spot) {
+  const base = payload && typeof payload === 'object' ? payload : {};
+  const rawState = base.state && typeof base.state === 'object' ? base.state : {};
+  const normalizedSymbol = (rawState.symbol || symbol || currentSymbol || 'BASE_USDT').toUpperCase();
+  const normalizedSpot = normalizeSpotKey(rawState.spotExchange || spot || getSpotKey());
+  const gateRaw = rawState.gate && typeof rawState.gate === 'object' ? rawState.gate : {};
+  const mexcRaw = rawState.mexc && typeof rawState.mexc === 'object' ? rawState.mexc : {};
+  const gateFilled = toNumberOrNull(gateRaw.filledQty);
+  const mexcFilled = toNumberOrNull(mexcRaw.filledQty);
+  const filledQtyRaw = toNumberOrNull(rawState.filledQty);
+  const state = {
+    ...rawState,
+    symbol: normalizedSymbol,
+    spotExchange: normalizedSpot,
+    targetQty: toNumberOrNull(rawState.targetQty) ?? 0,
+    filledQty: Number.isFinite(filledQtyRaw)
+      ? filledQtyRaw
+      : (Number.isFinite(gateFilled) ? gateFilled : (Number.isFinite(mexcFilled) ? mexcFilled : 0)),
+    arbPctAvg: toNumberOrNull(rawState.arbPctAvg),
+    pnlUsd: toNumberOrNull(rawState.pnlUsd),
+    gate: {
+      ...gateRaw,
+      filledQty: gateFilled ?? 0,
+      avgPrice: toNumberOrNull(gateRaw.avgPrice),
+      exchange: normalizedSpot
+    },
+    mexc: {
+      ...mexcRaw,
+      filledQty: mexcFilled ?? 0,
+      avgPrice: toNumberOrNull(mexcRaw.avgPrice),
+      positionId: mexcRaw.positionId ?? null
+    },
+    series: Array.isArray(rawState.series) ? rawState.series : [],
+    trades: Array.isArray(rawState.trades) ? rawState.trades : []
+  };
+  const summaries = Array.isArray(base.summaries) ? base.summaries.slice() : [];
+  return { state, summaries };
+}
+
+function createEmptyPositionPayload(symbol, spot) {
+  const normalizedSymbol = (symbol || currentSymbol || 'BASE_USDT').toUpperCase();
+  const normalizedSpot = normalizeSpotKey(spot || getSpotKey());
+  return clonePositionPayload({
+    state: {
+      symbol: normalizedSymbol,
+      spotExchange: normalizedSpot,
+      targetQty: 0,
+      filledQty: 0,
+      arbPctAvg: null,
+      pnlUsd: null,
+      gate: { filledQty: 0, avgPrice: null, exchange: normalizedSpot },
+      mexc: { filledQty: 0, avgPrice: null, positionId: null },
+      series: [],
+      trades: []
+    },
+    summaries: []
+  }, normalizedSymbol, normalizedSpot);
+}
+
+function applyPositionPayloadToUI(payload, { fallbackSymbol, fallbackSpot } = {}) {
+  const normalizedPayload = payload && payload.state ? payload : clonePositionPayload(payload, fallbackSymbol, fallbackSpot);
+  const state = normalizedPayload.state || {};
+  const symbol = (state.symbol || fallbackSymbol || currentSymbol || '').toUpperCase();
+  const baseSymbol = symbol && symbol.includes('_') ? symbol.split('_')[0] : (symbol || getCurrentBaseSymbol());
+  const gate = state.gate || {};
+  const mexc = state.mexc || {};
+  const targetQty = toNumberOrNull(state.targetQty);
+  const gateFilled = toNumberOrNull(gate.filledQty);
+  const gateAvg = toNumberOrNull(gate.avgPrice);
+  const mexcFilled = toNumberOrNull(mexc.filledQty);
+  const mexcAvg = toNumberOrNull(mexc.avgPrice);
+  const arbPct = toNumberOrNull(state.arbPctAvg);
+  const pnl = toNumberOrNull(state.pnlUsd);
+  const totalFilledRaw = toNumberOrNull(state.filledQty);
+  const totalFilled = Number.isFinite(totalFilledRaw)
+    ? totalFilledRaw
+    : Math.max(gateFilled ?? 0, mexcFilled ?? 0);
+  const prevHasOpen = hasOpenPosition;
+  const computedHasOpen = (Number(gateFilled) || 0) > 0 || (Number(mexcFilled) || 0) > 0;
+  hasOpenPosition = computedHasOpen;
+  if (prevHasOpen !== hasOpenPosition) renderSpreadChart();
+
+  const targetEl = document.getElementById('ppTarget');
+  if (targetEl) targetEl.textContent = formatVolumeValue(targetQty, 6, baseSymbol);
+  const gateFilledEl = document.getElementById('ppGateFilled');
+  if (gateFilledEl) gateFilledEl.textContent = formatVolumeValue(gateFilled, 6, baseSymbol);
+  const gateAvgEl = document.getElementById('ppGateAvg');
+  if (gateAvgEl) gateAvgEl.textContent = formatNumberValue(gateAvg, 8);
+  const mexcFilledEl = document.getElementById('ppMexcFilled');
+  if (mexcFilledEl) mexcFilledEl.textContent = formatVolumeValue(mexcFilled, 6, baseSymbol);
+  const mexcAvgEl = document.getElementById('ppMexcAvg');
+  if (mexcAvgEl) mexcAvgEl.textContent = formatNumberValue(mexcAvg, 8);
+  const arbEl = document.getElementById('ppArb');
+  if (arbEl) arbEl.textContent = formatDiffValue(arbPct, 4);
+  const pnlEl = document.getElementById('ppPnl');
+  if (pnlEl) pnlEl.textContent = formatTwoDecimals(pnl);
+
+  updateProgressBar(targetQty, totalFilled);
+  fillPositionForm(state);
+  renderPositionSummaries(normalizedPayload.summaries || []);
+
+  return { hasOpen: computedHasOpen, payload: normalizedPayload };
+}
+
+function restorePositionFromInstance(inst) {
+  if (!inst) return;
+  const state = ensureInstanceState(inst);
+  if (!state) return;
+  const payload = state.positionPayload || createEmptyPositionPayload(inst.symbol, inst.spotExchange);
+  const applied = applyPositionPayloadToUI(payload, { fallbackSymbol: inst.symbol, fallbackSpot: inst.spotExchange });
+  state.hasOpenPosition = applied.hasOpen;
+}
+
 function formatDuration(ms) {
   const num = Number(ms);
   if (!Number.isFinite(num) || num < 0) return '—';
@@ -793,6 +1074,9 @@ function renderExecutionLogs(historyItems) {
   const container = document.getElementById('executionLogs');
   if (!container) return;
   container.innerHTML = '';
+  const inst = getActiveInstance();
+  const instState = ensureInstanceState(inst);
+  const openState = instState?.executionLogOpenState || {};
 
   if (!Array.isArray(historyItems) || historyItems.length === 0) {
     const empty = document.createElement('div');
@@ -823,7 +1107,9 @@ function renderExecutionLogs(historyItems) {
 
     const detailsEl = document.createElement('details');
     detailsEl.className = 'log-block';
-    if (i === 0) detailsEl.open = true;
+    const entryKey = item?.localId || `idx-${i}`;
+    const savedOpen = Object.prototype.hasOwnProperty.call(openState, entryKey) ? !!openState[entryKey] : null;
+    detailsEl.open = savedOpen != null ? savedOpen : (i === 0);
 
     const summary = document.createElement('summary');
     const summaryTitle = document.createElement('span');
@@ -919,7 +1205,18 @@ function renderExecutionLogs(historyItems) {
     }
 
     detailsEl.appendChild(content);
+    detailsEl.addEventListener('toggle', () => {
+      if (!instState) return;
+      if (!instState.executionLogOpenState) instState.executionLogOpenState = {};
+      instState.executionLogOpenState[entryKey] = detailsEl.open;
+    });
     container.appendChild(detailsEl);
+  }
+  if (instState && instState.executionLogOpenState) {
+    const validKeys = new Set(historyItems.slice(0, Math.min(historyItems.length, 6)).map((item, idx) => item?.localId || `idx-${idx}`));
+    Object.keys(instState.executionLogOpenState).forEach((key) => {
+      if (!validKeys.has(key)) delete instState.executionLogOpenState[key];
+    });
   }
 }
 
@@ -1160,15 +1457,18 @@ function fillOverridesUI(merged) {
   set('ov_set_gate_extra', s.gateOpenExtraPct);
   const minResidual = (s.minCloseResidualQuote != null) ? s.minCloseResidualQuote : 4;
   set('ov_set_min_residual', minResidual);
+  const riskQuote = (s.riskTestQuote != null) ? s.riskTestQuote : 50;
+  set('ov_set_risk_quote', riskQuote);
 }
 function metaToText(label, meta) {
   const spotMeta = (meta && meta[getSpotKey()]) || meta?.gate || {};
   const gateExtra = (meta.settings && meta.settings.gateOpenExtraPct != null) ? meta.settings.gateOpenExtraPct : 0;
   const minResidual = meta.settings?.minCloseResidualQuote != null ? meta.settings.minCloseResidualQuote : 0;
+  const riskTestQuote = meta.settings?.riskTestQuote != null ? meta.settings.riskTestQuote : 50;
   return `${label}
 Spot(${getSpotLabel()}): priceScale=${spotMeta.priceScale}, qtyScale=${spotMeta.qtyScale}, minQty=${spotMeta.minQty}, minQuote=${spotMeta.minQuote}
 MEXC: priceScale=${meta.mexc.priceScale}, volPrecision=${meta.mexc.volPrecision}, contractSize=${meta.mexc.contractSize}, minContracts=${meta.mexc.minContracts}
-Settings: margem=${meta.settings.marginPct}%, lev=${meta.settings.leverage}, spotExtra=${gateExtra}%, minCloseResidualQuote=${minResidual}`;
+Settings: margem=${meta.settings.marginPct}%, lev=${meta.settings.leverage}, spotExtra=${gateExtra}%, minCloseResidualQuote=${minResidual}, riskTestQuote=${riskTestQuote}`;
 }
 async function fetchMarketMeta(symbol) {
   const resp = await fetch('/api/market-meta?symbol=' + encodeURIComponent(symbol));
@@ -1201,7 +1501,6 @@ async function ensureInstanceMeta(inst) {
 
 async function refreshMetaUI(symbol) {
   const d = await fetchMarketMeta(symbol);
-  document.getElementById('metaBadge').textContent = 'meta: ' + d.symbol;
   document.getElementById('metaText').textContent =
     metaToText('Auto', d.auto) + '\n\n' +
     'Override: ' + (d.override ? JSON.stringify(d.override) : '(nenhum)') + '\n\n' +
@@ -1249,6 +1548,8 @@ document.getElementById('applySymbol').addEventListener('click', async () => {
   await refreshBalances();
   await fetchData();
   await fetchSpreadData(true, getSpotKey());
+  if (inst) markRiskDiscoveryStale(inst);
+  updateRiskControlsUI();
 });
 
 document.getElementById('autoCfg').addEventListener('click', async () => {
@@ -1292,6 +1593,7 @@ document.getElementById('saveOverride').addEventListener('click', async () => {
       leverage: numOrUndef('ov_set_lev'),
       gateOpenExtraPct: numOrUndef('ov_set_gate_extra'),
       minCloseResidualQuote: numOrUndef('ov_set_min_residual'),
+      riskTestQuote: numOrUndef('ov_set_risk_quote'),
       parityVolumes: true
     }
   };
@@ -1365,7 +1667,6 @@ const levelSelections = {
 };
 let audioCtx = null;
 
-let spreadFilter = 'all';
 const SPREAD_RANGE_WINDOWS = {
   '5min': 5 * 60 * 1000,
   '15min': 15 * 60 * 1000,
@@ -2090,12 +2391,12 @@ function ensureSpreadChart() {
           spanGaps: true
         },
         {
-          id: 'openVol0',
-          label: 'Volume abertura Nível 1',
+          id: 'spotOpenVol0',
+          label: 'Vol. abertura Spot Nível 1',
           data: [],
-          metaGroup: 'open-volume',
-          borderColor: 'rgba(31,119,180,0.45)',
-          backgroundColor: 'rgba(31,119,180,0.15)',
+          metaGroup: 'spot-open-volume',
+          borderColor: 'rgba(31,119,180,0.55)',
+          backgroundColor: 'rgba(31,119,180,0.18)',
           fill: false,
           pointRadius: 0,
           borderWidth: 1,
@@ -2104,12 +2405,12 @@ function ensureSpreadChart() {
           yAxisID: 'yVolume'
         },
         {
-          id: 'openVol1',
-          label: 'Volume abertura Nível 2',
+          id: 'spotOpenVol1',
+          label: 'Vol. abertura Spot Nível 2',
           data: [],
-          metaGroup: 'open-volume',
-          borderColor: 'rgba(31,119,180,0.35)',
-          backgroundColor: 'rgba(31,119,180,0.12)',
+          metaGroup: 'spot-open-volume',
+          borderColor: 'rgba(31,119,180,0.4)',
+          backgroundColor: 'rgba(31,119,180,0.14)',
           fill: false,
           pointRadius: 0,
           borderWidth: 1,
@@ -2118,11 +2419,11 @@ function ensureSpreadChart() {
           yAxisID: 'yVolume'
         },
         {
-          id: 'openVol2',
-          label: 'Volume abertura Nível 3',
+          id: 'spotOpenVol2',
+          label: 'Vol. abertura Spot Nível 3',
           data: [],
-          metaGroup: 'open-volume',
-          borderColor: 'rgba(31,119,180,0.25)',
+          metaGroup: 'spot-open-volume',
+          borderColor: 'rgba(31,119,180,0.28)',
           backgroundColor: 'rgba(31,119,180,0.08)',
           fill: false,
           pointRadius: 0,
@@ -2132,12 +2433,12 @@ function ensureSpreadChart() {
           yAxisID: 'yVolume'
         },
         {
-          id: 'closeVol0',
-          label: 'Volume fechamento Nível 1',
+          id: 'mexcOpenVol0',
+          label: 'Vol. abertura MEXC Nível 1',
           data: [],
-          metaGroup: 'close-volume',
-          borderColor: 'rgba(255,127,14,0.5)',
-          backgroundColor: 'rgba(255,127,14,0.18)',
+          metaGroup: 'mexc-open-volume',
+          borderColor: 'rgba(148,103,189,0.55)',
+          backgroundColor: 'rgba(148,103,189,0.18)',
           fill: false,
           pointRadius: 0,
           borderWidth: 1,
@@ -2146,12 +2447,12 @@ function ensureSpreadChart() {
           yAxisID: 'yVolume'
         },
         {
-          id: 'closeVol1',
-          label: 'Volume fechamento Nível 2',
+          id: 'mexcOpenVol1',
+          label: 'Vol. abertura MEXC Nível 2',
           data: [],
-          metaGroup: 'close-volume',
-          borderColor: 'rgba(255,127,14,0.4)',
-          backgroundColor: 'rgba(255,127,14,0.14)',
+          metaGroup: 'mexc-open-volume',
+          borderColor: 'rgba(148,103,189,0.42)',
+          backgroundColor: 'rgba(148,103,189,0.14)',
           fill: false,
           pointRadius: 0,
           borderWidth: 1,
@@ -2160,12 +2461,96 @@ function ensureSpreadChart() {
           yAxisID: 'yVolume'
         },
         {
-          id: 'closeVol2',
-          label: 'Volume fechamento Nível 3',
+          id: 'mexcOpenVol2',
+          label: 'Vol. abertura MEXC Nível 3',
           data: [],
-          metaGroup: 'close-volume',
-          borderColor: 'rgba(255,127,14,0.3)',
-          backgroundColor: 'rgba(255,127,14,0.1)',
+          metaGroup: 'mexc-open-volume',
+          borderColor: 'rgba(148,103,189,0.3)',
+          backgroundColor: 'rgba(148,103,189,0.1)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'spotCloseVol0',
+          label: 'Vol. fechamento Spot Nível 1',
+          data: [],
+          metaGroup: 'spot-close-volume',
+          borderColor: 'rgba(44,160,44,0.55)',
+          backgroundColor: 'rgba(44,160,44,0.18)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'spotCloseVol1',
+          label: 'Vol. fechamento Spot Nível 2',
+          data: [],
+          metaGroup: 'spot-close-volume',
+          borderColor: 'rgba(44,160,44,0.4)',
+          backgroundColor: 'rgba(44,160,44,0.14)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'spotCloseVol2',
+          label: 'Vol. fechamento Spot Nível 3',
+          data: [],
+          metaGroup: 'spot-close-volume',
+          borderColor: 'rgba(44,160,44,0.28)',
+          backgroundColor: 'rgba(44,160,44,0.1)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'mexcCloseVol0',
+          label: 'Vol. fechamento MEXC Nível 1',
+          data: [],
+          metaGroup: 'mexc-close-volume',
+          borderColor: 'rgba(214,39,40,0.55)',
+          backgroundColor: 'rgba(214,39,40,0.18)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'mexcCloseVol1',
+          label: 'Vol. fechamento MEXC Nível 2',
+          data: [],
+          metaGroup: 'mexc-close-volume',
+          borderColor: 'rgba(214,39,40,0.4)',
+          backgroundColor: 'rgba(214,39,40,0.14)',
+          fill: false,
+          pointRadius: 0,
+          borderWidth: 1,
+          tension: 0.05,
+          spanGaps: true,
+          yAxisID: 'yVolume'
+        },
+        {
+          id: 'mexcCloseVol2',
+          label: 'Vol. fechamento MEXC Nível 3',
+          data: [],
+          metaGroup: 'mexc-close-volume',
+          borderColor: 'rgba(214,39,40,0.28)',
+          backgroundColor: 'rgba(214,39,40,0.1)',
           fill: false,
           pointRadius: 0,
           borderWidth: 1,
@@ -2196,11 +2581,7 @@ function ensureSpreadChart() {
           type: 'linear',
           title: { display: true, text: 'Horário (24h)' },
           ticks: {
-            callback: (value) => {
-              const date = new Date(Number(value));
-              if (!Number.isFinite(date.getTime())) return '';
-              return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-            },
+            callback: (value) => formatSpreadTimestamp(value),
             maxRotation: 0
           },
           grid: { display: false }
@@ -2210,7 +2591,7 @@ function ensureSpreadChart() {
         },
         yVolume: {
           position: 'right',
-          title: { display: true, text: 'Volume (USDT)' },
+          title: { display: true, text: 'Vol. (USDT)' },
           beginAtZero: true,
           grid: { drawOnChartArea: false },
           ticks: {
@@ -2228,38 +2609,37 @@ function ensureSpreadChart() {
         legend: {
           position: 'bottom',
           onClick: (evt, legendItem, legend) => {
-            if (typeof defaultLegendClick === 'function') {
-              defaultLegendClick.call(legend.chart, evt, legendItem, legend);
-            } else if (Chart?.defaults?.plugins?.legend?.onClick) {
-              Chart.defaults.plugins.legend.onClick.call(legend.chart, evt, legendItem, legend);
-            }
-            const inst = getActiveInstance();
-            if (inst) {
-              const state = ensureInstanceState(inst);
-              captureChartVisibilityToState(state);
-            }
+            const datasetIndex = legendItem?.datasetIndex;
+            if (datasetIndex == null) return;
+            const dataset = legend.chart?.data?.datasets?.[datasetIndex];
+            if (!dataset) return;
+            const currentlyVisible = legend.chart.isDatasetVisible(datasetIndex);
+            setDatasetVisibility(dataset.id, !currentlyVisible);
           }
         },
         tooltip: {
           callbacks: {
+            title: () => '',
             label: (ctx) => {
               const prefix = ctx.dataset?.label ? `${ctx.dataset.label}: ` : '';
               const value = Number(ctx.parsed.y);
               const ts = Number(ctx.parsed.x);
-              const time = Number.isFinite(ts)
-                ? new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
-                : '';
+              const time = Number.isFinite(ts) ? formatSpreadTimestamp(ts) : '';
               const group = ctx.dataset?.metaGroup;
-              if (group === 'open-volume' || group === 'close-volume') {
+              const isVolumeGroup = group === 'spot-open-volume'
+                || group === 'spot-close-volume'
+                || group === 'mexc-open-volume'
+                || group === 'mexc-close-volume';
+              if (isVolumeGroup) {
                 const formattedVol = Number.isFinite(value)
                   ? value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + ' USDT'
                   : '-';
-                return `${prefix}${formattedVol}${time ? ` às ${time}` : ''}`;
+                return `${prefix}${formattedVol}${time ? ` em ${time}` : ''}`;
               }
               const formatted = Number.isFinite(value)
                 ? value.toFixed(4) + '%'
                 : '-';
-              return `${prefix}${formatted}${time ? ` às ${time}` : ''}`;
+              return `${prefix}${formatted}${time ? ` em ${time}` : ''}`;
             }
           }
         },
@@ -2302,46 +2682,130 @@ function computeSpreadCrossings(points) {
     const prev = points[i - 1];
     const curr = points[i];
     if (!prev || !curr) continue;
-    if (!Number.isFinite(prev.open) || !Number.isFinite(prev.close) || !Number.isFinite(curr.open) || !Number.isFinite(curr.close)) continue;
-    const prevDiff = prev.open - prev.close;
-    const currDiff = curr.open - curr.close;
+    const prevClose = Number(prev.close);
+    const prevArb = Number(prev.positionArb);
+    const currClose = Number(curr.close);
+    const currArb = Number(curr.positionArb);
+    if (!Number.isFinite(prevClose) || !Number.isFinite(prevArb) || !Number.isFinite(currClose) || !Number.isFinite(currArb)) continue;
+    const prevDiff = prevClose - prevArb;
+    const currDiff = currClose - currArb;
     if (!Number.isFinite(prevDiff) || !Number.isFinite(currDiff)) continue;
-    if (prevDiff === 0) {
-      out.push({ x: prev.ts, y: (prev.open + prev.close) / 2 });
-      continue;
-    }
-    if (currDiff === 0) {
-      out.push({ x: curr.ts, y: (curr.open + curr.close) / 2 });
-      continue;
-    }
-    if ((prevDiff > 0 && currDiff < 0) || (prevDiff < 0 && currDiff > 0)) {
-      const diffSpan = Math.abs(prevDiff) + Math.abs(currDiff);
-      if (diffSpan === 0) continue;
-      const ratio = Math.abs(prevDiff) / diffSpan;
+    if (prevDiff > 0 && currDiff <= 0) {
+      const denom = prevDiff - currDiff;
+      const ratio = denom !== 0 ? prevDiff / denom : 0;
       const tsDelta = Number(curr.ts) - Number(prev.ts);
       const crossTs = Number(prev.ts) + ratio * tsDelta;
-      const openVal = prev.open + (curr.open - prev.open) * ratio;
-      const closeVal = prev.close + (curr.close - prev.close) * ratio;
-      const y = (openVal + closeVal) / 2;
-      if (Number.isFinite(crossTs) && Number.isFinite(y)) out.push({ x: crossTs, y });
+      const closeVal = prevClose + (currClose - prevClose) * ratio;
+      if (Number.isFinite(crossTs) && Number.isFinite(closeVal)) {
+        out.push({ x: crossTs, y: closeVal });
+      }
     }
   }
   return out;
 }
 
-function applySpreadFilter(chart) {
+function updateVolumeDatasetLabels(chart) {
+  if (!chart) return;
+  const spotLabel = getSpotLabel();
   chart.data.datasets.forEach((dataset) => {
-    if (!dataset) return;
-    const group = dataset.metaGroup || dataset.id;
-    if (spreadFilter === 'all') {
-      dataset.hidden = false;
-    } else if (spreadFilter === 'open') {
-      dataset.hidden = !['open', 'open-volume'].includes(group);
-    } else if (spreadFilter === 'close') {
-      dataset.hidden = !['close', 'close-volume', 'position'].includes(group);
-    } else if (spreadFilter === 'cross') {
-      dataset.hidden = group !== 'cross';
+    const builder = VOLUME_LABEL_TEMPLATES[dataset.id];
+    if (typeof builder === 'function') {
+      dataset.label = builder(spotLabel);
     }
+  });
+}
+
+function setDatasetVisibility(datasetId, visible) {
+  const chart = ensureSpreadChart();
+  if (!chart) return;
+  const idx = chart.data.datasets.findIndex((d) => d.id === datasetId);
+  if (idx === -1) return;
+  const dataset = chart.data.datasets[idx];
+  dataset.hidden = !visible;
+  const meta = chart.getDatasetMeta(idx);
+  if (meta) meta.hidden = visible ? null : true;
+  const inst = getActiveInstance();
+  if (inst) {
+    const state = ensureInstanceState(inst);
+    if (state) {
+      const visibility = state.datasetVisibility || createDefaultDatasetVisibility();
+      visibility[datasetId] = visible;
+      state.datasetVisibility = visibility;
+    }
+  }
+  chart.update('none');
+  syncSpreadLegendControlsFromChart();
+}
+
+function ensureSpreadLegendControls() {
+  const container = document.getElementById('spreadLegendControls');
+  const chart = ensureSpreadChart();
+  if (!container || !chart) return;
+  if (container.dataset.rendered === '1' && spreadLegendControls.size === chart.data.datasets.length) {
+    return;
+  }
+  container.innerHTML = '';
+  spreadLegendControls.clear();
+  SPREAD_LEGEND_GROUPS.forEach((group) => {
+    const groupEl = document.createElement('div');
+    groupEl.className = 'spread-legend-group';
+    const titleEl = document.createElement('div');
+    titleEl.className = 'spread-legend-group-title';
+    if (group.titleHtml) {
+      titleEl.innerHTML = group.titleHtml;
+    } else if (typeof group.title === 'function') {
+      titleEl.textContent = group.title();
+    } else {
+      titleEl.textContent = group.title;
+    }
+    groupEl.appendChild(titleEl);
+    group.datasetIds.forEach((datasetId) => {
+      const datasetIndex = chart.data.datasets.findIndex((d) => d.id === datasetId);
+      if (datasetIndex === -1) return;
+      const dataset = chart.data.datasets[datasetIndex];
+      const option = document.createElement('label');
+      option.className = 'spread-legend-option';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.dataset.datasetId = datasetId;
+      const meta = chart.getDatasetMeta(datasetIndex);
+      const visible = meta ? meta.hidden !== true : dataset.hidden !== true;
+      input.checked = visible;
+      input.addEventListener('change', () => {
+        setDatasetVisibility(datasetId, input.checked);
+      });
+      const swatch = document.createElement('span');
+      swatch.style.display = 'inline-block';
+      swatch.style.width = '12px';
+      swatch.style.height = '12px';
+      swatch.style.borderRadius = '3px';
+      swatch.style.border = '1px solid rgba(255, 255, 255, 0.2)';
+      swatch.style.background = dataset.borderColor || '#ffffff';
+      const text = document.createElement('span');
+      text.textContent = dataset.label || datasetId;
+      option.appendChild(input);
+      option.appendChild(swatch);
+      option.appendChild(text);
+      groupEl.appendChild(option);
+      spreadLegendControls.set(datasetId, { checkbox: input, textEl: text, colorEl: swatch });
+    });
+    container.appendChild(groupEl);
+  });
+  container.dataset.rendered = '1';
+  updateSpotLabelElements();
+}
+
+function syncSpreadLegendControlsFromChart() {
+  const chart = spreadChart;
+  if (!chart) return;
+  chart.data.datasets.forEach((dataset, idx) => {
+    const entry = spreadLegendControls.get(dataset.id);
+    if (!entry) return;
+    const meta = chart.getDatasetMeta(idx);
+    const visible = meta ? meta.hidden !== true : dataset.hidden !== true;
+    entry.checkbox.checked = visible;
+    if (entry.textEl) entry.textEl.textContent = dataset.label || dataset.id;
+    if (entry.colorEl) entry.colorEl.style.background = dataset.borderColor || '#ffffff';
   });
 }
 
@@ -2349,8 +2813,8 @@ function formatSpreadStat(entry) {
   if (!entry || !Number.isFinite(entry.value)) return '-';
   const value = `${entry.value.toFixed(4)}%`;
   if (!Number.isFinite(entry.ts)) return value;
-  const time = new Date(entry.ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-  return `${value} às ${time}`;
+  const time = formatSpreadTimestamp(entry.ts);
+  return time ? `${value} em ${time}` : value;
 }
 
 function updateSpreadStats(extremes) {
@@ -2422,8 +2886,10 @@ function renderSpreadChart() {
   const openData = [];
   const closeData = [];
   const positionArbData = [];
-  const openVolumeData = [[], [], []];
-  const closeVolumeData = [[], [], []];
+  const spotOpenVolumeData = [[], [], []];
+  const mexcOpenVolumeData = [[], [], []];
+  const spotCloseVolumeData = [[], [], []];
+  const mexcCloseVolumeData = [[], [], []];
   let latestFinalArb = null;
   for (const entry of filteredPoints) {
     if (Number.isFinite(entry.open)) openData.push({ x: entry.ts, y: entry.open });
@@ -2435,13 +2901,29 @@ function renderSpreadChart() {
         latestFinalArb = { ts: entry.ts, diff: arbValue - entry.close };
       }
     }
-    const openLevels = Array.isArray(entry.openVolumes) ? entry.openVolumes : [];
-    const closeLevels = Array.isArray(entry.closeVolumes) ? entry.closeVolumes : [];
+    const fallbackOpen = Array.isArray(entry.openVolumes) ? entry.openVolumes : [];
+    const fallbackClose = Array.isArray(entry.closeVolumes) ? entry.closeVolumes : [];
+    const spotOpenLevels = (Array.isArray(entry.openSpotVolumes) && entry.openSpotVolumes.some((v) => Number.isFinite(v)))
+      ? entry.openSpotVolumes
+      : fallbackOpen;
+    const mexcOpenLevels = (Array.isArray(entry.openMexcVolumes) && entry.openMexcVolumes.some((v) => Number.isFinite(v)))
+      ? entry.openMexcVolumes
+      : fallbackOpen;
+    const spotCloseLevels = (Array.isArray(entry.closeSpotVolumes) && entry.closeSpotVolumes.some((v) => Number.isFinite(v)))
+      ? entry.closeSpotVolumes
+      : fallbackClose;
+    const mexcCloseLevels = (Array.isArray(entry.closeMexcVolumes) && entry.closeMexcVolumes.some((v) => Number.isFinite(v)))
+      ? entry.closeMexcVolumes
+      : fallbackClose;
     for (let i = 0; i < 3; i++) {
-      const oVal = openLevels[i];
-      if (Number.isFinite(oVal) && oVal > 0) openVolumeData[i].push({ x: entry.ts, y: oVal });
-      const cVal = closeLevels[i];
-      if (Number.isFinite(cVal) && cVal > 0) closeVolumeData[i].push({ x: entry.ts, y: cVal });
+      const spotOpenVal = spotOpenLevels[i];
+      if (Number.isFinite(spotOpenVal) && spotOpenVal > 0) spotOpenVolumeData[i].push({ x: entry.ts, y: spotOpenVal });
+      const mexcOpenVal = mexcOpenLevels[i];
+      if (Number.isFinite(mexcOpenVal) && mexcOpenVal > 0) mexcOpenVolumeData[i].push({ x: entry.ts, y: mexcOpenVal });
+      const spotCloseVal = spotCloseLevels[i];
+      if (Number.isFinite(spotCloseVal) && spotCloseVal > 0) spotCloseVolumeData[i].push({ x: entry.ts, y: spotCloseVal });
+      const mexcCloseVal = mexcCloseLevels[i];
+      if (Number.isFinite(mexcCloseVal) && mexcCloseVal > 0) mexcCloseVolumeData[i].push({ x: entry.ts, y: mexcCloseVal });
     }
   }
   const crossData = computeSpreadCrossings(filteredPoints);
@@ -2450,29 +2932,42 @@ function renderSpreadChart() {
   if (datasetById.has('close')) {
     const closeDataset = datasetById.get('close');
     closeDataset.data = closeData;
+    const baseColor = hasOpenPosition ? '#ff7f0e' : '#f2b760';
+    closeDataset.borderColor = baseColor;
+    closeDataset.backgroundColor = hasOpenPosition ? 'rgba(255,127,14,0.1)' : 'rgba(242,183,96,0.16)';
     closeDataset.segment = closeDataset.segment || {};
-    closeDataset.segment.borderColor = (ctx) => {
-      const yVal = ctx?.p1?.parsed?.y ?? ctx?.p0?.parsed?.y;
-      const arbVal = ctx?.p1?.raw?.arbRef ?? ctx?.p0?.raw?.arbRef;
-      if (Number.isFinite(yVal) && Number.isFinite(arbVal)) {
-        return yVal > arbVal ? '#d62728' : '#2ca02c';
-      }
-      return '#ff7f0e';
-    };
+    if (hasOpenPosition) {
+      closeDataset.segment.borderColor = (ctx) => {
+        const yVal = ctx?.p1?.parsed?.y ?? ctx?.p0?.parsed?.y;
+        const arbVal = ctx?.p1?.raw?.arbRef ?? ctx?.p0?.raw?.arbRef;
+        if (Number.isFinite(yVal) && Number.isFinite(arbVal)) {
+          return yVal > arbVal ? '#d62728' : '#2ca02c';
+        }
+        return baseColor;
+      };
+    } else {
+      closeDataset.segment.borderColor = () => baseColor;
+    }
   }
   if (datasetById.has('cross')) datasetById.get('cross').data = crossData;
   if (datasetById.has('positionArb')) datasetById.get('positionArb').data = positionArbData;
   for (let i = 0; i < 3; i++) {
-    const openDs = datasetById.get(`openVol${i}`);
-    if (openDs) openDs.data = openVolumeData[i];
-    const closeDs = datasetById.get(`closeVol${i}`);
-    if (closeDs) closeDs.data = closeVolumeData[i];
+    const spotOpenDs = datasetById.get(`spotOpenVol${i}`);
+    if (spotOpenDs) spotOpenDs.data = spotOpenVolumeData[i];
+    const mexcOpenDs = datasetById.get(`mexcOpenVol${i}`);
+    if (mexcOpenDs) mexcOpenDs.data = mexcOpenVolumeData[i];
+    const spotCloseDs = datasetById.get(`spotCloseVol${i}`);
+    if (spotCloseDs) spotCloseDs.data = spotCloseVolumeData[i];
+    const mexcCloseDs = datasetById.get(`mexcCloseVol${i}`);
+    if (mexcCloseDs) mexcCloseDs.data = mexcCloseVolumeData[i];
   }
-  applySpreadFilter(chart);
   updateSpreadStats(calculateSpreadExtremes(filteredPoints));
   const finalArbEl = document.getElementById('spreadFinalArb');
   if (finalArbEl) {
-    if (latestFinalArb && Number.isFinite(latestFinalArb.diff)) {
+    if (!hasOpenPosition) {
+      finalArbEl.textContent = 'Nenhuma posição';
+      finalArbEl.style.color = '#ffffff';
+    } else if (latestFinalArb && Number.isFinite(latestFinalArb.diff)) {
       const diff = latestFinalArb.diff;
       const sign = diff > 0 ? '+' : diff < 0 ? '-' : '';
       const absValue = Math.abs(diff).toFixed(4);
@@ -2492,7 +2987,244 @@ function renderSpreadChart() {
     const state = ensureInstanceState(inst);
     applyChartVisibilityFromState(state);
   }
+  updateVolumeDatasetLabels(chart);
+  ensureSpreadLegendControls();
+  syncSpreadLegendControlsFromChart();
   chart.update('none');
+}
+
+function getRiskElements() {
+  return {
+    button: document.getElementById('discoverRiskBtn'),
+    info: document.getElementById('riskInfo'),
+    execute: document.getElementById('executeTrade')
+  };
+}
+
+function normalizeOrderError(error) {
+  if (!error) return null;
+  if (typeof error === 'string') return { message: error };
+  if (typeof error === 'object') return error;
+  return { message: String(error) };
+}
+
+function extractRiskLimitContracts(orderError) {
+  const normalized = normalizeOrderError(orderError);
+  if (!normalized) return null;
+  const candidates = [];
+  const pushCandidate = (value) => {
+    const num = Number(value);
+    if (Number.isFinite(num) && num >= 0) candidates.push(num);
+  };
+  const extend = normalized._extend || normalized.extend;
+  if (extend && typeof extend === 'object') {
+    for (const [key, value] of Object.entries(extend)) {
+      if (/limit|amount|contract|position|max/i.test(key)) {
+        pushCandidate(value);
+      }
+    }
+  }
+  ['limit', 'max', 'maxContracts', 'maxAmount', 'amount'].forEach((key) => {
+    if (normalized[key] != null) pushCandidate(normalized[key]);
+  });
+  if (normalized.response && typeof normalized.response === 'object') {
+    ['limit', 'max', 'maxContracts', 'amount'].forEach((key) => {
+      if (normalized.response[key] != null) pushCandidate(normalized.response[key]);
+    });
+  }
+  if (candidates.length) return candidates[0];
+  const rawMessage = normalized.message || normalized.msg || normalized.error || normalized.rawMessage;
+  if (typeof rawMessage === 'string') {
+    const sanitized = rawMessage.replace(/,/g, '.');
+    if (/(上限|limit|contrat|张数|posição)/i.test(sanitized)) {
+      const matches = sanitized.match(/(\d+(?:\.\d+)?)/g);
+      if (matches && matches.length) {
+        const last = matches[matches.length - 1];
+        const num = Number(last);
+        if (Number.isFinite(num)) return num;
+      }
+    }
+  }
+  return null;
+}
+
+function formatContractCount(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '0';
+  const options = (num % 1 === 0)
+    ? { minimumFractionDigits: 0, maximumFractionDigits: 0 }
+    : { minimumFractionDigits: 0, maximumFractionDigits: 2 };
+  return num.toLocaleString('en-US', options);
+}
+
+function getInstanceRiskState(inst) {
+  if (!inst) return null;
+  const state = ensureInstanceState(inst);
+  if (!state) return null;
+  if (!state.riskDiscovery || typeof state.riskDiscovery !== 'object') {
+    state.riskDiscovery = { status: 'idle', lastSymbol: null, lastSpot: null, result: null, error: null };
+  }
+  return state.riskDiscovery;
+}
+
+function markRiskDiscoveryStale(inst) {
+  if (!inst) return;
+  const risk = getInstanceRiskState(inst);
+  if (!risk) return;
+  risk.status = 'stale';
+  risk.result = null;
+  risk.error = null;
+  risk.lastSymbol = null;
+  risk.lastSpot = null;
+  if (inst.id === activeInstanceId) updateRiskControlsUI();
+}
+
+function updateRiskControlsUI() {
+  const { button, info, execute } = getRiskElements();
+  const inst = getActiveInstance();
+  const risk = getInstanceRiskState(inst);
+  if (button) button.disabled = !inst || !risk || risk.status === 'running';
+  const orderError = risk?.result ? normalizeOrderError(risk.result.orderError) : null;
+  const testedQuote = Number(risk?.result?.testQuote);
+  let limitSummary = '';
+  if (inst && risk?.status === 'ready') {
+    const baseSymbol = (inst.symbol && inst.symbol.includes('_'))
+      ? inst.symbol.split('_')[0]
+      : getCurrentBaseSymbol();
+    const baseLimit = Number(risk?.result?.baseLimit);
+    const quoteLimit = Number(risk?.result?.quoteLimit);
+    const parts = [];
+    if (Number.isFinite(baseLimit) && baseLimit > 0 && baseSymbol) {
+      parts.push(formatVolumeValue(baseLimit, 6, baseSymbol));
+    }
+    if (Number.isFinite(quoteLimit) && quoteLimit > 0) {
+      parts.push(formatVolumeValue(quoteLimit, 2, 'USDT'));
+    }
+    if (parts.length) {
+      limitSummary = `Limite: ${parts.join(' • ')}`;
+    }
+  }
+  let canExecute = false;
+  let message = 'Realize o teste de risco para liberar a execução.';
+  let color = 'var(--text-muted)';
+  if (!inst || !risk) {
+    message = 'Selecione uma aba para descobrir o limite.';
+  } else if (risk.status === 'running') {
+    message = 'Descobrindo limite na MEXC...';
+  } else if (risk.status === 'error') {
+    const rawError = (risk.error || '').toString().trim();
+    if (rawError && /livro de ofertas mexc indisponível para teste/i.test(rawError)) {
+      message = 'Esta moeda foi deslistada da MEXC.';
+    } else if (rawError) {
+      message = `Falha ao descobrir limite: ${rawError}`;
+    } else {
+      message = 'Falha ao descobrir limite.';
+    }
+    color = 'var(--danger)';
+  } else if (risk.status === 'ready') {
+    const limitContracts = extractRiskLimitContracts(orderError);
+    const warn = (orderError?.message || orderError?.msg || orderError?.error || '').toString().trim();
+    if (limitContracts != null) {
+      const formatted = formatContractCount(limitContracts);
+      const plural = limitContracts === 1 ? '' : 's';
+      message = `Há limite de ${formatted} contrato${plural} nesta moeda, escolha outra.`;
+      color = 'var(--danger)';
+    } else if (warn && /exceeds the maximum order amount allowed for a single order/i.test(warn)) {
+      const testedQuoteText = Number.isFinite(testedQuote) ? formatTwoDecimals(testedQuote) : '50.00';
+      message = `Há limite de contratos para esta moeda abaixo de $${testedQuoteText}.`;
+      color = 'var(--danger)';
+    } else if (orderError) {
+      const fallbackWarn = warn || 'Falha no teste de risco.';
+      message = `Falha ao enviar ordem de teste: ${fallbackWarn}`;
+      color = 'var(--danger)';
+    } else {
+      message = 'Não há limites de contratos nesta moeda.';
+      color = 'var(--success)';
+      canExecute = true;
+    }
+  }
+  if (execute) execute.disabled = !canExecute;
+  if (info) {
+    info.textContent = limitSummary ? `${limitSummary} — ${message}` : message;
+    info.style.color = color;
+  }
+}
+
+async function runRiskDiscovery(inst, { reason = 'manual' } = {}) {
+  if (!inst) return;
+  const risk = getInstanceRiskState(inst);
+  if (!risk || risk.status === 'running') return;
+  risk.status = 'running';
+  risk.error = null;
+  risk.result = null;
+  if (inst.id === activeInstanceId) updateRiskControlsUI();
+  try {
+    const symbol = inst.symbol || currentSymbol || 'BASE_USDT';
+    const spot = inst.spotExchange || getSpotKey();
+    const payload = {
+      symbol,
+      spotExchange: spot,
+      marginPct: 10,
+      reason
+    };
+    const resp = await fetch('/api/mexc-discover-risk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(resp);
+    if (!resp.ok || data?.ok === false) {
+      const message = data?.error || 'Falha ao descobrir limite de risco.';
+      risk.status = 'error';
+      risk.error = message;
+      risk.lastSymbol = symbol;
+      risk.lastSpot = spot;
+      return;
+    }
+    const baseLimit = Number(data?.baseLimit);
+    const quoteLimit = Number(data?.quoteLimit);
+    const orderError = normalizeOrderError(data?.orderError || data?.errorMessage || null);
+    risk.status = 'ready';
+    risk.error = null;
+    risk.lastSymbol = symbol;
+    risk.lastSpot = spot;
+    risk.result = {
+      baseLimit: Number.isFinite(baseLimit) ? baseLimit : null,
+      quoteLimit: Number.isFinite(quoteLimit) ? quoteLimit : null,
+      risk: data?.risk || null,
+      testPrice: Number.isFinite(Number(data?.testPrice)) ? Number(data.testPrice) : null,
+      testContracts: Number.isFinite(Number(data?.testContracts)) ? Number(data.testContracts) : null,
+      testQuote: Number.isFinite(Number(data?.testQuote)) ? Number(data.testQuote) : null,
+      orderError: orderError || null
+    };
+  } catch (err) {
+    risk.status = 'error';
+    risk.error = err?.message || 'Erro ao descobrir limite de risco.';
+  } finally {
+    if (inst.id === activeInstanceId) updateRiskControlsUI();
+  }
+}
+
+function ensureRiskDiscoveryForActiveInstance({ force = false } = {}) {
+  const inst = getActiveInstance();
+  if (!inst) {
+    updateRiskControlsUI();
+    return;
+  }
+  const risk = getInstanceRiskState(inst);
+  if (!risk) {
+    updateRiskControlsUI();
+    return;
+  }
+  const expectedSymbol = (inst.symbol || currentSymbol || '').toUpperCase();
+  const expectedSpot = normalizeSpotKey(inst.spotExchange || getSpotKey());
+  const symbolMismatch = risk.lastSymbol && risk.lastSymbol !== expectedSymbol;
+  const spotMismatch = risk.lastSpot && normalizeSpotKey(risk.lastSpot) !== expectedSpot;
+  if (force || symbolMismatch || spotMismatch) {
+    markRiskDiscoveryStale(inst);
+    return;
+  }
+  updateRiskControlsUI();
 }
 
 async function fetchSpreadDataForInstance(inst, force = false, spotKey = null) {
@@ -2541,7 +3273,11 @@ async function fetchSpreadDataForInstance(inst, force = false, spotKey = null) {
         close: (closeRaw === null || closeRaw === undefined || !Number.isFinite(closeNum)) ? null : closeNum,
         positionArb: Number.isFinite(positionArb) ? positionArb : null,
         openVolumes: parseVolumeArray(entry.openVolumes),
-        closeVolumes: parseVolumeArray(entry.closeVolumes)
+        closeVolumes: parseVolumeArray(entry.closeVolumes),
+        openSpotVolumes: parseVolumeArray(entry.openSpotVolumes),
+        openMexcVolumes: parseVolumeArray(entry.openMexcVolumes),
+        closeSpotVolumes: parseVolumeArray(entry.closeSpotVolumes),
+        closeMexcVolumes: parseVolumeArray(entry.closeMexcVolumes)
       };
     });
     mapped.sort((a, b) => Number(a.ts) - Number(b.ts));
@@ -2632,16 +3368,6 @@ async function fetchData() {
   if (!inst) return;
   await fetchDataForInstance(inst);
 }
-
-const spreadFilterButtons = document.querySelectorAll('[data-spread-filter]');
-spreadFilterButtons.forEach((btn) => {
-  btn.addEventListener('click', () => {
-    const filter = btn.dataset.spreadFilter || 'all';
-    spreadFilter = filter;
-    spreadFilterButtons.forEach((b) => b.classList.toggle('active', b === btn));
-    renderSpreadChart();
-  });
-});
 
 const spreadRangeButtons = document.querySelectorAll('[data-spread-range]');
 function syncSpreadRangeButtons() {
@@ -2990,6 +3716,20 @@ function computePositionSummaryMetrics(state) {
   const avgGateClose = accum.gate.close.qty > 0 ? accum.gate.close.value / accum.gate.close.qty : null;
   const avgMexcOpen = accum.mexc.open.qty > 0 ? accum.mexc.open.value / accum.mexc.open.qty : null;
   const avgMexcClose = accum.mexc.close.qty > 0 ? accum.mexc.close.value / accum.mexc.close.qty : null;
+  const baseCandidates = [
+    accum.gate.open.qty,
+    accum.gate.close.qty,
+    accum.mexc.open.qty,
+    accum.mexc.close.qty
+  ].filter((value) => Number.isFinite(value) && value > 0);
+  const quoteCandidates = [
+    accum.gate.open.value,
+    accum.gate.close.value,
+    accum.mexc.open.value,
+    accum.mexc.close.value
+  ].filter((value) => Number.isFinite(value) && value > 0);
+  const operatedBaseQty = baseCandidates.length ? Math.max(...baseCandidates) : null;
+  const operatedQuoteValue = quoteCandidates.length ? Math.max(...quoteCandidates) : null;
 
   let totalPnl = Number(state?.pnlUsd);
   if (!Number.isFinite(totalPnl)) totalPnl = null;
@@ -3021,7 +3761,9 @@ function computePositionSummaryMetrics(state) {
     openedAt,
     closedAt,
     durationMs,
-    symbol
+    symbol,
+    operatedBaseQty,
+    operatedQuoteValue
   };
 }
 
@@ -3052,15 +3794,22 @@ function renderPositionSummaries(list) {
     const durationText = formatDuration(durationMs);
     const rawSymbol = metrics?.symbol || state.symbol || item?.summary?.symbol || null;
     const symbolText = rawSymbol ? String(rawSymbol).toUpperCase() : '-';
+    const baseSymbol = symbolText.includes('_') ? symbolText.split('_')[0] : getCurrentBaseSymbol();
+    const operatedBase = Number(metrics?.operatedBaseQty);
+    const operatedQuote = Number(metrics?.operatedQuoteValue);
+    let volumeText = '-';
+    if (Number.isFinite(operatedBase) || Number.isFinite(operatedQuote)) {
+      const baseFormatted = Number.isFinite(operatedBase) ? formatSummaryNumber(operatedBase, 6) : '—';
+      const quoteFormatted = Number.isFinite(operatedQuote) ? formatSummaryNumber(operatedQuote, 2) : '—';
+      volumeText = `${baseFormatted} ${baseSymbol} • ${quoteFormatted} USDT`;
+    }
     const cells = [
       item?.id ?? '-',
       symbolText,
       openedAtText,
       closedAtText,
       durationText,
-      formatSummaryNumber(state.targetQty),
-      `${formatSummaryNumber(gate.filledQty)} @ ${formatSummaryNumber(gate.avgPrice, 8)}`,
-      `${formatSummaryNumber(mexc.filledQty)} @ ${formatSummaryNumber(mexc.avgPrice, 8)}`,
+      volumeText,
       formatSummaryNumber(gateOpenAvg, 8),
       formatSummaryNumber(mexcOpenAvg, 8),
       formatSummaryNumber(gateCloseAvg, 8),
@@ -3082,43 +3831,31 @@ async function refreshPosition() {
   try {
     const r = await fetch('/api/position-progress');
     const payload = await r.json();
-    const s = payload?.state || payload || {};
-    const g = s.gate || {};
-    const m = s.mexc || {};
-    const baseSymbol = getCurrentBaseSymbol();
-    const targetQty = toNumberOrNull(s.targetQty);
-    const gateFilled = toNumberOrNull(g.filledQty);
-    const gateAvg = toNumberOrNull(g.avgPrice);
-    const mexcFilled = toNumberOrNull(m.filledQty);
-    const mexcAvg = toNumberOrNull(m.avgPrice);
-    const arbPct = toNumberOrNull(s.arbPctAvg);
-    const pnl = toNumberOrNull(s.pnlUsd);
-    const totalFilledRaw = toNumberOrNull(s.filledQty);
-    const totalFilled = Number.isFinite(totalFilledRaw)
-      ? totalFilledRaw
-      : Math.max(gateFilled ?? 0, mexcFilled ?? 0);
-
-    const targetEl = document.getElementById('ppTarget');
-    if (targetEl) targetEl.textContent = formatVolumeValue(targetQty, 6, baseSymbol);
-    const gateFilledEl = document.getElementById('ppGateFilled');
-    if (gateFilledEl) gateFilledEl.textContent = formatVolumeValue(gateFilled, 6, baseSymbol);
-    const gateAvgEl = document.getElementById('ppGateAvg');
-    if (gateAvgEl) gateAvgEl.textContent = formatNumberValue(gateAvg, 8);
-    const mexcFilledEl = document.getElementById('ppMexcFilled');
-    if (mexcFilledEl) mexcFilledEl.textContent = formatVolumeValue(mexcFilled, 6, baseSymbol);
-    const mexcAvgEl = document.getElementById('ppMexcAvg');
-    if (mexcAvgEl) mexcAvgEl.textContent = formatNumberValue(mexcAvg, 8);
-    const arbEl = document.getElementById('ppArb');
-    if (arbEl) arbEl.textContent = formatDiffValue(arbPct, 4);
-    const pnlEl = document.getElementById('ppPnl');
-    if (pnlEl) pnlEl.textContent = formatTwoDecimals(pnl);
-
-    updateProgressBar(targetQty, totalFilled);
-    fillPositionForm(s);
-    renderPositionSummaries(payload?.summaries || []);
+    const inst = getActiveInstance();
+    const state = ensureInstanceState(inst);
+    const expectedSymbol = (inst?.symbol || currentSymbol || 'BASE_USDT').toUpperCase();
+    const expectedSpot = normalizeSpotKey(inst?.spotExchange || getSpotKey());
+    const rawState = payload?.state || payload || {};
+    const responseSymbol = typeof rawState.symbol === 'string' ? rawState.symbol.toUpperCase() : '';
+    const responseSpot = normalizeSpotKey(rawState.spotExchange || rawState.gate?.exchange || expectedSpot);
+    const symbolMatches = !responseSymbol || responseSymbol === expectedSymbol;
+    const spotMatches = responseSpot === expectedSpot;
+    if (!symbolMatches || !spotMatches) {
+      const fallback = state?.positionPayload || createEmptyPositionPayload(expectedSymbol, expectedSpot);
+      const applied = applyPositionPayloadToUI(fallback, { fallbackSymbol: expectedSymbol, fallbackSpot: expectedSpot });
+      if (state) state.hasOpenPosition = applied.hasOpen;
+      return;
+    }
+    const normalized = clonePositionPayload({ state: rawState, summaries: payload?.summaries || [] }, expectedSymbol, expectedSpot);
+    const applied = applyPositionPayloadToUI(normalized, { fallbackSymbol: expectedSymbol, fallbackSpot: expectedSpot });
+    if (state) {
+      state.positionPayload = normalized;
+      state.hasOpenPosition = applied.hasOpen;
+    }
   } catch {}
 }
 setInterval(refreshPosition, 4000); refreshPosition();
+ensureRiskDiscoveryForActiveInstance();
 
 // ======== Execução (precheck + executar)
 document.getElementById('executeTrade').addEventListener('click', async () => {
@@ -3198,20 +3935,55 @@ document.getElementById('executeTrade').addEventListener('click', async () => {
   }
 });
 
+const discoverRiskBtn = document.getElementById('discoverRiskBtn');
+if (discoverRiskBtn) {
+  discoverRiskBtn.addEventListener('click', () => {
+    const inst = getActiveInstance();
+    if (inst) runRiskDiscovery(inst, { reason: 'manual' });
+  });
+}
+
 // [FIX] handler "Definir meta"
 async function submitTargetQty(val) {
   const num = Number(val);
   if (!Number.isFinite(num) || num < 0) throw new Error('Valor inválido para a meta.');
+  const inst = getActiveInstance();
+  const symbol = (inst?.symbol || currentSymbol || 'BASE_USDT').toUpperCase();
+  const spot = normalizeSpotKey(inst?.spotExchange || getSpotKey());
   const resp = await fetch('/api/position-target', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ targetQty: num })
+    body: JSON.stringify({ targetQty: num, symbol, spotExchange: spot })
   });
   const out = await safeJson(resp);
   if (!resp.ok || !out.ok) throw new Error('Falha ao definir meta.');
   const final = out.targetQty ?? num;
+  const baseSymbol = symbol.includes('_') ? symbol.split('_')[0] : getCurrentBaseSymbol();
   const targetEl = document.getElementById('ppTarget');
-  if (targetEl) targetEl.textContent = formatVolumeValue(final, 6, getCurrentBaseSymbol());
+  if (targetEl) targetEl.textContent = formatVolumeValue(final, 6, baseSymbol);
+
+  if (inst) {
+    const state = ensureInstanceState(inst);
+    if (state) {
+      const previous = state.positionPayload || createEmptyPositionPayload(symbol, spot);
+      const mergedState = {
+        ...(previous?.state || {}),
+        symbol,
+        spotExchange: spot,
+        targetQty: final,
+        gate: {
+          ...(previous?.state?.gate || {}),
+          exchange: spot
+        }
+      };
+      state.positionPayload = clonePositionPayload({
+        state: mergedState,
+        summaries: Array.isArray(previous?.summaries) ? previous.summaries : []
+      }, symbol, spot);
+      updateProgressBar(final, toNumberOrNull(previous?.state?.filledQty));
+    }
+  }
+
   return final;
 }
 

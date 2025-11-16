@@ -154,6 +154,79 @@
       background: rgba(125, 97, 255, 0.12);
     }
 
+    .new-instance-popover {
+      position: absolute;
+      min-width: 240px;
+      padding: 16px;
+      border-radius: 16px;
+      border: 1px solid rgba(141, 108, 255, 0.45);
+      background: rgba(15, 18, 48, 0.96);
+      box-shadow: 0 20px 45px -28px rgba(125, 97, 255, 0.4);
+      backdrop-filter: blur(16px);
+      z-index: 50;
+      display: none;
+    }
+
+    .new-instance-popover.open {
+      display: block;
+    }
+
+    .new-instance-popover h4 {
+      margin: 0 0 12px;
+      font-size: 14px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .new-instance-popover label {
+      display: block;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 4px;
+      color: var(--text-muted);
+    }
+
+    .new-instance-popover input,
+    .new-instance-popover select {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid rgba(141, 108, 255, 0.35);
+      background: rgba(9, 12, 32, 0.9);
+      color: var(--text);
+      padding: 8px 10px;
+      font-family: inherit;
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+
+    .new-instance-popover-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    .new-instance-popover-actions button {
+      border: none;
+      border-radius: 999px;
+      padding: 8px 16px;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.04em;
+    }
+
+    #newInstanceConfirm {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #0b0f24;
+    }
+
+    #newInstanceCancel {
+      background: rgba(125, 97, 255, 0.12);
+      color: var(--text-muted);
+    }
+
     .row {
       display: flex;
       gap: 24px;
@@ -900,18 +973,58 @@
       margin-top: 16px;
     }
 
-    #metaBadge {
-      display: inline-flex;
-      align-items: center;
-      padding: 4px 12px;
-      border-radius: 999px;
-      background: rgba(125, 97, 255, 0.18);
-      border: 1px solid rgba(125, 97, 255, 0.3);
+    canvas {
+      border: none;
+    }
+
+    .spread-legend-controls {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+
+    .spread-legend-group {
+      background: rgba(26, 30, 66, 0.6);
+      border: 1px solid rgba(125, 97, 255, 0.18);
+      border-radius: 12px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .spread-legend-group-title {
+      font-weight: 600;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
       color: var(--text-muted);
     }
 
-    canvas {
-      border: none;
+    .spread-legend-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .spread-legend-option input {
+      accent-color: var(--accent);
+    }
+
+    .risk-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    .risk-info {
+      font-size: 13px;
+      color: var(--text-muted);
     }
 
     @media (max-width: 720px) {
@@ -945,6 +1058,22 @@
   <h1>Arbitragem <span data-spot-label>Gate.io</span> x MEXC — <span id="titleSymbol">BASE_USDT</span></h1>
 
   <div class="instance-tabs" id="instanceTabs"></div>
+  <div class="new-instance-popover" id="newInstancePopover">
+    <h4>Nova aba</h4>
+    <form id="newInstanceForm">
+      <label for="newInstanceSymbol">Ativo (BASE_USDT)</label>
+      <input id="newInstanceSymbol" type="text" autocomplete="off" placeholder="Ex.: MGO_USDT" />
+      <label for="newInstanceSpot">Corretora SPOT</label>
+      <select id="newInstanceSpot">
+        <option value="gate">Gate.io</option>
+        <option value="bitget">Bitget</option>
+      </select>
+      <div class="new-instance-popover-actions">
+        <button type="button" id="newInstanceCancel">Cancelar</button>
+        <button type="submit" id="newInstanceConfirm">Adicionar</button>
+      </div>
+    </form>
+  </div>
 
   <div class="card top" id="configCard">
     <h3>Par &amp; Configurações</h3>
@@ -959,7 +1088,6 @@
         </select>
         <button id="applySymbol">Usar</button>
         <button id="autoCfg">Auto-configurar</button>
-        <span id="metaBadge" class="mono muted">meta: —</span>
       </div>
 
       <details style="margin-top:10px;">
@@ -987,6 +1115,9 @@
             <label>Saldo mínimo p/ fechar (USDT)
               <input id="ov_set_min_residual" type="number" step="any" class="mono" />
             </label>
+            <label>Teste de risco (USDT)
+              <input id="ov_set_risk_quote" type="number" step="any" class="mono" placeholder="50" />
+            </label>
           </div>
         </div>
         <div style="margin-top:10px;">
@@ -1001,27 +1132,27 @@
     <h3>Gráfico de Spreads</h3>
     <div class="card-body">
       <div class="spread-controls">
-        <strong>Mostrar:</strong>
-        <button data-spread-filter="all" class="active">Todos</button>
-        <button data-spread-filter="open">Abertura</button>
-        <button data-spread-filter="close">Fechamento</button>
-        <button data-spread-filter="cross">Cruzamentos</button>
-        <strong style="margin-left:12px;">Intervalo:</strong>
-        <button data-spread-range="all" class="active">Tudo</button>
-        <button data-spread-range="5min">5min</button>
-        <button data-spread-range="15min">15min</button>
-        <button data-spread-range="30min">30min</button>
-        <button data-spread-range="1H">1H</button>
-        <button data-spread-range="4H">4H</button>
-        <button data-spread-range="6H">6H</button>
-        <button data-spread-range="12H">12H</button>
-        <button data-spread-range="24H">24H</button>
-        <button id="resetSpreadZoom" style="margin-left:auto;">Resetar zoom</button>
-        <button id="clearSpreadData">Limpar dados do ativo</button>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <strong>Intervalo:</strong>
+          <button data-spread-range="all" class="active">Tudo</button>
+          <button data-spread-range="5min">5min</button>
+          <button data-spread-range="15min">15min</button>
+          <button data-spread-range="30min">30min</button>
+          <button data-spread-range="1H">1H</button>
+          <button data-spread-range="4H">4H</button>
+          <button data-spread-range="6H">6H</button>
+          <button data-spread-range="12H">12H</button>
+          <button data-spread-range="24H">24H</button>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap;">
+          <button id="resetSpreadZoom">Resetar zoom</button>
+          <button id="clearSpreadData">Limpar dados do ativo</button>
+        </div>
       </div>
       <div class="spread-chart-wrapper">
         <canvas id="spreadChart"></canvas>
       </div>
+      <div class="spread-legend-controls" id="spreadLegendControls"></div>
       <div class="spread-stats" style="margin-top:12px;">
         <div>
           <span class="label">Abertura máx</span>
@@ -1114,15 +1245,19 @@
             <label><input type="checkbox" id="soundToggle" /> Som</label>
             <label><input type="checkbox" id="telegramToggle" /> Telegram</label>
           </div>
-          <div class="quote-control-row telegram-template-row">
-            <label><input type="checkbox" id="telegramVolumeGuard" /> Somente se volume ≥ mínimos</label>
-            <label><input type="checkbox" id="telegramIncludeSymbol" checked /> Nome do ativo</label>
-            <label><input type="checkbox" id="telegramIncludeDiff" checked /> Diferença (%)</label>
-            <label><input type="checkbox" id="telegramIncludeVolumes" /> Volumes (3 níveis)</label>
-          </div>
-          <div class="quote-actions">
-            <button id="executeTrade">Executar Ordem Simultânea</button>
-          </div>
+        <div class="quote-control-row telegram-template-row">
+          <label><input type="checkbox" id="telegramVolumeGuard" /> Somente se volume ≥ mínimos</label>
+          <label><input type="checkbox" id="telegramIncludeSymbol" checked /> Nome do ativo</label>
+          <label><input type="checkbox" id="telegramIncludeDiff" checked /> Diferença (%)</label>
+          <label><input type="checkbox" id="telegramIncludeVolumes" /> Vol. (3 níveis)</label>
+        </div>
+        <div class="risk-controls">
+          <button id="discoverRiskBtn">Descobrir Risco MEXC</button>
+          <span id="riskInfo" class="risk-info">Limite ainda não verificado.</span>
+        </div>
+        <div class="quote-actions">
+          <button id="executeTrade" disabled>Executar Ordem Simultânea</button>
+        </div>
         </div>
         <pre id="status" class="mono status" style="margin-top:10px;"></pre>
       </div>
@@ -1351,9 +1486,7 @@
               <th>Data/Hora Abertura</th>
               <th>Data/Hora Fechamento</th>
               <th>Tempo Total da posição</th>
-              <th>Meta</th>
-              <th><span data-spot-label>Gate</span></th>
-              <th>MEXC</th>
+              <th>Volume operado (base • USDT)</th>
               <th><span data-spot-label>Gate</span> Abertura</th>
               <th>MEXC Abertura</th>
               <th><span data-spot-label>Gate</span> Fechamento</th>
