@@ -4010,18 +4010,18 @@ function describeAxiosError(err) {
 }
 
 const MONITORING_HISTORY_INTERVALS = {
-  '1m': {
-    label: '1 minuto',
-    minutes: 1,
-    gate: '1m',
-    mexc: '1m',
+  '3m': {
+    label: '3 minutos',
+    minutes: 3,
+    gate: '3m',
+    mexc: '3m',
     mexcFutures: 'Min1',
-    bitget: '1min',
-    bitgetFutures: '1m',
-    kucoin: '1min',
-    kucoinFutures: 1 * 60,
-    binance: '1m',
-    bybit: '1'
+    bitget: '3min',
+    bitgetFutures: '3m',
+    kucoin: '3min',
+    kucoinFutures: 3 * 60,
+    binance: '3m',
+    bybit: '3'
   },
   '5m': {
     label: '5 minutos',
@@ -4129,6 +4129,25 @@ function sortHistoryPoints(points) {
   return points.sort((a, b) => a.timestamp - b.timestamp);
 }
 
+function aggregateHistoryPoints(points, size) {
+  if (!Array.isArray(points) || size <= 1) return points;
+  const aggregated = [];
+  const sorted = sortHistoryPoints(points.slice());
+  for (let i = 0; i < sorted.length; i += size) {
+    const chunk = sorted.slice(i, i + size);
+    if (!chunk.length) continue;
+    const first = chunk[0];
+    const last = chunk[chunk.length - 1];
+    aggregated.push({
+      timestamp: first.timestamp,
+      open: first.open,
+      close: last.close,
+      volume: chunk.reduce((sum, entry) => sum + (Number.isFinite(entry.volume) ? entry.volume : 0), 0)
+    });
+  }
+  return aggregated;
+}
+
 function bucketizeHistoryCandles(candles, bucketMs) {
   const map = new Map();
   for (const candle of candles) {
@@ -4139,9 +4158,27 @@ function bucketizeHistoryCandles(candles, bucketMs) {
   return map;
 }
 
-function computeArbPct(futuresPrice, spotPrice) {
-  if (!Number.isFinite(futuresPrice) || !Number.isFinite(spotPrice) || spotPrice === 0) return null;
-  return ((futuresPrice - spotPrice) / spotPrice) * 100;
+function formatArbValue(value) {
+  if (!Number.isFinite(value)) return null;
+  return Number(value.toFixed(4));
+}
+
+function computeSpreadPct(sellPrice, buyPrice) {
+  const sell = toNumber(sellPrice);
+  const buy = toNumber(buyPrice);
+  if (!Number.isFinite(sell) || !Number.isFinite(buy) || buy <= 0) return null;
+  return ((sell - buy) / buy) * 100;
+}
+
+function computeMidArbValue(openValue, closeValue) {
+  const open = Number.isFinite(openValue) ? openValue : null;
+  const close = Number.isFinite(closeValue) ? closeValue : null;
+  if (open !== null && close !== null) {
+    return Number(((open + close) / 2).toFixed(4));
+  }
+  if (close !== null) return Number(close.toFixed(4));
+  if (open !== null) return Number(open.toFixed(4));
+  return null;
 }
 
 function buildHistorySeries(spotCandles, futuresCandles, intervalMinutes) {
@@ -4153,13 +4190,16 @@ function buildHistorySeries(spotCandles, futuresCandles, intervalMinutes) {
     const bucket = Math.floor(spot.timestamp / bucketMs) * bucketMs;
     const futures = futuresMap.get(bucket);
     if (!futures) continue;
-    const openArb = computeArbPct(futures.open, spot.open);
-    const closeArb = computeArbPct(futures.close, spot.close);
-    if (!Number.isFinite(closeArb)) continue;
+    const openArb = computeSpreadPct(futures.open, spot.open);
+    const closeArb = computeSpreadPct(spot.close, futures.close);
+    if (!Number.isFinite(openArb) && !Number.isFinite(closeArb)) continue;
+    const openArbPct = formatArbValue(openArb);
+    const closeArbPct = formatArbValue(closeArb);
     points.push({
       timestamp: bucket,
-      openArbPct: Number.isFinite(openArb) ? Number(openArb.toFixed(4)) : Number(closeArb.toFixed(4)),
-      closeArbPct: Number(Number(closeArb).toFixed(4)),
+      openArbPct,
+      closeArbPct,
+      midArbPct: computeMidArbValue(openArb, closeArb),
       spotVolume: spot.volume,
       futuresVolume: futures.volume
     });
@@ -4416,6 +4456,7 @@ async function fetchMexcSpotHistory(meta, intervalKey, limit) {
 
 async function fetchMexcFuturesHistory(meta, intervalKey, limit) {
   const interval = getHistoryIntervalConfig(intervalKey).mexcFutures;
+  const aggregateSize = intervalKey === '3m' ? 3 : 1;
   const { data } = await monitoringHttp.get(`https://contract.mexc.com/api/v1/contract/kline/${meta.mexcFutures}`, {
     params: { interval }
   });
@@ -4436,7 +4477,9 @@ async function fetchMexcFuturesHistory(meta, intervalKey, limit) {
     });
     if (point) points.push(point);
   }
-  return sortHistoryPoints(points);
+  const sortedPoints = sortHistoryPoints(points);
+  const aggregated = aggregateSize > 1 ? aggregateHistoryPoints(sortedPoints, aggregateSize) : sortedPoints;
+  return limitHistoryPoints(aggregated, limit);
 }
 
 async function fetchBitgetSpotHistory(meta, intervalKey, limit) {
@@ -4694,15 +4737,16 @@ async function fetchArbHistory(meta) {
       const spotClose = toNumber(entry?.[2]);
       const futuresOpen = toNumber(futuresEntry?.o);
       const futuresClose = toNumber(futuresEntry?.c);
-      if (!Number.isFinite(spotClose) || !Number.isFinite(futuresClose) || spotClose <= 0) continue;
-      const closeArb = ((futuresClose - spotClose) / spotClose) * 100;
-      const openArb = Number.isFinite(spotOpen) && Number.isFinite(futuresOpen) && spotOpen > 0
-        ? ((futuresOpen - spotOpen) / spotOpen) * 100
-        : closeArb;
+      const openArbRaw = computeSpreadPct(futuresOpen, spotOpen);
+      const closeArbRaw = computeSpreadPct(spotClose, futuresClose);
+      if (!Number.isFinite(openArbRaw) && !Number.isFinite(closeArbRaw)) continue;
+      const openArbPct = formatArbValue(openArbRaw);
+      const closeArbPct = formatArbValue(closeArbRaw);
       points.push({
         timestamp: ts * 1000,
-        arbPct: Number(closeArb.toFixed(4)),
-        openArbPct: Number(openArb.toFixed(4)),
+        arbPct: computeMidArbValue(openArbRaw, closeArbRaw),
+        openArbPct,
+        closeArbPct,
         spotVolume: toNumber(entry?.[6] ?? entry?.[1]),
         futuresVolume: toNumber(futuresEntry?.sum ?? futuresEntry?.v)
       });

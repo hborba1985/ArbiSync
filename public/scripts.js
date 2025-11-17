@@ -4301,13 +4301,28 @@ async function fetchMonitoringHistorySeries(symbol, intervalKey, spotKey, future
       const ts = toFiniteNumber(point.timestamp);
       const close = toFiniteNumber(point.closeArbPct ?? point.arbPct ?? point.closeArb);
       const open = toFiniteNumber(point.openArbPct ?? point.arbPct ?? point.openArb);
-      if (!Number.isFinite(ts) || (!Number.isFinite(close) && !Number.isFinite(open))) return null;
+      const mid = toFiniteNumber(point.midArbPct ?? point.midArb ?? point.arbPct);
+      if (!Number.isFinite(ts) || (!Number.isFinite(close) && !Number.isFinite(open) && !Number.isFinite(mid))) {
+        return null;
+      }
+      let avg = mid;
+      if (!Number.isFinite(avg)) {
+        if (Number.isFinite(open) && Number.isFinite(close)) {
+          avg = Number(((open + close) / 2).toFixed(4));
+        } else if (Number.isFinite(open)) {
+          avg = open;
+        } else if (Number.isFinite(close)) {
+          avg = close;
+        } else {
+          avg = 0;
+        }
+      }
       return {
         timestamp: ts,
         label: formatHistoryLabel(ts),
-        arb: Number.isFinite(close) ? close : open || 0,
-        open: Number.isFinite(open) ? open : close || 0,
-        close: Number.isFinite(close) ? close : open || 0,
+        arb: avg,
+        open: Number.isFinite(open) ? open : Number.isFinite(close) ? close : avg,
+        close: Number.isFinite(close) ? close : Number.isFinite(open) ? open : avg,
         spotVol: toFiniteNumber(point.spotVolume) ?? 0,
         futuresVol: toFiniteNumber(point.futuresVolume) ?? 0
       };
