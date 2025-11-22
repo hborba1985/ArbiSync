@@ -4193,6 +4193,11 @@ const monitoringHistorySpotSelect = document.getElementById('monitoringHistorySp
 const monitoringHistoryFuturesSelect = document.getElementById('monitoringHistoryFutures');
 const monitoringHistorySourceEl = document.getElementById('monitoringHistorySource');
 const monitoringHistoryStatusEl = document.getElementById('monitoringHistoryStatus');
+const monitoringRefreshIntervalSelect = document.getElementById('monitoringRefreshInterval');
+const monitoringPaginationInfo = document.getElementById('monitoringPaginationInfo');
+const monitoringPaginationStatus = document.getElementById('monitoringPaginationStatus');
+const monitoringPaginationPrev = document.getElementById('monitoringPaginationPrev');
+const monitoringPaginationNext = document.getElementById('monitoringPaginationNext');
 const adminStatusLabel = document.getElementById('adminStatusLabel');
 const adminLoginFeedback = document.getElementById('adminLoginFeedback');
 const adminTools = document.getElementById('adminTools');
@@ -4204,6 +4209,12 @@ const adminRemoveCoinSelect = document.getElementById('adminRemoveCoinSelect');
 const blacklistForm = document.getElementById('blacklistForm');
 const blacklistInput = document.getElementById('blacklistInput');
 const blacklistList = document.getElementById('blacklistList');
+
+const MONITORING_PAGE_SIZE = 10;
+const monitoringPaginationState = { page: 1, perPage: MONITORING_PAGE_SIZE };
+let monitoringFilteredRows = [];
+const MONITORING_REFRESH_DEFAULT_SECONDS = 3;
+let monitoringAutoRefreshTimer = null;
 
 function getCheckedValues(selector) {
   return Array.from(document.querySelectorAll(selector))
@@ -4221,6 +4232,64 @@ function getMonitoringName(symbol, fallbackLabel = null) {
   const normalized = symbol.toUpperCase();
   const meta = monitoringMeta.get(normalized);
   return meta?.name || fallbackLabel || normalized;
+}
+
+function resetMonitoringPagination() {
+  monitoringPaginationState.page = 1;
+}
+
+function updateMonitoringPaginationUI(totalRows) {
+  const total = Number(totalRows) || 0;
+  const totalPages = total ? Math.max(1, Math.ceil(total / monitoringPaginationState.perPage)) : 1;
+  if (monitoringPaginationState.page < 1) {
+    monitoringPaginationState.page = 1;
+  }
+  if (!total) {
+    monitoringPaginationState.page = 1;
+  } else if (monitoringPaginationState.page > totalPages) {
+    monitoringPaginationState.page = totalPages;
+  }
+  const start = total ? (monitoringPaginationState.page - 1) * monitoringPaginationState.perPage + 1 : 0;
+  const end = total ? Math.min(start + monitoringPaginationState.perPage - 1, total) : 0;
+  if (monitoringPaginationInfo) {
+    monitoringPaginationInfo.textContent = total
+      ? `Mostrando ${start}–${end} de ${total} oportunidades`
+      : 'Nenhuma oportunidade encontrada';
+  }
+  if (monitoringPaginationStatus) {
+    monitoringPaginationStatus.textContent = total
+      ? `Página ${monitoringPaginationState.page} de ${totalPages}`
+      : 'Página 0 de 0';
+  }
+  if (monitoringPaginationPrev) monitoringPaginationPrev.disabled = monitoringPaginationState.page <= 1 || !total;
+  if (monitoringPaginationNext) monitoringPaginationNext.disabled = monitoringPaginationState.page >= totalPages || !total;
+}
+
+function changeMonitoringPage(delta) {
+  if (!Number.isFinite(delta) || !monitoringFilteredRows.length) return;
+  const totalPages = Math.max(1, Math.ceil(monitoringFilteredRows.length / monitoringPaginationState.perPage));
+  const nextPage = Math.min(Math.max(1, monitoringPaginationState.page + delta), totalPages);
+  if (nextPage === monitoringPaginationState.page) return;
+  monitoringPaginationState.page = nextPage;
+  renderMonitoringTable();
+}
+
+function getMonitoringRefreshSeconds() {
+  const seconds = Number(monitoringRefreshIntervalSelect?.value);
+  if (!Number.isFinite(seconds)) return MONITORING_REFRESH_DEFAULT_SECONDS;
+  return Math.min(Math.max(seconds, 1), 5);
+}
+
+function scheduleMonitoringAutoRefresh() {
+  if (monitoringAutoRefreshTimer) {
+    clearInterval(monitoringAutoRefreshTimer);
+    monitoringAutoRefreshTimer = null;
+  }
+  const intervalMs = getMonitoringRefreshSeconds() * 1000;
+  monitoringAutoRefreshTimer = setInterval(() => {
+    if (document.hidden) return;
+    loadMonitoringData({ silent: true });
+  }, intervalMs);
 }
 
 function resetMonitoringHistory() {
@@ -4349,6 +4418,9 @@ async function loadMonitoringData({ focusSymbol = null, silent = false } = {}) {
     monitoringLoading = false;
     return;
   }
+  if (monitoringLoading && silent) {
+    return;
+  }
   try {
     monitoringLoading = true;
     monitoringLastFetchError = null;
@@ -4400,6 +4472,8 @@ async function loadMonitoringData({ focusSymbol = null, silent = false } = {}) {
     if (monitoringTableBody) {
       monitoringTableBody.innerHTML = `<tr><td colspan="9">Erro ao carregar dados de arbitragem: ${err.message || err}</td></tr>`;
     }
+    monitoringFilteredRows = [];
+    updateMonitoringPaginationUI(0);
     renderMonitoringSummary([]);
   } finally {
     monitoringLoading = false;
@@ -4458,6 +4532,9 @@ function renderMonitoringTable() {
     return bArb - aArb;
   });
 
+  monitoringFilteredRows = filtered;
+  updateMonitoringPaginationUI(filtered.length);
+
   if (!filtered.length) {
     const emptyMessage = monitoringLoading
       ? 'Atualizando dados de arbitragem...'
@@ -4469,7 +4546,10 @@ function renderMonitoringTable() {
     return;
   }
 
-  monitoringTableBody.innerHTML = filtered.map((coin) => {
+  const startIndex = (monitoringPaginationState.page - 1) * monitoringPaginationState.perPage;
+  const visibleCoins = filtered.slice(startIndex, startIndex + monitoringPaginationState.perPage);
+
+  monitoringTableBody.innerHTML = visibleCoins.map((coin) => {
     const metaInfo = monitoringMeta.get(coin.symbol);
     const arbLabel = Number.isFinite(coin.arb) ? `${coin.arb.toFixed(2)}%` : '—';
     const fundingLabel = Number.isFinite(coin.funding) ? `${(coin.funding * 100).toFixed(3)}%` : '—';
@@ -4658,21 +4738,37 @@ async function updateMonitoringChart(symbolInput) {
 const filterInputs = [filterSearchEl, filterVolumeEl, filterStabilityEl];
 filterInputs.forEach((input) => {
   if (!input) return;
-  input.addEventListener('input', () => renderMonitoringTable());
+  const eventName = input.tagName === 'SELECT' ? 'change' : 'input';
+  input.addEventListener(eventName, () => {
+    resetMonitoringPagination();
+    renderMonitoringTable();
+  });
 });
 
 if (filterMinArbEl) {
   filterMinArbEl.addEventListener('input', () => {
     if (filterMinArbValueEl) filterMinArbValueEl.textContent = `${filterMinArbEl.value}%`;
+    resetMonitoringPagination();
     renderMonitoringTable();
   });
 }
 
 ['.filter-spot', '.filter-futures', '.filter-risk'].forEach((selector) => {
   document.querySelectorAll(selector).forEach((input) => {
-    input.addEventListener('change', () => renderMonitoringTable());
+    input.addEventListener('change', () => {
+      resetMonitoringPagination();
+      renderMonitoringTable();
+    });
   });
 });
+
+if (monitoringPaginationPrev) {
+  monitoringPaginationPrev.addEventListener('click', () => changeMonitoringPage(-1));
+}
+
+if (monitoringPaginationNext) {
+  monitoringPaginationNext.addEventListener('click', () => changeMonitoringPage(1));
+}
 
 if (monitoringTableBody) {
   monitoringTableBody.addEventListener('click', (event) => {
@@ -4711,6 +4807,19 @@ if (refreshMonitoringChartBtn) {
     updateMonitoringChart(symbol);
   });
 }
+
+if (monitoringRefreshIntervalSelect) {
+  monitoringRefreshIntervalSelect.addEventListener('change', () => {
+    scheduleMonitoringAutoRefresh();
+    loadMonitoringData({ silent: true });
+  });
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    loadMonitoringData({ silent: true });
+  }
+});
 
 if (adminLoginForm) {
   adminLoginForm.addEventListener('submit', (event) => {
@@ -4830,6 +4939,7 @@ function bootstrapMonitoring() {
   if (filterMinArbValueEl && filterMinArbEl) filterMinArbValueEl.textContent = `${filterMinArbEl.value}%`;
   renderBlacklist();
   loadMonitoringData();
+  scheduleMonitoringAutoRefresh();
 }
 
 bootstrapMonitoring();
