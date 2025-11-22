@@ -4209,6 +4209,11 @@ const adminRemoveCoinSelect = document.getElementById('adminRemoveCoinSelect');
 const blacklistForm = document.getElementById('blacklistForm');
 const blacklistInput = document.getElementById('blacklistInput');
 const blacklistList = document.getElementById('blacklistList');
+const discoverTopAssetsBtn = document.getElementById('discoverTopAssets');
+const addSelectedTopAssetsBtn = document.getElementById('addSelectedTopAssets');
+const topAssetsList = document.getElementById('topAssetsList');
+const topAssetsStatus = document.getElementById('topAssetsStatus');
+const topAssetsResults = document.getElementById('topAssetsResults');
 
 const MONITORING_PAGE_SIZE = 10;
 const monitoringPaginationState = { page: 1, perPage: MONITORING_PAGE_SIZE };
@@ -4277,7 +4282,7 @@ function changeMonitoringPage(delta) {
 function getMonitoringRefreshSeconds() {
   const seconds = Number(monitoringRefreshIntervalSelect?.value);
   if (!Number.isFinite(seconds)) return MONITORING_REFRESH_DEFAULT_SECONDS;
-  return Math.min(Math.max(seconds, 1), 5);
+  return Math.min(Math.max(seconds, 0.5), 5);
 }
 
 function scheduleMonitoringAutoRefresh() {
@@ -4288,7 +4293,7 @@ function scheduleMonitoringAutoRefresh() {
   const intervalMs = getMonitoringRefreshSeconds() * 1000;
   monitoringAutoRefreshTimer = setInterval(() => {
     if (document.hidden) return;
-    loadMonitoringData({ silent: true });
+    loadMonitoringData({ silent: true, updateChart: false });
   }, intervalMs);
 }
 
@@ -4409,7 +4414,7 @@ async function fetchMonitoringHistorySeries(symbol, intervalKey, spotKey, future
   };
 }
 
-async function loadMonitoringData({ focusSymbol = null, silent = false } = {}) {
+async function loadMonitoringData({ focusSymbol = null, silent = false, updateChart = true } = {}) {
   if (!trackedMonitoringSymbols.length) {
     monitoringRows = [];
     resetMonitoringHistory();
@@ -4461,11 +4466,13 @@ async function loadMonitoringData({ focusSymbol = null, silent = false } = {}) {
     resetMonitoringHistory();
     renderMonitoringTable();
     updateMonitoringSelectors();
-    const preferredSymbol = focusSymbol || monitoringPairSelect?.value || monitoringRows[0]?.symbol || null;
-    if (preferredSymbol && monitoringPairSelect) {
-      monitoringPairSelect.value = preferredSymbol;
+    if (updateChart) {
+      const preferredSymbol = focusSymbol || monitoringPairSelect?.value || monitoringRows[0]?.symbol || null;
+      if (preferredSymbol && monitoringPairSelect) {
+        monitoringPairSelect.value = preferredSymbol;
+      }
+      if (preferredSymbol) updateMonitoringChart(preferredSymbol);
     }
-    if (preferredSymbol) updateMonitoringChart(preferredSymbol);
   } catch (err) {
     monitoringLastFetchError = err;
     console.error('[monitoring] erro ao carregar dados', err);
@@ -4811,13 +4818,13 @@ if (refreshMonitoringChartBtn) {
 if (monitoringRefreshIntervalSelect) {
   monitoringRefreshIntervalSelect.addEventListener('change', () => {
     scheduleMonitoringAutoRefresh();
-    loadMonitoringData({ silent: true });
+    loadMonitoringData({ silent: true, updateChart: false });
   });
 }
 
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
-    loadMonitoringData({ silent: true });
+    loadMonitoringData({ silent: true, updateChart: false });
   }
 });
 
@@ -4851,6 +4858,85 @@ function requireAdmin() {
     adminLoginFeedback.style.color = '#ff6b9a';
   }
   return false;
+}
+
+function getSelectedTopExchanges() {
+  return Array.from(document.querySelectorAll('.top-exchange'))
+    .filter((el) => el.checked)
+    .map((el) => el.value);
+}
+
+function renderTopAssetsList(assets) {
+  if (!topAssetsList) return;
+  if (!assets.length) {
+    topAssetsList.innerHTML = '<p class="muted">Nenhum ativo retornado para as corretoras selecionadas.</p>';
+    return;
+  }
+  topAssetsList.innerHTML = assets
+    .map((asset) => {
+      const bestVolume = Number.isFinite(asset.bestVolume) ? formatVolume(asset.bestVolume) : 'N/D';
+      const exchanges = Array.isArray(asset.exchanges) && asset.exchanges.length ? asset.exchanges.join(', ') : '—';
+      return `<label class="top-asset-row">
+        <input type="checkbox" class="top-asset-option" value="${asset.symbol}" data-label="${asset.label || asset.symbol}">
+        <span class="asset-name">${asset.label || asset.symbol}</span>
+        <span class="asset-symbol">${asset.symbol}</span>
+        <span class="asset-volume">Vol 24h: ${bestVolume}</span>
+        <span class="asset-exchanges">${exchanges}</span>
+      </label>`;
+    })
+    .join('');
+}
+
+function normalizeMonitoringSymbolInput(value) {
+  const str = String(value || '').trim().toUpperCase();
+  if (!str) return null;
+  if (str.includes('-')) return str.replace(/-/g, '_');
+  if (str.includes('_')) return str;
+  if (str.endsWith('USDT')) {
+    const base = str.slice(0, -4);
+    return base ? `${base}_USDT` : null;
+  }
+  return str;
+}
+
+async function discoverTopAssets() {
+  if (!requireAdmin()) return;
+  const selected = getSelectedTopExchanges();
+  if (topAssetsStatus) {
+    topAssetsStatus.textContent = 'Buscando ativos com maior volume...';
+    topAssetsStatus.classList.remove('error');
+  }
+  const params = new URLSearchParams();
+  if (selected.length) params.set('exchanges', selected.join(','));
+  try {
+    const response = await fetch(`/api/monitoring/top-assets?${params.toString()}`);
+    if (!response.ok) throw new Error(`Falha ao buscar top 24h (${response.status})`);
+    const payload = await safeJson(response);
+    const assets = Array.isArray(payload?.assets) ? payload.assets : [];
+    renderTopAssetsList(assets);
+    if (topAssetsResults) topAssetsResults.classList.toggle('hidden', !assets.length);
+    if (topAssetsStatus) {
+      const errors = Array.isArray(payload?.errors) && payload.errors.length
+        ? ` — ${payload.errors.length} fontes indisponíveis`
+        : '';
+      topAssetsStatus.textContent = assets.length
+        ? `Encontrados ${assets.length} ativos elegíveis${errors}`
+        : `Nenhum ativo retornado${errors}`;
+      topAssetsStatus.classList.remove('error');
+    }
+  } catch (err) {
+    if (topAssetsStatus) {
+      topAssetsStatus.textContent = err.message || 'Erro ao buscar ativos';
+      topAssetsStatus.classList.add('error');
+    }
+    if (topAssetsResults) topAssetsResults.classList.add('hidden');
+  }
+}
+
+function getSelectedDiscoveredAssets() {
+  return Array.from(document.querySelectorAll('.top-asset-option'))
+    .filter((el) => el.checked)
+    .map((el) => ({ symbol: el.value, label: el.dataset.label || el.value }));
 }
 
 if (adminAddCoinForm) {
@@ -4930,6 +5016,47 @@ if (blacklistList) {
     blacklist.delete(symbol);
     renderBlacklist();
     renderMonitoringTable();
+  });
+}
+
+if (discoverTopAssetsBtn) {
+  discoverTopAssetsBtn.addEventListener('click', discoverTopAssets);
+}
+
+if (addSelectedTopAssetsBtn) {
+  addSelectedTopAssetsBtn.addEventListener('click', () => {
+    if (!requireAdmin()) return;
+    const selected = getSelectedDiscoveredAssets();
+    if (!selected.length) {
+      if (topAssetsStatus) {
+        topAssetsStatus.textContent = 'Selecione ao menos um ativo da lista retornada.';
+        topAssetsStatus.classList.add('error');
+      }
+      return;
+    }
+    const added = [];
+    selected.forEach(({ symbol, label }) => {
+      const normalized = normalizeMonitoringSymbolInput(symbol);
+      if (!normalized) return;
+      if (!monitoringMeta.has(normalized)) {
+        monitoringMeta.set(normalized, { name: label || normalized, risk: 'Médio' });
+      }
+      if (!trackedMonitoringSymbols.includes(normalized)) {
+        trackedMonitoringSymbols.push(normalized);
+        added.push(normalized);
+      }
+      blacklist.delete(normalized);
+    });
+    updateMonitoringSelectors();
+    renderBlacklist();
+    renderMonitoringTable();
+    if (added.length) {
+      loadMonitoringData({ focusSymbol: added[0], silent: true });
+      if (topAssetsStatus) {
+        topAssetsStatus.textContent = `Adicionados ${added.length} ativo(s) ao monitoramento.`;
+        topAssetsStatus.classList.remove('error');
+      }
+    }
   });
 }
 

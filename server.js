@@ -4635,6 +4635,167 @@ function findFuturesProvider(key) {
   return monitoringFuturesProviders.find((provider) => provider.key === key);
 }
 
+async function fetchGateTopSpotAssets() {
+  const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/spot/tickers');
+  return (Array.isArray(data) ? data : [])
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.currency_pair), volume: toNumber(item.quote_volume ?? item.base_volume) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchGateTopFuturesAssets() {
+  const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/tickers');
+  return (Array.isArray(data) ? data : [])
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.contract), volume: toNumber(item.volume_usd ?? item.volume_quote ?? item.volume) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchMexcTopSpotAssets() {
+  const { data } = await monitoringHttp.get('https://api.mexc.com/api/v3/ticker/24hr');
+  return (Array.isArray(data) ? data : [])
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.quoteVolume ?? item.volume)) })
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchMexcTopFuturesAssets() {
+  const { data } = await monitoringHttp.get('https://contract.mexc.com/api/v1/contract/ticker');
+  const list = Array.isArray(data?.data) ? data.data : [];
+  return list
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.amount24 ?? item.volume)) })
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchBitgetTopSpotAssets() {
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/spot/v1/market/tickers');
+  const list = Array.isArray(data?.data) ? data.data : [];
+  return list
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.usdtVolume ?? item.quoteVolume ?? item.baseVolume) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchBitgetTopFuturesAssets() {
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/mix/v1/market/tickers', { params: { productType: 'umcbl' } });
+  const list = Array.isArray(data?.data) ? data.data : [];
+  return list
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.usdtVolume ?? item.quoteVolume)) })
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchKucoinTopSpotAssets() {
+  const { data } = await monitoringHttp.get('https://api.kucoin.com/api/v1/market/allTickers');
+  const list = Array.isArray(data?.data?.ticker) ? data.data.ticker : [];
+  return list
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.volValue || item.vol)) })
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchKucoinTopFuturesAssets() {
+  const { data } = await monitoringHttp.get('https://api-futures.kucoin.com/api/v1/allTickers');
+  const list = Array.isArray(data?.data?.ticker) ? data.data.ticker : [];
+  return list
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.turnover ?? item.turnoverValue)) })
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchBinanceTopSpotAssets() {
+  const { data } = await monitoringHttp.get('https://data-api.binance.vision/api/v3/ticker/24hr');
+  return (Array.isArray(data) ? data : [])
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.quoteVolume ?? item.volume)) })
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchBinanceTopFuturesAssets() {
+  const { data } = await monitoringHttp.get('https://fapi.binance.com/fapi/v1/ticker/24hr');
+  return (Array.isArray(data) ? data : [])
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.quoteVolume ?? item.volume)) })
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchBybitTopSpotAssets() {
+  const { data } = await monitoringHttp.get('https://api.bybit.com/v5/market/tickers', { params: { category: 'spot' } });
+  const list = Array.isArray(data?.result?.list) ? data.result.list : [];
+  return list
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.qv ?? item.qv24h ?? item.volume)) })
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchBybitTopFuturesAssets() {
+  const { data } = await monitoringHttp.get('https://api.bybit.com/v5/market/tickers', { params: { category: 'linear' } });
+  const list = Array.isArray(data?.result?.list) ? data.result.list : [];
+  return list
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.turnover24h ?? item.turnover ?? item.volume)) })
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+const TOP_ASSET_LIMIT = 60;
+const topAssetProviders = [
+  { key: 'gate_spot', label: 'Gate.io Spot', type: 'spot', list: fetchGateTopSpotAssets },
+  { key: 'mexc_spot', label: 'MEXC Spot', type: 'spot', list: fetchMexcTopSpotAssets },
+  { key: 'bitget_spot', label: 'Bitget Spot', type: 'spot', list: fetchBitgetTopSpotAssets },
+  { key: 'kucoin_spot', label: 'KuCoin Spot', type: 'spot', list: fetchKucoinTopSpotAssets },
+  { key: 'binance_spot', label: 'Binance Spot', type: 'spot', list: fetchBinanceTopSpotAssets },
+  { key: 'bybit_spot', label: 'Bybit Spot', type: 'spot', list: fetchBybitTopSpotAssets },
+  { key: 'gate_futures', label: 'Gate.io Futures', type: 'futures', list: fetchGateTopFuturesAssets },
+  { key: 'mexc_futures', label: 'MEXC Futures', type: 'futures', list: fetchMexcTopFuturesAssets },
+  { key: 'bitget_futures', label: 'Bitget Futures', type: 'futures', list: fetchBitgetTopFuturesAssets },
+  { key: 'kucoin_futures', label: 'KuCoin Futures', type: 'futures', list: fetchKucoinTopFuturesAssets },
+  { key: 'binance_futures', label: 'Binance Futures', type: 'futures', list: fetchBinanceTopFuturesAssets },
+  { key: 'bybit_futures', label: 'Bybit Futures', type: 'futures', list: fetchBybitTopFuturesAssets }
+];
+
+function findTopAssetProvider(key) {
+  return topAssetProviders.find((provider) => provider.key === key);
+}
+
+async function collectTopAssets(provider) {
+  try {
+    const assets = await provider.list();
+    return { provider, assets, error: null };
+  } catch (err) {
+    return { provider, assets: [], error: describeAxiosError(err) };
+  }
+}
+
+async function buildTopAssetsResponse(selectedKeys) {
+  const providers = selectedKeys?.length
+    ? selectedKeys.map((key) => findTopAssetProvider(key)).filter(Boolean)
+    : topAssetProviders;
+  if (!providers.length) return { assets: [], errors: [] };
+  const responses = await Promise.all(providers.map((provider) => collectTopAssets(provider)));
+  const merged = new Map();
+  for (const { provider, assets } of responses) {
+    for (const asset of assets) {
+      const meta = buildSymbolMeta(asset.symbol);
+      if (!meta || !meta.quote || meta.quote !== 'USDT') continue;
+      const current = merged.get(meta.symbol) || {
+        symbol: meta.symbol,
+        label: MONITORING_DEFAULT_LABELS?.[meta.symbol] || meta.symbol,
+        exchanges: new Set(),
+        volumes: [],
+        bestVolume: 0
+      };
+      current.exchanges.add(provider.label);
+      if (Number.isFinite(asset.volume)) {
+        current.volumes.push({ exchange: provider.label, volume: asset.volume });
+        current.bestVolume = Math.max(current.bestVolume, asset.volume);
+      }
+      merged.set(meta.symbol, current);
+    }
+  }
+  const assets = Array.from(merged.values())
+    .map((item) => ({
+      ...item,
+      exchanges: Array.from(item.exchanges).sort(),
+      volumes: item.volumes.sort((a, b) => (b.volume || 0) - (a.volume || 0))
+    }))
+    .sort((a, b) => (b.bestVolume || 0) - (a.bestVolume || 0))
+    .slice(0, TOP_ASSET_LIMIT);
+  const errors = responses.filter((entry) => entry.error).map((entry) => ({
+    provider: entry.provider?.label || entry.provider?.key,
+    error: entry.error
+  }));
+  return { assets, errors, exchanges: providers.map((p) => p.key) };
+}
+
 async function fetchHistoryDataset(provider, meta, intervalKey, limit) {
   if (!provider || typeof provider.history !== 'function') {
     return { candles: [], error: 'Histórico não disponível para esta corretora' };
@@ -4831,6 +4992,20 @@ app.get('/api/monitoring/history', async (req, res) => {
     });
   } catch (err) {
     console.error('[monitoring] erro ao montar histórico', err);
+    res.status(500).json({ error: err.message || err });
+  }
+});
+
+app.get('/api/monitoring/top-assets', async (req, res) => {
+  try {
+    const selected = String(req.query.exchanges || '')
+      .split(',')
+      .map((key) => key.trim())
+      .filter(Boolean);
+    const result = await buildTopAssetsResponse(selected);
+    res.json({ ...result, updatedAt: new Date().toISOString() });
+  } catch (err) {
+    console.error('[monitoring] erro ao buscar ativos mais negociados', err);
     res.status(500).json({ error: err.message || err });
   }
 });

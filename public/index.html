@@ -2000,6 +2000,7 @@
             <div class="monitoring-refresh-bar">
               <label for="monitoringRefreshInterval">Frequência de atualização</label>
               <select id="monitoringRefreshInterval">
+                <option value="0.5">0.5s</option>
                 <option value="1">1s</option>
                 <option value="2">2s</option>
                 <option value="3" selected>3s</option>
@@ -2137,6 +2138,36 @@
                   <button type="submit">Adicionar</button>
                   <div class="blacklist-list" id="blacklistList"></div>
                 </form>
+                <div class="admin-discovery">
+                  <div class="discovery-header">
+                    <h4>Ativos mais negociados (24h)</h4>
+                    <p class="muted">Escolha as corretoras e busque os pares com maior volume para adicioná-los rapidamente.</p>
+                  </div>
+                  <div class="discovery-controls">
+                    <div class="discovery-exchanges">
+                      <label><input type="checkbox" class="top-exchange" value="gate_spot" checked />Gate.io Spot</label>
+                      <label><input type="checkbox" class="top-exchange" value="mexc_spot" checked />MEXC Spot</label>
+                      <label><input type="checkbox" class="top-exchange" value="bitget_spot" checked />Bitget Spot</label>
+                      <label><input type="checkbox" class="top-exchange" value="kucoin_spot" checked />KuCoin Spot</label>
+                      <label><input type="checkbox" class="top-exchange" value="binance_spot" checked />Binance Spot</label>
+                      <label><input type="checkbox" class="top-exchange" value="bybit_spot" checked />Bybit Spot</label>
+                      <label><input type="checkbox" class="top-exchange" value="gate_futures" checked />Gate.io Futures</label>
+                      <label><input type="checkbox" class="top-exchange" value="mexc_futures" checked />MEXC Futures</label>
+                      <label><input type="checkbox" class="top-exchange" value="bitget_futures" checked />Bitget Futures</label>
+                      <label><input type="checkbox" class="top-exchange" value="kucoin_futures" checked />KuCoin Futures</label>
+                      <label><input type="checkbox" class="top-exchange" value="binance_futures" checked />Binance Futures</label>
+                      <label><input type="checkbox" class="top-exchange" value="bybit_futures" checked />Bybit Futures</label>
+                    </div>
+                    <div class="discovery-actions">
+                      <button type="button" id="discoverTopAssets">Buscar top 24h</button>
+                      <span id="topAssetsStatus" class="muted"></span>
+                    </div>
+                  </div>
+                  <div id="topAssetsResults" class="top-assets-results hidden">
+                    <div class="top-assets-list" id="topAssetsList"></div>
+                    <button type="button" id="addSelectedTopAssets">Adicionar selecionados</button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
