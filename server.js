@@ -4652,7 +4652,7 @@ async function fetchGateTopFuturesAssets() {
 async function fetchMexcTopSpotAssets() {
   const { data } = await monitoringHttp.get('https://api.mexc.com/api/v3/ticker/24hr');
   return (Array.isArray(data) ? data : [])
-    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.quoteVolume ?? item.volume)) })
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.quoteVolume ?? item.volume) }))
     .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
 }
 
@@ -4660,7 +4660,7 @@ async function fetchMexcTopFuturesAssets() {
   const { data } = await monitoringHttp.get('https://contract.mexc.com/api/v1/contract/ticker');
   const list = Array.isArray(data?.data) ? data.data : [];
   return list
-    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.amount24 ?? item.volume)) })
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.amount24 ?? item.volume) }))
     .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
 }
 
@@ -4676,7 +4676,7 @@ async function fetchBitgetTopFuturesAssets() {
   const { data } = await monitoringHttp.get('https://api.bitget.com/api/mix/v1/market/tickers', { params: { productType: 'umcbl' } });
   const list = Array.isArray(data?.data) ? data.data : [];
   return list
-    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.usdtVolume ?? item.quoteVolume)) })
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.usdtVolume ?? item.quoteVolume) }))
     .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
 }
 
@@ -4684,7 +4684,7 @@ async function fetchKucoinTopSpotAssets() {
   const { data } = await monitoringHttp.get('https://api.kucoin.com/api/v1/market/allTickers');
   const list = Array.isArray(data?.data?.ticker) ? data.data.ticker : [];
   return list
-    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.volValue || item.vol)) })
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.volValue || item.vol) }))
     .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
 }
 
@@ -4692,21 +4692,21 @@ async function fetchKucoinTopFuturesAssets() {
   const { data } = await monitoringHttp.get('https://api-futures.kucoin.com/api/v1/allTickers');
   const list = Array.isArray(data?.data?.ticker) ? data.data.ticker : [];
   return list
-    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.turnover ?? item.turnoverValue)) })
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.turnover ?? item.turnoverValue) }))
     .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
 }
 
 async function fetchBinanceTopSpotAssets() {
   const { data } = await monitoringHttp.get('https://data-api.binance.vision/api/v3/ticker/24hr');
   return (Array.isArray(data) ? data : [])
-    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.quoteVolume ?? item.volume)) })
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.quoteVolume ?? item.volume) }))
     .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
 }
 
 async function fetchBinanceTopFuturesAssets() {
   const { data } = await monitoringHttp.get('https://fapi.binance.com/fapi/v1/ticker/24hr');
   return (Array.isArray(data) ? data : [])
-    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.quoteVolume ?? item.volume)) })
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.quoteVolume ?? item.volume) }))
     .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
 }
 
@@ -4714,7 +4714,7 @@ async function fetchBybitTopSpotAssets() {
   const { data } = await monitoringHttp.get('https://api.bybit.com/v5/market/tickers', { params: { category: 'spot' } });
   const list = Array.isArray(data?.result?.list) ? data.result.list : [];
   return list
-    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.qv ?? item.qv24h ?? item.volume)) })
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.qv ?? item.qv24h ?? item.volume) }))
     .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
 }
 
@@ -4722,7 +4722,7 @@ async function fetchBybitTopFuturesAssets() {
   const { data } = await monitoringHttp.get('https://api.bybit.com/v5/market/tickers', { params: { category: 'linear' } });
   const list = Array.isArray(data?.result?.list) ? data.result.list : [];
   return list
-    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.turnover24h ?? item.turnover ?? item.volume)) })
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.turnover24h ?? item.turnover ?? item.volume) }))
     .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
 }
 
