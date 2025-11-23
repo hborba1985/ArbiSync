@@ -4134,10 +4134,18 @@ if (positionDismantleBtn) {
 // ======== Shell / Monitoring / Admin UI ========
 const appShellEl = document.getElementById('appShell');
 const sidebarToggleBtn = document.getElementById('sidebarToggle');
+function refreshSidebarToggleLabel() {
+  if (!sidebarToggleBtn || !appShellEl) return;
+  const hidden = appShellEl.classList.contains('sidebar-hidden');
+  sidebarToggleBtn.textContent = hidden ? 'Mostrar menu' : 'Ocultar menu';
+  sidebarToggleBtn.setAttribute('aria-expanded', String(!hidden));
+}
 if (sidebarToggleBtn && appShellEl) {
   sidebarToggleBtn.addEventListener('click', () => {
     appShellEl.classList.toggle('sidebar-hidden');
+    refreshSidebarToggleLabel();
   });
+  refreshSidebarToggleLabel();
 }
 
 const navButtons = Array.from(document.querySelectorAll('.sidebar-link[data-view-target]'));
@@ -4214,12 +4222,19 @@ const addSelectedTopAssetsBtn = document.getElementById('addSelectedTopAssets');
 const topAssetsList = document.getElementById('topAssetsList');
 const topAssetsStatus = document.getElementById('topAssetsStatus');
 const topAssetsResults = document.getElementById('topAssetsResults');
+const topAssetsPaginationInfo = document.getElementById('topAssetsPaginationInfo');
+const topAssetsPaginationStatus = document.getElementById('topAssetsPaginationStatus');
+const topAssetsPrev = document.getElementById('topAssetsPrev');
+const topAssetsNext = document.getElementById('topAssetsNext');
 
 const MONITORING_PAGE_SIZE = 10;
 const monitoringPaginationState = { page: 1, perPage: MONITORING_PAGE_SIZE };
 let monitoringFilteredRows = [];
 const MONITORING_REFRESH_DEFAULT_SECONDS = 3;
 let monitoringAutoRefreshTimer = null;
+const TOP_ASSETS_PAGE_SIZE = 8;
+const topAssetsState = { items: [], page: 1, perPage: TOP_ASSETS_PAGE_SIZE };
+const topAssetsSelection = new Set();
 
 function getCheckedValues(selector) {
   return Array.from(document.querySelectorAll(selector))
@@ -4438,31 +4453,44 @@ async function loadMonitoringData({ focusSymbol = null, silent = false, updateCh
     if (!response.ok) throw new Error(`Falha ao buscar dados (${response.status})`);
     const payload = await safeJson(response);
     const entries = Array.isArray(payload?.symbols) ? payload.symbols : [];
-    monitoringRows = entries.map((entry) => {
+    monitoringRows = entries.flatMap((entry) => {
       const symbol = (entry?.symbol || '').toUpperCase();
-      if (!symbol) return null;
+      if (!symbol) return [];
       const name = getMonitoringName(symbol, entry?.label || symbol);
       const metrics = entry?.metrics || {};
-      const arb = toFiniteNumber(metrics.arbPct);
-      const volume24h = toFiniteNumber(metrics.volume24h);
-      const funding = toFiniteNumber(metrics.fundingRate);
       const volatility = toFiniteNumber(metrics.volatilityPct);
       const metaInfo = monitoringMeta.get(symbol);
       const stability = metrics.stability || metaInfo?.stability || (Number.isFinite(volatility) ? (volatility > 6 ? 'Volátil' : 'Estável') : 'Indefinido');
       const riskLabel = metrics.riskLabel || metaInfo?.risk || 'Indefinido';
-      return {
-        symbol,
-        name,
-        arb,
-        spotExchanges: (entry?.spot || []).filter((ticker) => !ticker.error && ticker.exchange).map((ticker) => ticker.exchange),
-        futuresExchanges: (entry?.futures || []).filter((ticker) => !ticker.error && ticker.exchange).map((ticker) => ticker.exchange),
-        volume24h: Number.isFinite(volume24h) ? volume24h : 0,
-        depth: metrics.depthLabel || 'N/D',
-        funding,
-        risk: riskLabel,
-        stability
-      };
-    }).filter(Boolean);
+      const spotTickers = (entry?.spot || []).filter((ticker) => !ticker.error && Number.isFinite(ticker.ask) && ticker.ask > 0);
+      const futuresTickers = (entry?.futures || []).filter((ticker) => !ticker.error && Number.isFinite(ticker.bid));
+      const combos = [];
+      for (const spot of spotTickers) {
+        for (const futures of futuresTickers) {
+          const arbRaw = Number.isFinite(spot.ask) && spot.ask > 0 && Number.isFinite(futures.bid)
+            ? ((futures.bid - spot.ask) / spot.ask) * 100
+            : null;
+          if (!Number.isFinite(arbRaw)) continue;
+          const arb = Number(arbRaw.toFixed(3));
+          const volumeCandidates = [toFiniteNumber(spot.volume), toFiniteNumber(futures.volume)].filter((v) => Number.isFinite(v));
+          const volume24h = volumeCandidates.length ? Math.min(...volumeCandidates) : 0;
+          combos.push({
+            symbol,
+            name,
+            arb,
+            spotExchanges: [spot.exchange || spot.key || 'SPOT'],
+            futuresExchanges: [futures.exchange || futures.key || 'FUTUROS'],
+            volume24h,
+            depth: metrics.depthLabel || 'N/D',
+            funding: toFiniteNumber(futures.fundingRate),
+            risk: riskLabel,
+            stability,
+            combination: `${spot.exchange || spot.key || 'SPOT'} → ${futures.exchange || futures.key || 'FUTUROS'}`
+          });
+        }
+      }
+      return combos;
+    });
     resetMonitoringHistory();
     renderMonitoringTable();
     updateMonitoringSelectors();
@@ -4511,7 +4539,8 @@ function renderMonitoringSummary(filtered) {
 function renderMonitoringTable() {
   if (!monitoringTableBody) return;
   const searchTerm = (filterSearchEl?.value || '').trim().toUpperCase();
-  const minArb = Number(filterMinArbEl?.value) || 0;
+  const minArbRaw = Number(filterMinArbEl?.value);
+  const minArb = Number.isFinite(minArbRaw) ? Math.max(0, minArbRaw) : 0;
   const minVolume = Number(filterVolumeEl?.value) || 0;
   const selectedSpot = getCheckedValues('.filter-spot');
   const selectedFutures = getCheckedValues('.filter-futures');
@@ -4523,7 +4552,6 @@ function renderMonitoringTable() {
     .filter((coin) => !blacklist.has(coin.symbol))
     .filter((coin) => (searchTerm ? coin.symbol.includes(searchTerm) || coin.name?.toUpperCase().includes(searchTerm) : true))
     .filter((coin) => {
-      if (!minArb) return true;
       if (!Number.isFinite(coin.arb)) return false;
       return coin.arb >= minArb;
     })
@@ -4754,7 +4782,10 @@ filterInputs.forEach((input) => {
 
 if (filterMinArbEl) {
   filterMinArbEl.addEventListener('input', () => {
-    if (filterMinArbValueEl) filterMinArbValueEl.textContent = `${filterMinArbEl.value}%`;
+    if (filterMinArbValueEl) {
+      const value = Number(filterMinArbEl.value) || 0;
+      filterMinArbValueEl.textContent = `${value.toFixed(2)}%`;
+    }
     resetMonitoringPagination();
     renderMonitoringTable();
   });
@@ -4866,25 +4897,57 @@ function getSelectedTopExchanges() {
     .map((el) => el.value);
 }
 
-function renderTopAssetsList(assets) {
+function updateTopAssetsPagination(total) {
+  const totalPages = total ? Math.max(1, Math.ceil(total / topAssetsState.perPage)) : 1;
+  if (topAssetsState.page < 1) topAssetsState.page = 1;
+  if (topAssetsState.page > totalPages) topAssetsState.page = totalPages;
+  const start = total ? (topAssetsState.page - 1) * topAssetsState.perPage + 1 : 0;
+  const end = total ? Math.min(start + topAssetsState.perPage - 1, total) : 0;
+  if (topAssetsPaginationInfo) {
+    topAssetsPaginationInfo.textContent = total
+      ? `Mostrando ${start}–${end} de ${total} ativos`
+      : 'Nenhum ativo carregado';
+  }
+  if (topAssetsPaginationStatus) {
+    topAssetsPaginationStatus.textContent = total ? `Página ${topAssetsState.page} de ${totalPages}` : 'Página 0 de 0';
+  }
+  if (topAssetsPrev) topAssetsPrev.disabled = topAssetsState.page <= 1 || !total;
+  if (topAssetsNext) topAssetsNext.disabled = topAssetsState.page >= totalPages || !total;
+}
+
+function renderTopAssetsList() {
   if (!topAssetsList) return;
-  if (!assets.length) {
-    topAssetsList.innerHTML = '<p class="muted">Nenhum ativo retornado para as corretoras selecionadas.</p>';
+  const assets = topAssetsState.items || [];
+  const total = assets.length;
+  if (!total) {
+    topAssetsList.innerHTML = '<p class="muted" style="padding:12px;">Nenhum ativo retornado para as corretoras selecionadas.</p>';
+    updateTopAssetsPagination(0);
     return;
   }
-  topAssetsList.innerHTML = assets
+  const startIndex = (topAssetsState.page - 1) * topAssetsState.perPage;
+  const visible = assets.slice(startIndex, startIndex + topAssetsState.perPage);
+  topAssetsList.innerHTML = visible
     .map((asset) => {
       const bestVolume = Number.isFinite(asset.bestVolume) ? formatVolume(asset.bestVolume) : 'N/D';
       const exchanges = Array.isArray(asset.exchanges) && asset.exchanges.length ? asset.exchanges.join(', ') : '—';
-      return `<label class="top-asset-row">
-        <input type="checkbox" class="top-asset-option" value="${asset.symbol}" data-label="${asset.label || asset.symbol}">
+      const checked = topAssetsSelection.has(asset.symbol) ? 'checked' : '';
+      return `<label class="top-assets-row">
+        <span><input type="checkbox" class="top-asset-option" value="${asset.symbol}" data-label="${asset.label || asset.symbol}" ${checked}></span>
         <span class="asset-name">${asset.label || asset.symbol}</span>
         <span class="asset-symbol">${asset.symbol}</span>
-        <span class="asset-volume">Vol 24h: ${bestVolume}</span>
+        <span class="asset-volume">${bestVolume}</span>
         <span class="asset-exchanges">${exchanges}</span>
       </label>`;
     })
     .join('');
+  topAssetsList.querySelectorAll('.top-asset-option').forEach((input) => {
+    input.addEventListener('change', () => {
+      const symbol = input.value;
+      if (!symbol) return;
+      if (input.checked) topAssetsSelection.add(symbol); else topAssetsSelection.delete(symbol);
+    });
+  });
+  updateTopAssetsPagination(total);
 }
 
 function normalizeMonitoringSymbolInput(value) {
@@ -4913,7 +4976,10 @@ async function discoverTopAssets() {
     if (!response.ok) throw new Error(`Falha ao buscar top 24h (${response.status})`);
     const payload = await safeJson(response);
     const assets = Array.isArray(payload?.assets) ? payload.assets : [];
-    renderTopAssetsList(assets);
+    topAssetsState.items = assets;
+    topAssetsState.page = 1;
+    topAssetsSelection.clear();
+    renderTopAssetsList();
     if (topAssetsResults) topAssetsResults.classList.toggle('hidden', !assets.length);
     if (topAssetsStatus) {
       const errors = Array.isArray(payload?.errors) && payload.errors.length
@@ -4934,9 +5000,9 @@ async function discoverTopAssets() {
 }
 
 function getSelectedDiscoveredAssets() {
-  return Array.from(document.querySelectorAll('.top-asset-option'))
-    .filter((el) => el.checked)
-    .map((el) => ({ symbol: el.value, label: el.dataset.label || el.value }));
+  return topAssetsState.items
+    .filter((asset) => topAssetsSelection.has(asset.symbol))
+    .map((asset) => ({ symbol: asset.symbol, label: asset.label || asset.symbol }));
 }
 
 if (adminAddCoinForm) {
@@ -5023,6 +5089,26 @@ if (discoverTopAssetsBtn) {
   discoverTopAssetsBtn.addEventListener('click', discoverTopAssets);
 }
 
+if (topAssetsPrev) {
+  topAssetsPrev.addEventListener('click', () => {
+    if (topAssetsState.page > 1) {
+      topAssetsState.page -= 1;
+      renderTopAssetsList();
+    }
+  });
+}
+
+if (topAssetsNext) {
+  topAssetsNext.addEventListener('click', () => {
+    const total = topAssetsState.items.length;
+    const totalPages = total ? Math.max(1, Math.ceil(total / topAssetsState.perPage)) : 1;
+    if (topAssetsState.page < totalPages) {
+      topAssetsState.page += 1;
+      renderTopAssetsList();
+    }
+  });
+}
+
 if (addSelectedTopAssetsBtn) {
   addSelectedTopAssetsBtn.addEventListener('click', () => {
     if (!requireAdmin()) return;
@@ -5063,7 +5149,10 @@ if (addSelectedTopAssetsBtn) {
 function bootstrapMonitoring() {
   updateMonitoringSelectors();
   renderMonitoringTable();
-  if (filterMinArbValueEl && filterMinArbEl) filterMinArbValueEl.textContent = `${filterMinArbEl.value}%`;
+  if (filterMinArbValueEl && filterMinArbEl) {
+    const value = Number(filterMinArbEl.value) || 0;
+    filterMinArbValueEl.textContent = `${value.toFixed(2)}%`;
+  }
   renderBlacklist();
   loadMonitoringData();
   scheduleMonitoringAutoRefresh();
