@@ -4207,8 +4207,10 @@ const monitoringPaginationStatus = document.getElementById('monitoringPagination
 const monitoringPaginationPrev = document.getElementById('monitoringPaginationPrev');
 const monitoringPaginationNext = document.getElementById('monitoringPaginationNext');
 const adminStatusLabel = document.getElementById('adminStatusLabel');
+const adminStatusLabelInline = document.getElementById('adminStatusLabelInline');
 const adminLoginFeedback = document.getElementById('adminLoginFeedback');
 const adminTools = document.getElementById('adminTools');
+const adminDiscoveryTools = document.getElementById('adminDiscoveryTools');
 const adminLoginForm = document.getElementById('adminLoginForm');
 const adminPasswordInput = document.getElementById('adminPassword');
 const adminAddCoinForm = document.getElementById('adminAddCoinForm');
@@ -4869,13 +4871,17 @@ if (adminLoginForm) {
       adminLoginFeedback.classList.remove('muted');
       adminLoginFeedback.style.color = '#3fe7c3';
       adminStatusLabel.textContent = 'Conectado';
+      if (adminStatusLabelInline) adminStatusLabelInline.textContent = 'Conectado';
       if (adminTools) adminTools.classList.remove('hidden');
+      if (adminDiscoveryTools) adminDiscoveryTools.classList.remove('hidden');
     } else {
       isAdmin = false;
       adminLoginFeedback.textContent = 'Senha incorreta';
       adminLoginFeedback.classList.add('muted');
       adminStatusLabel.textContent = 'Visitante';
+      if (adminStatusLabelInline) adminStatusLabelInline.textContent = 'Visitante';
       if (adminTools) adminTools.classList.add('hidden');
+      if (adminDiscoveryTools) adminDiscoveryTools.classList.add('hidden');
     }
     if (adminPasswordInput) adminPasswordInput.value = '';
   });
@@ -4962,6 +4968,64 @@ function normalizeMonitoringSymbolInput(value) {
   return str;
 }
 
+function applyMonitoringSymbols(list) {
+  const entries = Array.isArray(list) ? list : [];
+  monitoringMeta.clear();
+  entries.forEach((item) => {
+    const normalized = normalizeMonitoringSymbolInput(item?.symbol);
+    if (!normalized) return;
+    monitoringMeta.set(normalized, item?.meta || {});
+  });
+  if (!monitoringMeta.size) {
+    monitoringMeta.set('CPOOL_USDT', { name: 'Clearpool', risk: 'Baixo' });
+    monitoringMeta.set('MAT_USDT', { name: 'Mycelium', risk: 'Médio' });
+    monitoringMeta.set('FARM_USDT', { name: 'Harvest Finance', risk: 'Baixo' });
+  }
+  trackedMonitoringSymbols = Array.from(monitoringMeta.keys());
+  updateMonitoringSelectors();
+  renderMonitoringTable();
+}
+
+async function hydrateMonitoringSymbolsFromServer() {
+  try {
+    const resp = await fetch('/api/monitoring/symbols');
+    const data = await safeJson(resp);
+    if (resp.ok && Array.isArray(data?.symbols)) {
+      applyMonitoringSymbols(data.symbols);
+      return;
+    }
+  } catch (e) {
+    console.warn('[monitoring] fallback para símbolos locais', e?.message || e);
+  }
+  applyMonitoringSymbols(Array.from(monitoringMeta.entries()).map(([symbol, meta]) => ({ symbol, meta })));
+}
+
+async function persistMonitoringSymbol(symbol, meta = {}) {
+  const response = await fetch('/api/monitoring/symbols', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol, meta })
+  });
+  const data = await safeJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error || 'Falha ao salvar ativo');
+  }
+  applyMonitoringSymbols(data?.symbols || []);
+  return data;
+}
+
+async function removeMonitoringSymbol(symbol) {
+  const response = await fetch(`/api/monitoring/symbols/${encodeURIComponent(symbol)}`, {
+    method: 'DELETE'
+  });
+  const data = await safeJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error || 'Falha ao remover ativo');
+  }
+  applyMonitoringSymbols(data?.symbols || []);
+  return data;
+}
+
 async function discoverTopAssets() {
   if (!requireAdmin()) return;
   const selected = getSelectedTopExchanges();
@@ -5006,7 +5070,7 @@ function getSelectedDiscoveredAssets() {
 }
 
 if (adminAddCoinForm) {
-  adminAddCoinForm.addEventListener('submit', (event) => {
+  adminAddCoinForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (!requireAdmin()) return;
     const symbolInput = document.getElementById('adminCoinSymbol');
@@ -5015,7 +5079,7 @@ if (adminAddCoinForm) {
     const spotInput = document.getElementById('adminCoinSpot');
     const futuresInput = document.getElementById('adminCoinFutures');
     if (!symbolInput || !nameInput) return;
-    const symbol = symbolInput.value.trim().toUpperCase();
+    const symbol = normalizeMonitoringSymbolInput(symbolInput.value);
     const name = nameInput.value.trim() || symbol;
     if (!symbol) return;
     const risk = riskInput?.value || 'Médio';
@@ -5027,36 +5091,44 @@ if (adminAddCoinForm) {
       .split(',')
       .map((entry) => entry.trim())
       .filter(Boolean);
-    monitoringMeta.set(symbol, { name, risk, spotHint, futuresHint });
-    if (!trackedMonitoringSymbols.includes(symbol)) {
-      trackedMonitoringSymbols.push(symbol);
+    try {
+      await persistMonitoringSymbol(symbol, { name, risk, spotHint, futuresHint });
+      blacklist.delete(symbol);
+      symbolInput.value = '';
+      nameInput.value = '';
+      if (riskInput) riskInput.value = 'Médio';
+      if (spotInput) spotInput.value = '';
+      if (futuresInput) futuresInput.value = '';
+      loadMonitoringData({ focusSymbol: symbol, silent: true });
+      renderBlacklist();
+    } catch (e) {
+      if (adminLoginFeedback) {
+        adminLoginFeedback.textContent = e.message || 'Falha ao salvar ativo';
+        adminLoginFeedback.style.color = '#ff6b9a';
+      }
     }
-    symbolInput.value = '';
-    nameInput.value = '';
-    if (riskInput) riskInput.value = 'Médio';
-    if (spotInput) spotInput.value = '';
-    if (futuresInput) futuresInput.value = '';
-    loadMonitoringData({ focusSymbol: symbol, silent: true });
-    updateMonitoringSelectors();
-    renderBlacklist();
   });
 }
 
 if (adminRemoveCoinForm) {
-  adminRemoveCoinForm.addEventListener('submit', (event) => {
+  adminRemoveCoinForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (!requireAdmin()) return;
     const symbol = adminRemoveCoinSelect?.value;
     if (!symbol) return;
-    const idx = trackedMonitoringSymbols.indexOf(symbol);
-    if (idx >= 0) trackedMonitoringSymbols.splice(idx, 1);
-    monitoringMeta.delete(symbol);
-    blacklist.delete(symbol);
-    purgeMonitoringHistoryCache(symbol);
-    monitoringRows = monitoringRows.filter((coin) => coin.symbol !== symbol);
-    updateMonitoringSelectors();
-    renderMonitoringTable();
-    renderBlacklist();
+    try {
+      await removeMonitoringSymbol(symbol);
+      blacklist.delete(symbol);
+      purgeMonitoringHistoryCache(symbol);
+      monitoringRows = monitoringRows.filter((coin) => coin.symbol !== symbol);
+      renderMonitoringTable();
+      renderBlacklist();
+    } catch (e) {
+      if (adminLoginFeedback) {
+        adminLoginFeedback.textContent = e.message || 'Falha ao remover ativo';
+        adminLoginFeedback.style.color = '#ff6b9a';
+      }
+    }
   });
 }
 
@@ -5110,7 +5182,7 @@ if (topAssetsNext) {
 }
 
 if (addSelectedTopAssetsBtn) {
-  addSelectedTopAssetsBtn.addEventListener('click', () => {
+  addSelectedTopAssetsBtn.addEventListener('click', async () => {
     if (!requireAdmin()) return;
     const selected = getSelectedDiscoveredAssets();
     if (!selected.length) {
@@ -5121,32 +5193,34 @@ if (addSelectedTopAssetsBtn) {
       return;
     }
     const added = [];
-    selected.forEach(({ symbol, label }) => {
-      const normalized = normalizeMonitoringSymbolInput(symbol);
-      if (!normalized) return;
-      if (!monitoringMeta.has(normalized)) {
-        monitoringMeta.set(normalized, { name: label || normalized, risk: 'Médio' });
-      }
-      if (!trackedMonitoringSymbols.includes(normalized)) {
-        trackedMonitoringSymbols.push(normalized);
+    try {
+      for (const { symbol, label } of selected) {
+        const normalized = normalizeMonitoringSymbolInput(symbol);
+        if (!normalized) continue;
+        await persistMonitoringSymbol(normalized, { name: label || normalized, risk: 'Médio' });
+        blacklist.delete(normalized);
         added.push(normalized);
       }
-      blacklist.delete(normalized);
-    });
-    updateMonitoringSelectors();
-    renderBlacklist();
-    renderMonitoringTable();
-    if (added.length) {
-      loadMonitoringData({ focusSymbol: added[0], silent: true });
+      renderBlacklist();
+      renderMonitoringTable();
+      if (added.length) {
+        loadMonitoringData({ focusSymbol: added[0], silent: true });
+        if (topAssetsStatus) {
+          topAssetsStatus.textContent = `Adicionados ${added.length} ativo(s) ao monitoramento.`;
+          topAssetsStatus.classList.remove('error');
+        }
+      }
+    } catch (e) {
       if (topAssetsStatus) {
-        topAssetsStatus.textContent = `Adicionados ${added.length} ativo(s) ao monitoramento.`;
-        topAssetsStatus.classList.remove('error');
+        topAssetsStatus.textContent = e.message || 'Erro ao adicionar ativos';
+        topAssetsStatus.classList.add('error');
       }
     }
   });
 }
 
-function bootstrapMonitoring() {
+async function bootstrapMonitoring() {
+  await hydrateMonitoringSymbolsFromServer();
   updateMonitoringSelectors();
   renderMonitoringTable();
   if (filterMinArbValueEl && filterMinArbEl) {
@@ -5158,4 +5232,4 @@ function bootstrapMonitoring() {
   scheduleMonitoringAutoRefresh();
 }
 
-bootstrapMonitoring();
+bootstrapMonitoring().catch((err) => console.error('Erro ao iniciar monitoramento', err));

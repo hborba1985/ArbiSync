@@ -21,7 +21,7 @@ const DEFAULT_RISK_TEST_QUOTE = (() => {
 const app = express();
 const PORT = 3000;
 
-const MONITORING_DEFAULT_SYMBOLS = ['CPOOL_USDT', 'MAT_USDT', 'FARM_USDT'];
+const MONITORING_DEFAULT_SYMBOLS = DEFAULT_MONITORING_SYMBOLS.map((item) => item.symbol);
 const MONITORING_DEFAULT_LABELS = {
   CPOOL_USDT: 'Clearpool',
   MAT_USDT: 'Mycelium',
@@ -82,6 +82,12 @@ const SPREAD_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const autoMetaCache = new Map();
 const overridesBySymbol = new Map();
+const DEFAULT_MONITORING_SYMBOLS = [
+  { symbol: 'CPOOL_USDT', meta: { name: 'Clearpool', risk: 'Baixo', spotHint: ['Gate.io', 'Binance'], futuresHint: ['MEXC Futures', 'Gate.io Futures'] } },
+  { symbol: 'MAT_USDT', meta: { name: 'Mycelium', risk: 'Médio', spotHint: ['Gate.io', 'KuCoin'], futuresHint: ['Bybit', 'MEXC Futures'] } },
+  { symbol: 'FARM_USDT', meta: { name: 'Harvest Finance', risk: 'Baixo', spotHint: ['Gate.io', 'Binance'], futuresHint: ['MEXC Futures'] } }
+];
+let monitoringSymbolMeta = new Map();
 
 let orderHistory = [];
 
@@ -356,6 +362,21 @@ try {
 } catch (e) {
   console.warn('[SQLite] Falha ao carregar estado:', e?.message || e);
 }
+
+function hydrateMonitoringSymbols() {
+  try {
+    const stored = db.loadMonitoringSymbols();
+    if (stored && stored.length) {
+      monitoringSymbolMeta = new Map(stored.map((item) => [String(item.symbol).toUpperCase(), item.meta || {}]));
+      return;
+    }
+  } catch (e) {
+    console.warn('[SQLite] Falha ao carregar monitoring_symbols:', e?.message || e);
+  }
+  monitoringSymbolMeta = new Map(DEFAULT_MONITORING_SYMBOLS.map((item) => [item.symbol, item.meta]));
+}
+
+hydrateMonitoringSymbols();
 
 try {
   const savedPos = db.loadPositionState();
@@ -3993,6 +4014,13 @@ function toNumber(value) {
   return Number.isFinite(num) ? num : null;
 }
 
+function serializeMonitoringSymbols() {
+  return Array.from(monitoringSymbolMeta.entries()).map(([symbol, meta]) => ({
+    symbol,
+    meta: meta || {}
+  }));
+}
+
 function describeAxiosError(err) {
   if (!err) return 'erro desconhecido';
   if (err.response) {
@@ -4179,6 +4207,12 @@ function computeMidArbValue(openValue, closeValue) {
   if (close !== null) return Number(close.toFixed(4));
   if (open !== null) return Number(open.toFixed(4));
   return null;
+}
+
+function listMonitoringSymbols() {
+  const symbols = Array.from(monitoringSymbolMeta.keys());
+  if (symbols.length) return symbols;
+  return MONITORING_DEFAULT_SYMBOLS;
 }
 
 function buildHistorySeries(spotCandles, futuresCandles, intervalMinutes) {
@@ -4943,7 +4977,7 @@ app.get('/api/monitoring/markets', async (req, res) => {
     const symbolsParam = String(req.query.symbols || '').trim();
     const requested = symbolsParam
       ? symbolsParam.split(',').map((s) => normalizeMonitoringSymbol(s)).filter(Boolean)
-      : MONITORING_DEFAULT_SYMBOLS;
+      : listMonitoringSymbols();
     const uniqueSymbols = Array.from(new Set(requested));
     if (!uniqueSymbols.length) {
       return res.json({ updatedAt: new Date().toISOString(), symbols: [] });
@@ -4954,6 +4988,27 @@ app.get('/api/monitoring/markets', async (req, res) => {
     console.error('[monitoring] erro ao coletar mercados', err);
     res.status(500).json({ error: err.message || err });
   }
+});
+
+app.get('/api/monitoring/symbols', (req, res) => {
+  res.json({ symbols: serializeMonitoringSymbols() });
+});
+
+app.post('/api/monitoring/symbols', (req, res) => {
+  const normalized = normalizeMonitoringSymbol(req.body?.symbol);
+  if (!normalized) return res.status(400).json({ error: 'Símbolo inválido' });
+  const meta = req.body?.meta && typeof req.body.meta === 'object' ? req.body.meta : {};
+  monitoringSymbolMeta.set(normalized, meta);
+  try { db.upsertMonitoringSymbol(normalized, meta); } catch (e) { console.warn('[SQLite] upsert monitoring symbol:', e?.message || e); }
+  res.json({ ok: true, symbols: serializeMonitoringSymbols() });
+});
+
+app.delete('/api/monitoring/symbols/:symbol', (req, res) => {
+  const normalized = normalizeMonitoringSymbol(req.params.symbol);
+  if (!normalized) return res.status(400).json({ error: 'Símbolo inválido' });
+  monitoringSymbolMeta.delete(normalized);
+  try { db.deleteMonitoringSymbol(normalized); } catch (e) { console.warn('[SQLite] delete monitoring symbol:', e?.message || e); }
+  res.json({ ok: true, symbols: serializeMonitoringSymbols() });
 });
 
 app.get('/api/monitoring/history', async (req, res) => {

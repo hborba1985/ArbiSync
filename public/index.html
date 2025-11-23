@@ -442,6 +442,29 @@
       gap: 18px;
     }
 
+    .admin-grid-wrapper {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 20px;
+      width: 100%;
+    }
+
+    .admin-form {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: var(--surface-soft);
+      border: 1px solid rgba(125, 97, 255, 0.15);
+      border-radius: 12px;
+      padding: 12px;
+    }
+
+    .admin-access {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
     .blacklist-list {
       display: flex;
       flex-wrap: wrap;
@@ -1534,6 +1557,7 @@
       <nav class="sidebar-nav">
         <button class="sidebar-link active" data-view-target="executionView" id="navExecution">Execução</button>
         <button class="sidebar-link" data-view-target="monitoringView" id="navMonitoring">Monitoramento</button>
+        <button class="sidebar-link" data-view-target="adminView" id="navAdmin">Painel do administrador</button>
       </nav>
       <div class="sidebar-footer">
         <div>Status administrador: <strong id="adminStatusLabel">Visitante</strong></div>
@@ -2011,16 +2035,22 @@
               <label>Corretoras SPOT</label>
               <div class="chip-list">
                 <label><input type="checkbox" class="filter-spot" value="Gate.io" checked /> Gate.io</label>
-                <label><input type="checkbox" class="filter-spot" value="Binance" checked /> Binance</label>
+                <label><input type="checkbox" class="filter-spot" value="MEXC" checked /> MEXC</label>
+                <label><input type="checkbox" class="filter-spot" value="Bitget" checked /> Bitget</label>
                 <label><input type="checkbox" class="filter-spot" value="KuCoin" checked /> KuCoin</label>
+                <label><input type="checkbox" class="filter-spot" value="Binance" checked /> Binance</label>
+                <label><input type="checkbox" class="filter-spot" value="Bybit" checked /> Bybit</label>
               </div>
             </div>
             <div class="filter-group">
               <label>Corretoras FUTUROS</label>
               <div class="chip-list">
-                <label><input type="checkbox" class="filter-futures" value="MEXC Futures" checked /> MEXC</label>
                 <label><input type="checkbox" class="filter-futures" value="Gate.io Futures" checked /> Gate.io</label>
-                <label><input type="checkbox" class="filter-futures" value="Bybit" checked /> Bybit</label>
+                <label><input type="checkbox" class="filter-futures" value="MEXC Futures" checked /> MEXC</label>
+                <label><input type="checkbox" class="filter-futures" value="Bitget Futures" checked /> Bitget</label>
+                <label><input type="checkbox" class="filter-futures" value="KuCoin Futures" checked /> KuCoin</label>
+                <label><input type="checkbox" class="filter-futures" value="Binance Futures" checked /> Binance</label>
+                <label><input type="checkbox" class="filter-futures" value="Bybit Futures" checked /> Bybit</label>
               </div>
             </div>
             <div class="filter-group">
@@ -2171,19 +2201,31 @@
             </p>
           </div>
         </div>
+      </section>
 
-        <div class="card" id="adminCard">
-          <h3>Painel do administrador</h3>
-          <div class="card-body">
+      <section class="page view" id="adminView">
+        <h1>Painel do administrador</h1>
+
+        <div class="card" id="adminAccessCard">
+          <h3>Acesso</h3>
+          <div class="card-body admin-access">
             <form id="adminLoginForm" class="monitoring-actions" autocomplete="off">
               <label for="adminPassword">Senha de acesso:</label>
               <input id="adminPassword" type="password" placeholder="Digite a senha" />
               <button type="submit">Entrar</button>
               <span id="adminLoginFeedback" class="muted"></span>
             </form>
-            <div id="adminTools" class="admin-tools hidden">
+            <p class="muted">Status atual: <strong id="adminStatusLabelInline">Visitante</strong></p>
+          </div>
+        </div>
+
+        <div class="admin-grid-wrapper">
+          <div class="card" id="adminManagementCard">
+            <h3>Gestão de ativos monitorados</h3>
+            <div class="card-body admin-tools hidden" id="adminTools">
               <div class="admin-grid">
-                <form id="adminAddCoinForm">
+                <form id="adminAddCoinForm" class="admin-form">
+                  <h4>Cadastrar moeda</h4>
                   <label>Moeda
                     <input type="text" id="adminCoinSymbol" placeholder="FARM_USDT" required />
                   </label>
@@ -2208,64 +2250,67 @@
                   </label>
                   <button type="submit">Cadastrar moeda</button>
                 </form>
-                <form id="adminRemoveCoinForm">
-                  <label for="adminRemoveCoinSelect">Descadastrar moeda</label>
+                <form id="adminRemoveCoinForm" class="admin-form">
+                  <h4>Descadastrar moeda</h4>
+                  <label for="adminRemoveCoinSelect">Escolha o ativo</label>
                   <select id="adminRemoveCoinSelect"></select>
                   <button type="submit">Remover</button>
                 </form>
-                <form id="blacklistForm">
+                <form id="blacklistForm" class="admin-form">
+                  <h4>Blacklist</h4>
                   <label for="blacklistInput">Adicionar à blacklist</label>
                   <input type="text" id="blacklistInput" placeholder="Ex.: TOKEN_USDT" />
                   <button type="submit">Adicionar</button>
                   <div class="blacklist-list" id="blacklistList"></div>
                 </form>
-                <div class="admin-discovery">
-                  <div class="discovery-header">
-                    <h4>Ativos mais negociados (24h)</h4>
-                    <p class="muted">Escolha as corretoras e busque os pares com maior volume para adicioná-los rapidamente.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" id="adminDiscoveryCard">
+            <h3>Ativos mais negociados (24h)</h3>
+            <div class="card-body admin-tools hidden" id="adminDiscoveryTools">
+              <p class="muted">Escolha as corretoras e busque os pares com maior volume para adicioná-los rapidamente.</p>
+              <div class="discovery-controls">
+                <div class="discovery-exchanges">
+                  <label><input type="checkbox" class="top-exchange" value="gate_spot" checked />Gate.io Spot</label>
+                  <label><input type="checkbox" class="top-exchange" value="mexc_spot" checked />MEXC Spot</label>
+                  <label><input type="checkbox" class="top-exchange" value="bitget_spot" checked />Bitget Spot</label>
+                  <label><input type="checkbox" class="top-exchange" value="kucoin_spot" checked />KuCoin Spot</label>
+                  <label><input type="checkbox" class="top-exchange" value="binance_spot" checked />Binance Spot</label>
+                  <label><input type="checkbox" class="top-exchange" value="bybit_spot" checked />Bybit Spot</label>
+                  <label><input type="checkbox" class="top-exchange" value="gate_futures" checked />Gate.io Futures</label>
+                  <label><input type="checkbox" class="top-exchange" value="mexc_futures" checked />MEXC Futures</label>
+                  <label><input type="checkbox" class="top-exchange" value="bitget_futures" checked />Bitget Futures</label>
+                  <label><input type="checkbox" class="top-exchange" value="kucoin_futures" checked />KuCoin Futures</label>
+                  <label><input type="checkbox" class="top-exchange" value="binance_futures" checked />Binance Futures</label>
+                  <label><input type="checkbox" class="top-exchange" value="bybit_futures" checked />Bybit Futures</label>
+                </div>
+                <div class="discovery-actions">
+                  <button type="button" id="discoverTopAssets">Buscar top 24h</button>
+                  <span id="topAssetsStatus" class="muted"></span>
+                </div>
+              </div>
+              <div id="topAssetsResults" class="top-assets-results hidden">
+                <div class="top-assets-card">
+                  <div class="top-assets-head">
+                    <span>Selecionar</span>
+                    <span>Ativo</span>
+                    <span>Símbolo</span>
+                    <span>Volume 24h</span>
+                    <span>Corretoras</span>
                   </div>
-                  <div class="discovery-controls">
-                    <div class="discovery-exchanges">
-                      <label><input type="checkbox" class="top-exchange" value="gate_spot" checked />Gate.io Spot</label>
-                      <label><input type="checkbox" class="top-exchange" value="mexc_spot" checked />MEXC Spot</label>
-                      <label><input type="checkbox" class="top-exchange" value="bitget_spot" checked />Bitget Spot</label>
-                      <label><input type="checkbox" class="top-exchange" value="kucoin_spot" checked />KuCoin Spot</label>
-                      <label><input type="checkbox" class="top-exchange" value="binance_spot" checked />Binance Spot</label>
-                      <label><input type="checkbox" class="top-exchange" value="bybit_spot" checked />Bybit Spot</label>
-                      <label><input type="checkbox" class="top-exchange" value="gate_futures" checked />Gate.io Futures</label>
-                      <label><input type="checkbox" class="top-exchange" value="mexc_futures" checked />MEXC Futures</label>
-                      <label><input type="checkbox" class="top-exchange" value="bitget_futures" checked />Bitget Futures</label>
-                      <label><input type="checkbox" class="top-exchange" value="kucoin_futures" checked />KuCoin Futures</label>
-                      <label><input type="checkbox" class="top-exchange" value="binance_futures" checked />Binance Futures</label>
-                      <label><input type="checkbox" class="top-exchange" value="bybit_futures" checked />Bybit Futures</label>
+                  <div class="top-assets-list" id="topAssetsList"></div>
+                  <div class="top-assets-footer">
+                    <span id="topAssetsPaginationInfo" class="muted"></span>
+                    <div class="top-assets-pagination">
+                      <button type="button" id="topAssetsPrev">Anterior</button>
+                      <span id="topAssetsPaginationStatus" class="muted"></span>
+                      <button type="button" id="topAssetsNext">Próxima</button>
                     </div>
-                    <div class="discovery-actions">
-                      <button type="button" id="discoverTopAssets">Buscar top 24h</button>
-                      <span id="topAssetsStatus" class="muted"></span>
-                    </div>
-                  </div>
-                  <div id="topAssetsResults" class="top-assets-results hidden">
-                    <div class="top-assets-card">
-                      <div class="top-assets-head">
-                        <span>Selecionar</span>
-                        <span>Ativo</span>
-                        <span>Símbolo</span>
-                        <span>Volume 24h</span>
-                        <span>Corretoras</span>
-                      </div>
-                      <div class="top-assets-list" id="topAssetsList"></div>
-                      <div class="top-assets-footer">
-                        <span id="topAssetsPaginationInfo" class="muted"></span>
-                        <div class="top-assets-pagination">
-                          <button type="button" id="topAssetsPrev">Anterior</button>
-                          <span id="topAssetsPaginationStatus" class="muted"></span>
-                          <button type="button" id="topAssetsNext">Próxima</button>
-                        </div>
-                      </div>
-                    </div>
-                    <button type="button" id="addSelectedTopAssets">Adicionar selecionados</button>
                   </div>
                 </div>
+                <button type="button" id="addSelectedTopAssets">Adicionar selecionados</button>
               </div>
             </div>
           </div>
