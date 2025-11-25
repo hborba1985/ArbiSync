@@ -4262,6 +4262,9 @@ const topAssetsSelection = new Set();
 const monitoringFavorites = new Set();
 let executionToastTimer = null;
 
+const EXECUTION_SPOT_PROVIDERS = ['Gate.io', 'Bitget'];
+const EXECUTION_FUTURES_PROVIDERS = ['MEXC Futures'];
+
 function getCheckedValues(selector) {
   return Array.from(document.querySelectorAll(selector))
     .filter((el) => el.checked)
@@ -4366,6 +4369,18 @@ function toggleFavorite(key) {
   setFavorite(normalized, nowFav);
   renderMonitoringTable();
   return nowFav;
+}
+
+function getMissingExecutionExchanges(coin) {
+  if (!coin) return [];
+  const missing = [];
+  const spotList = Array.isArray(coin.spotExchanges) ? coin.spotExchanges : [];
+  const futuresList = Array.isArray(coin.futuresExchanges) ? coin.futuresExchanges : [];
+  const unsupportedSpot = spotList.filter((ex) => !EXECUTION_SPOT_PROVIDERS.includes(ex));
+  const unsupportedFutures = futuresList.filter((ex) => !EXECUTION_FUTURES_PROVIDERS.includes(ex));
+  if (unsupportedSpot.length) missing.push(`SPOT: ${unsupportedSpot.join(', ')}`);
+  if (unsupportedFutures.length) missing.push(`FUTUROS: ${unsupportedFutures.join(', ')}`);
+  return missing;
 }
 
 function resolveSpotKeyFromLabel(labelList) {
@@ -5065,6 +5080,11 @@ if (monitoringPaginationNext) {
       const key = execBtn.dataset.favoriteKey;
       const coin = findOpportunityByKey(key);
       if (!coin) return;
+      const missing = getMissingExecutionExchanges(coin);
+      if (missing.length) {
+        showExecutionToast(`Ainda não há API de execução para ${missing.join(' | ')}`);
+        return;
+      }
       setFavorite(key, true);
       renderMonitoringTable();
       addExecutionTabFromOpportunity(coin, execBtn.dataset.spot);
