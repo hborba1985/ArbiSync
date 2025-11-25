@@ -1774,8 +1774,10 @@ app.post('/api/symbol', async (req, res) => {
 
 // ===== /api/data — ask/bid de Gate e bid/ask de MEXC + diffs para open/close
 app.get('/api/data', async (req, res) => {
+  let requestedSymbol = null;
+  let debugSpotExchange = null;
   try {
-    const requestedSymbol = String(req.query.symbol || currentSymbol || '').toUpperCase();
+    requestedSymbol = String(req.query.symbol || currentSymbol || '').toUpperCase();
     if (!requestedSymbol) {
       return res.status(400).json({ error: 'Símbolo inválido.' });
     }
@@ -1786,6 +1788,7 @@ app.get('/api/data', async (req, res) => {
       ? normalizeSpotExchange(req.query.spotExchange)
       : (positionState?.spotExchange || currentSpotExchange);
     const spotInfo = getSpotInfo(requestedSpot);
+    debugSpotExchange = spotInfo.normalized;
     const { asks: spotAsksRaw, bids: spotBidsRaw } = await fetchSpotOrderBook(requestedSymbol, 5, spotInfo.normalized);
     const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${requestedSymbol}?limit=5`);
 
@@ -1965,7 +1968,11 @@ app.get('/api/data', async (req, res) => {
       close: { diff: closeLevels[0]?.diffPct ?? null, levels: closeLevels }
     });
   } catch (e) {
-    console.error('[ERRO /api/data]:', e.response?.data || e.message);
+    console.error(
+      '[ERRO /api/data]:',
+      requestedSymbol ? `${requestedSymbol} spot=${debugSpotExchange || 'desconhecido'}` : 'símbolo não definido',
+      describeAxiosError(e)
+    );
     res.status(500).json({ error: 'Erro ao obter dados.' });
   }
 });
@@ -4843,8 +4850,13 @@ async function fetchHistoryDataset(provider, meta, intervalKey, limit) {
     const candles = await provider.history(meta, intervalKey, limit);
     return { candles, error: null };
   } catch (err) {
-    console.warn(`[monitoring] histórico ${provider.key} falhou`, err?.message || err);
-    return { candles: [], error: err?.message || String(err) };
+    const human = describeAxiosError(err);
+    console.warn(
+      `[monitoring] histórico ${provider.key} falhou`,
+      `${meta.symbol} (intervalo=${intervalKey}, candles=${limit}) —`,
+      human
+    );
+    return { candles: [], error: human };
   }
 }
 
@@ -4954,7 +4966,11 @@ async function fetchArbHistory(meta) {
     points.sort((a, b) => a.timestamp - b.timestamp);
     return points;
   } catch (err) {
-    console.warn('[monitoring] histórico indisponível', meta.symbol, err.message || err);
+    console.warn(
+      '[monitoring] histórico indisponível',
+      `${meta.symbol} (Gate spot=${meta.gateSpot}, futures=${meta.gateFutures}, intervalo=1h, candles=24)`,
+      describeAxiosError(err)
+    );
     return [];
   }
 }
