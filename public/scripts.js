@@ -4209,9 +4209,7 @@ const filterSearchEl = document.getElementById('filterSearch');
 const filterMinArbEl = document.getElementById('filterMinArb');
 const filterMinArbValueEl = document.getElementById('filterMinArbValue');
 const filterVolumeEl = document.getElementById('filterVolume');
-const filterStabilityEl = document.getElementById('filterStability');
 const monitoringSummaryBestEl = document.getElementById('monitoringSummaryBest');
-const monitoringSummaryAvgEl = document.getElementById('monitoringSummaryAvg');
 const monitoringSummaryCountEl = document.getElementById('monitoringResultCount');
 const monitoringSummaryBlacklistEl = document.getElementById('monitoringSummaryBlacklist');
 const monitoringPairSelect = document.getElementById('monitoringPairSelect');
@@ -4572,7 +4570,7 @@ async function loadMonitoringData({ focusSymbol = null, silent = false, updateCh
     monitoringLoading = true;
     monitoringLastFetchError = null;
     if (!silent && monitoringTableBody) {
-      monitoringTableBody.innerHTML = '<tr><td colspan="10">Carregando dados de arbitragem em tempo real...</td></tr>';
+      monitoringTableBody.innerHTML = '<tr><td colspan="7">Carregando dados de arbitragem em tempo real...</td></tr>';
     }
     const params = new URLSearchParams();
     params.set('symbols', trackedMonitoringSymbols.join(','));
@@ -4632,7 +4630,7 @@ async function loadMonitoringData({ focusSymbol = null, silent = false, updateCh
     monitoringLastFetchError = err;
     console.error('[monitoring] erro ao carregar dados', err);
     if (monitoringTableBody) {
-      monitoringTableBody.innerHTML = `<tr><td colspan="10">Erro ao carregar dados de arbitragem: ${err.message || err}</td></tr>`;
+    monitoringTableBody.innerHTML = `<tr><td colspan="7">Erro ao carregar dados de arbitragem: ${err.message || err}</td></tr>`;
     }
     monitoringFilteredRows = [];
     updateMonitoringPaginationUI(0);
@@ -4656,11 +4654,6 @@ function renderMonitoringSummary(filtered) {
     const best = filtered.reduce((acc, coin) => (Number.isFinite(coin.arb) && coin.arb > (acc?.arb ?? -Infinity) ? coin : acc), null);
     monitoringSummaryBestEl.textContent = best ? `${best.symbol} • ${best.arb.toFixed(2)}%` : (monitoringLastFetchError ? 'Erro' : '-');
   }
-  if (monitoringSummaryAvgEl) {
-    const arbs = filtered.map((coin) => coin.arb).filter((value) => Number.isFinite(value));
-    const avg = arbs.length ? (arbs.reduce((acc, value) => acc + value, 0) / arbs.length).toFixed(2) : '0.00';
-    monitoringSummaryAvgEl.textContent = `${avg}%`;
-  }
 }
 
 function renderMonitoringTable() {
@@ -4671,55 +4664,60 @@ function renderMonitoringTable() {
   const minVolume = Number(filterVolumeEl?.value) || 0;
   const selectedSpot = getCheckedValues('.filter-spot');
   const selectedFutures = getCheckedValues('.filter-futures');
-  const selectedRisks = getCheckedValues('.filter-risk');
-  const stabilityFilter = filterStabilityEl?.value || 'flex';
-
-  const filtered = monitoringRows
+  const favoritesSet = new Set(Array.from(monitoringFavorites));
+  const baseRows = monitoringRows
     .filter((coin) => trackedMonitoringSymbols.includes(coin.symbol))
-    .filter((coin) => !blacklist.has(coin.symbol))
+    .filter((coin) => !blacklist.has(coin.symbol));
+
+  const favoriteRows = baseRows.filter((coin) => favoritesSet.has(buildOpportunityKey(coin)));
+
+  const filteredNonFavorites = baseRows
+    .filter((coin) => !favoritesSet.has(buildOpportunityKey(coin)))
     .filter((coin) => (searchTerm ? coin.symbol.includes(searchTerm) || coin.name?.toUpperCase().includes(searchTerm) : true))
-    .filter((coin) => {
-      if (!Number.isFinite(coin.arb)) return false;
-      return coin.arb >= minArb;
-    })
+    .filter((coin) => Number.isFinite(coin.arb) && coin.arb >= minArb)
     .filter((coin) => coin.volume24h >= minVolume)
     .filter((coin) => !selectedSpot.length || coin.spotExchanges.some((ex) => selectedSpot.includes(ex)))
-    .filter((coin) => !selectedFutures.length || coin.futuresExchanges.some((ex) => selectedFutures.includes(ex)))
-    .filter((coin) => !selectedRisks.length || selectedRisks.includes(coin.risk))
-    .filter((coin) => stabilityFilter === 'flex' || coin.stability === stabilityFilter);
+    .filter((coin) => !selectedFutures.length || coin.futuresExchanges.some((ex) => selectedFutures.includes(ex)));
 
-  filtered.sort((a, b) => {
-    const favA = monitoringFavorites.has(buildOpportunityKey(a));
-    const favB = monitoringFavorites.has(buildOpportunityKey(b));
+  const seen = new Set();
+  const merged = [...favoriteRows, ...filteredNonFavorites].filter((coin) => {
+    const key = buildOpportunityKey(coin);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  merged.sort((a, b) => {
+    const favA = favoritesSet.has(buildOpportunityKey(a));
+    const favB = favoritesSet.has(buildOpportunityKey(b));
     if (favA !== favB) return favA ? -1 : 1;
     const aArb = Number.isFinite(a.arb) ? a.arb : -Infinity;
     const bArb = Number.isFinite(b.arb) ? b.arb : -Infinity;
     return bArb - aArb;
   });
 
-  monitoringFilteredRows = filtered;
-  updateMonitoringPaginationUI(filtered.length);
+  monitoringFilteredRows = merged;
+  updateMonitoringPaginationUI(merged.length);
 
-  if (!filtered.length) {
+  if (!merged.length) {
     const emptyMessage = monitoringLoading
       ? 'Atualizando dados de arbitragem...'
       : monitoringLastFetchError
         ? `Última tentativa falhou: ${monitoringLastFetchError.message || monitoringLastFetchError}`
         : 'Nenhuma moeda atende aos filtros ativos.';
-    monitoringTableBody.innerHTML = `<tr><td colspan="10">${emptyMessage}</td></tr>`;
-    renderMonitoringSummary(filtered);
+    monitoringTableBody.innerHTML = `<tr><td colspan="7">${emptyMessage}</td></tr>`;
+    renderMonitoringSummary(merged);
     return;
   }
 
   const startIndex = (monitoringPaginationState.page - 1) * monitoringPaginationState.perPage;
-  const visibleCoins = filtered.slice(startIndex, startIndex + monitoringPaginationState.perPage);
+  const visibleCoins = merged.slice(startIndex, startIndex + monitoringPaginationState.perPage);
 
   monitoringTableBody.innerHTML = visibleCoins.map((coin) => {
     const metaInfo = monitoringMeta.get(coin.symbol);
     const favKey = buildOpportunityKey(coin);
     const isFavorite = monitoringFavorites.has(favKey);
     const arbLabel = Number.isFinite(coin.arb) ? `${coin.arb.toFixed(2)}%` : '—';
-    const fundingLabel = Number.isFinite(coin.funding) ? `${(coin.funding * 100).toFixed(3)}%` : '—';
     const spotList = coin.spotExchanges.length
       ? coin.spotExchanges.join(', ')
       : metaInfo?.spotHint?.length
@@ -4737,9 +4735,6 @@ function renderMonitoringTable() {
         <td>${spotList}</td>
         <td>${futuresList}</td>
         <td>${formatVolume(coin.volume24h)} USDT</td>
-        <td>${coin.depth}</td>
-        <td>${fundingLabel}</td>
-        <td>${coin.risk}</td>
         <td>${isFavorite ? '<span class="monitoring-favorite-flag">★ Favorito</span>' : '—'}</td>
         <td class="monitoring-actions-cell">
           <button type="button" class="monitoring-view-chart" data-symbol="${coin.symbol}">Ver gráfico</button>
@@ -4758,16 +4753,16 @@ function renderMonitoringTable() {
             data-symbol="${coin.symbol}"
             data-spot="${coin.spotExchanges.join('|')}"
             data-futures="${coin.futuresExchanges.join('|')}"
-          >Favoritar + Executar</button>
+          >Executar</button>
         </td>
       </tr>`;
   }).join('');
 
-  renderMonitoringSummary(filtered);
+  renderMonitoringSummary(merged);
 
-  if (filtered.length && monitoringPairSelect && !monitoringPairSelect.value) {
-    monitoringPairSelect.value = filtered[0].symbol;
-    updateMonitoringChart(filtered[0].symbol);
+  if (merged.length && monitoringPairSelect && !monitoringPairSelect.value) {
+    monitoringPairSelect.value = merged[0].symbol;
+    updateMonitoringChart(merged[0].symbol);
   }
 }
 
@@ -4794,9 +4789,13 @@ function updateMonitoringSelectors() {
     }
   }
   if (adminRemoveCoinSelect) {
+    const previousRemoval = adminRemoveCoinSelect.value;
     adminRemoveCoinSelect.innerHTML = trackedMonitoringSymbols
       .map((symbol) => `<option value="${symbol}">${symbol}</option>`)
       .join('');
+    if (previousRemoval && trackedMonitoringSymbols.includes(previousRemoval)) {
+      adminRemoveCoinSelect.value = previousRemoval;
+    }
   }
 }
 
@@ -4958,7 +4957,7 @@ async function updateMonitoringChart(symbolInput) {
   }
 }
 
-const filterInputs = [filterSearchEl, filterVolumeEl, filterStabilityEl];
+const filterInputs = [filterSearchEl, filterVolumeEl];
 filterInputs.forEach((input) => {
   if (!input) return;
   const eventName = input.tagName === 'SELECT' ? 'change' : 'input';
@@ -4979,7 +4978,7 @@ if (filterMinArbEl) {
   });
 }
 
-['.filter-spot', '.filter-futures', '.filter-risk'].forEach((selector) => {
+['.filter-spot', '.filter-futures'].forEach((selector) => {
   document.querySelectorAll(selector).forEach((input) => {
     input.addEventListener('change', () => {
       resetMonitoringPagination();
@@ -5297,31 +5296,24 @@ if (adminAddCoinForm) {
     event.preventDefault();
     if (!requireAdmin()) return;
     const symbolInput = document.getElementById('adminCoinSymbol');
-    const nameInput = document.getElementById('adminCoinName');
-    const riskInput = document.getElementById('adminCoinRisk');
     const spotInput = document.getElementById('adminCoinSpot');
     const futuresInput = document.getElementById('adminCoinFutures');
-    if (!symbolInput || !nameInput) return;
+    if (!symbolInput) return;
     const symbol = normalizeMonitoringSymbolInput(symbolInput.value);
-    const name = nameInput.value.trim() || symbol;
+    const name = symbol;
     if (!symbol) return;
-    const risk = riskInput?.value || 'Médio';
-    const spotHint = (spotInput?.value || '')
-      .split(',')
-      .map((entry) => entry.trim())
-      .filter(Boolean);
-    const futuresHint = (futuresInput?.value || '')
-      .split(',')
-      .map((entry) => entry.trim())
-      .filter(Boolean);
+    const spotHint = Array.from(spotInput?.selectedOptions || []).map((opt) => opt.value).filter(Boolean);
+    const futuresHint = Array.from(futuresInput?.selectedOptions || []).map((opt) => opt.value).filter(Boolean);
     try {
-      await persistMonitoringSymbol(symbol, { name, risk, spotHint, futuresHint });
+      await persistMonitoringSymbol(symbol, { name, risk: 'Médio', spotHint, futuresHint });
       blacklist.delete(symbol);
       symbolInput.value = '';
-      nameInput.value = '';
-      if (riskInput) riskInput.value = 'Médio';
-      if (spotInput) spotInput.value = '';
-      if (futuresInput) futuresInput.value = '';
+      if (spotInput) {
+        Array.from(spotInput.options).forEach((opt) => { opt.selected = opt.value === 'Gate.io'; });
+      }
+      if (futuresInput) {
+        Array.from(futuresInput.options).forEach((opt) => { opt.selected = opt.value === 'Gate.io Futures'; });
+      }
       loadMonitoringData({ focusSymbol: symbol, silent: true });
       renderBlacklist();
     } catch (e) {

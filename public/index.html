@@ -510,13 +510,13 @@
 
     .admin-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
       gap: 18px;
     }
 
     .admin-grid-wrapper {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      display: flex;
+      flex-direction: column;
       gap: 20px;
       width: 100%;
     }
@@ -535,6 +535,33 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
+    }
+
+    .admin-form select[multiple] {
+      min-height: 120px;
+      border-radius: 10px;
+    }
+
+    .discovery-exchanges {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+
+    .exchange-group {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(125, 97, 255, 0.15);
+      border-radius: 12px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .exchange-group h4 {
+      margin: 0 0 4px 0;
+      font-size: 0.95rem;
+      color: var(--muted);
     }
 
     .blacklist-list {
@@ -2134,22 +2161,6 @@
                 <option value="1000000">≥ 1M USDT</option>
               </select>
             </div>
-            <div class="filter-group">
-              <label>Perfil de risco</label>
-              <div class="chip-list">
-                <label><input type="checkbox" class="filter-risk" value="Baixo" checked /> Baixo</label>
-                <label><input type="checkbox" class="filter-risk" value="Médio" checked /> Médio</label>
-                <label><input type="checkbox" class="filter-risk" value="Alto" /> Alto</label>
-              </div>
-            </div>
-            <div class="filter-group">
-              <label for="filterStability">Estabilidade mínima</label>
-              <select id="filterStability">
-                <option value="flex">Qualquer</option>
-                <option value="Estável">Estável</option>
-                <option value="Volátil">Volátil apenas</option>
-              </select>
-            </div>
           </div>
         </div>
 
@@ -2170,10 +2181,6 @@
               <div class="summary-pill">
                 <span class="label">Melhor arb</span>
                 <strong id="monitoringSummaryBest">-</strong>
-              </div>
-              <div class="summary-pill">
-                <span class="label">Média filtrada</span>
-                <strong id="monitoringSummaryAvg">0%</strong>
               </div>
               <div class="summary-pill">
                 <span class="label">Blacklist ativa</span>
@@ -2204,9 +2211,6 @@
                     <th>Corretoras SPOT</th>
                     <th>Corretoras FUTUROS</th>
                     <th>Volume 24h</th>
-                    <th>Profundidade</th>
-                    <th>Funding</th>
-                    <th>Risco</th>
                     <th>Favorito</th>
                     <th>Ações</th>
                   </tr>
@@ -2305,23 +2309,24 @@
                   <label>Moeda
                     <input type="text" id="adminCoinSymbol" placeholder="FARM_USDT" required />
                   </label>
-                  <label>Nome amigável
-                    <input type="text" id="adminCoinName" placeholder="Harvest Finance" required />
+                  <label>Corretoras SPOT
+                    <select id="adminCoinSpot" multiple>
+                      <option value="Gate.io" selected>Gate.io</option>
+                      <option value="MEXC">MEXC</option>
+                      <option value="Bitget">Bitget</option>
+                      <option value="KuCoin">KuCoin</option>
+                      <option value="Binance">Binance</option>
+                      <option value="Bybit">Bybit</option>
+                    </select>
                   </label>
-                  <label>Corretoras spot (separadas por vírgula)
-                    <input type="text" id="adminCoinSpot" placeholder="Gate.io, Binance" />
-                  </label>
-                  <label>Corretoras futuros (separadas por vírgula)
-                    <input type="text" id="adminCoinFutures" placeholder="MEXC Futures" />
-                  </label>
-                  <label>Meta de % arb
-                    <input type="number" id="adminCoinArb" min="0" step="0.1" value="1.5" />
-                  </label>
-                  <label>Nível de risco
-                    <select id="adminCoinRisk">
-                      <option value="Baixo">Baixo</option>
-                      <option value="Médio">Médio</option>
-                      <option value="Alto">Alto</option>
+                  <label>Corretoras FUTUROS
+                    <select id="adminCoinFutures" multiple>
+                      <option value="Gate.io Futures" selected>Gate.io Futures</option>
+                      <option value="MEXC Futures">MEXC Futures</option>
+                      <option value="Bitget Futures">Bitget Futures</option>
+                      <option value="KuCoin Futures">KuCoin Futures</option>
+                      <option value="Binance Futures">Binance Futures</option>
+                      <option value="Bybit Futures">Bybit Futures</option>
                     </select>
                   </label>
                   <button type="submit">Cadastrar moeda</button>
@@ -2349,18 +2354,24 @@
               <p class="muted">Escolha as corretoras e busque os pares com maior volume para adicioná-los rapidamente.</p>
               <div class="discovery-controls">
                 <div class="discovery-exchanges">
-                  <label><input type="checkbox" class="top-exchange" value="gate_spot" checked />Gate.io Spot</label>
-                  <label><input type="checkbox" class="top-exchange" value="mexc_spot" checked />MEXC Spot</label>
-                  <label><input type="checkbox" class="top-exchange" value="bitget_spot" checked />Bitget Spot</label>
-                  <label><input type="checkbox" class="top-exchange" value="kucoin_spot" checked />KuCoin Spot</label>
-                  <label><input type="checkbox" class="top-exchange" value="binance_spot" checked />Binance Spot</label>
-                  <label><input type="checkbox" class="top-exchange" value="bybit_spot" checked />Bybit Spot</label>
-                  <label><input type="checkbox" class="top-exchange" value="gate_futures" checked />Gate.io Futures</label>
-                  <label><input type="checkbox" class="top-exchange" value="mexc_futures" checked />MEXC Futures</label>
-                  <label><input type="checkbox" class="top-exchange" value="bitget_futures" checked />Bitget Futures</label>
-                  <label><input type="checkbox" class="top-exchange" value="kucoin_futures" checked />KuCoin Futures</label>
-                  <label><input type="checkbox" class="top-exchange" value="binance_futures" checked />Binance Futures</label>
-                  <label><input type="checkbox" class="top-exchange" value="bybit_futures" checked />Bybit Futures</label>
+                  <div class="exchange-group">
+                    <h4>SPOT</h4>
+                    <label><input type="checkbox" class="top-exchange" value="gate_spot" checked />Gate.io Spot</label>
+                    <label><input type="checkbox" class="top-exchange" value="mexc_spot" checked />MEXC Spot</label>
+                    <label><input type="checkbox" class="top-exchange" value="bitget_spot" checked />Bitget Spot</label>
+                    <label><input type="checkbox" class="top-exchange" value="kucoin_spot" checked />KuCoin Spot</label>
+                    <label><input type="checkbox" class="top-exchange" value="binance_spot" checked />Binance Spot</label>
+                    <label><input type="checkbox" class="top-exchange" value="bybit_spot" checked />Bybit Spot</label>
+                  </div>
+                  <div class="exchange-group">
+                    <h4>FUTUROS</h4>
+                    <label><input type="checkbox" class="top-exchange" value="gate_futures" checked />Gate.io Futures</label>
+                    <label><input type="checkbox" class="top-exchange" value="mexc_futures" checked />MEXC Futures</label>
+                    <label><input type="checkbox" class="top-exchange" value="bitget_futures" checked />Bitget Futures</label>
+                    <label><input type="checkbox" class="top-exchange" value="kucoin_futures" checked />KuCoin Futures</label>
+                    <label><input type="checkbox" class="top-exchange" value="binance_futures" checked />Binance Futures</label>
+                    <label><input type="checkbox" class="top-exchange" value="bybit_futures" checked />Bybit Futures</label>
+                  </div>
                 </div>
                 <div class="discovery-actions">
                   <button type="button" id="discoverTopAssets">Buscar top 24h</button>
