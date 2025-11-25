@@ -21,13 +21,6 @@ const DEFAULT_RISK_TEST_QUOTE = (() => {
 const app = express();
 const PORT = 3000;
 
-const MONITORING_DEFAULT_SYMBOLS = DEFAULT_MONITORING_SYMBOLS.map((item) => item.symbol);
-const MONITORING_DEFAULT_LABELS = {
-  CPOOL_USDT: 'Clearpool',
-  MAT_USDT: 'Mycelium',
-  FARM_USDT: 'Harvest Finance'
-};
-
 const monitoringHttp = axios.create({
   timeout: 9000,
   headers: {
@@ -87,6 +80,12 @@ const DEFAULT_MONITORING_SYMBOLS = [
   { symbol: 'MAT_USDT', meta: { name: 'Mycelium', risk: 'Médio', spotHint: ['Gate.io', 'KuCoin'], futuresHint: ['Bybit', 'MEXC Futures'] } },
   { symbol: 'FARM_USDT', meta: { name: 'Harvest Finance', risk: 'Baixo', spotHint: ['Gate.io', 'Binance'], futuresHint: ['MEXC Futures'] } }
 ];
+const MONITORING_DEFAULT_SYMBOLS = DEFAULT_MONITORING_SYMBOLS.map((item) => item.symbol);
+const MONITORING_DEFAULT_LABELS = {
+  CPOOL_USDT: 'Clearpool',
+  MAT_USDT: 'Mycelium',
+  FARM_USDT: 'Harvest Finance'
+};
 let monitoringSymbolMeta = new Map();
 
 let orderHistory = [];
