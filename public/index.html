@@ -418,6 +418,35 @@
       font-size: 13px;
     }
 
+    .monitoring-extremes {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+      margin: 10px 0 6px;
+    }
+
+    .monitoring-extremes .extreme-block {
+      background: rgba(63, 231, 195, 0.08);
+      border: 1px solid rgba(63, 231, 195, 0.25);
+      border-radius: 10px;
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .monitoring-extremes .label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .monitoring-extremes strong {
+      font-size: 14px;
+      color: #3fe7c3;
+    }
+
     .monitoring-history-source {
       margin-top: 4px;
       font-size: 12px;
@@ -472,6 +501,64 @@
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.exchange-header {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.quote-chip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 10px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  gap: 10px;
+  background: rgba(125, 97, 255, 0.08);
+  border: 1px solid rgba(125, 97, 255, 0.25);
+}
+
+.quote-chip.ask {
+  border-color: rgba(63, 231, 195, 0.35);
+  background: rgba(63, 231, 195, 0.06);
+}
+
+.quote-chip.bid {
+  border-color: rgba(242, 183, 96, 0.45);
+  background: rgba(242, 183, 96, 0.06);
+}
+
+.quote-chip span {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.quote-chip strong {
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+
+.quote-chip em {
+  font-style: normal;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.uptime-chip {
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 10px;
+  background: rgba(63, 231, 195, 0.08);
+  border: 1px solid rgba(63, 231, 195, 0.3);
+  font-size: 11px;
+  color: #3fe7c3;
 }
 
 .monitoring-favorite-btn {
@@ -2304,6 +2391,16 @@
               Selecione um par, intervalo e corretoras para ver como a % de arbitragem evoluiu nas últimas 24 horas.
             </p>
             <p id="monitoringHistoryStatus" class="monitoring-history-status"></p>
+            <div class="monitoring-extremes" id="monitoringHistoryExtremes">
+              <div class="extreme-block">
+                <span class="label">Abertura</span>
+                <strong id="monitoringOpenRange">–</strong>
+              </div>
+              <div class="extreme-block">
+                <span class="label">Fechamento</span>
+                <strong id="monitoringCloseRange">–</strong>
+              </div>
+            </div>
             <div class="monitoring-chart-wrapper">
               <canvas id="monitoringChart"></canvas>
             </div>

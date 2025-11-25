@@ -4218,6 +4218,8 @@ const monitoringHistorySpotSelect = document.getElementById('monitoringHistorySp
 const monitoringHistoryFuturesSelect = document.getElementById('monitoringHistoryFutures');
 const monitoringHistorySourceEl = document.getElementById('monitoringHistorySource');
 const monitoringHistoryStatusEl = document.getElementById('monitoringHistoryStatus');
+const monitoringOpenRangeEl = document.getElementById('monitoringOpenRange');
+const monitoringCloseRangeEl = document.getElementById('monitoringCloseRange');
 const monitoringRefreshIntervalSelect = document.getElementById('monitoringRefreshInterval');
 const monitoringRefreshToggleBtn = document.getElementById('monitoringRefreshToggle');
 const monitoringPaginationInfo = document.getElementById('monitoringPaginationInfo');
@@ -4260,6 +4262,7 @@ const TOP_ASSETS_LIMIT_DEFAULT = 60;
 const topAssetsState = { items: [], page: 1, perPage: TOP_ASSETS_PAGE_SIZE, limit: TOP_ASSETS_LIMIT_DEFAULT };
 const topAssetsSelection = new Set();
 const monitoringFavorites = new Set();
+const monitoringArbTimers = new Map();
 let executionToastTimer = null;
 
 const EXECUTION_SPOT_PROVIDERS = ['Gate.io', 'Bitget'];
@@ -4274,6 +4277,14 @@ function getCheckedValues(selector) {
 function toFiniteNumber(value) {
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
+}
+
+function computeNotionalLocal(price, size) {
+  const p = toFiniteNumber(price);
+  const s = toFiniteNumber(size);
+  if (!Number.isFinite(p) || !Number.isFinite(s)) return null;
+  const notional = p * s;
+  return Number.isFinite(notional) ? notional : null;
 }
 
 function getMonitoringName(symbol, fallbackLabel = null) {
@@ -4548,6 +4559,22 @@ function updateMonitoringHistorySource(entry) {
   monitoringHistorySourceEl.textContent = parts.length ? parts.join(' — ') : '';
 }
 
+function updateMonitoringHistoryExtremes(entry) {
+  const openLabel = monitoringOpenRangeEl;
+  const closeLabel = monitoringCloseRangeEl;
+  if (!openLabel || !closeLabel) return;
+  const openStats = entry?.stats?.open;
+  const closeStats = entry?.stats?.close;
+  const formatRange = (stats) => {
+    if (!stats || !Number.isFinite(stats.min) || !Number.isFinite(stats.max)) return '–';
+    const minStr = stats.min.toFixed(3).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+    const maxStr = stats.max.toFixed(3).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+    return `${minStr}% a ${maxStr}%`;
+  };
+  openLabel.textContent = formatRange(openStats);
+  closeLabel.textContent = formatRange(closeStats);
+}
+
 async function fetchMonitoringHistorySeries(symbol, intervalKey, spotKey, futuresKey) {
   const params = new URLSearchParams({ symbol, interval: intervalKey, spot: spotKey, futures: futuresKey });
   const response = await fetch(`/api/monitoring/history?${params.toString()}`);
@@ -4590,6 +4617,7 @@ async function fetchMonitoringHistorySeries(symbol, intervalKey, spotKey, future
   return {
     fetchedAt: Date.now(),
     points,
+    stats: data?.stats || null,
     meta: {
       interval: data?.interval || null,
       spot: data?.spot || null,
@@ -4651,6 +4679,14 @@ async function loadMonitoringData({ focusSymbol = null, silent = false, updateCh
             spotExchanges: [spot.exchange || spot.key || 'SPOT'],
             futuresExchanges: [futures.exchange || futures.key || 'FUTUROS'],
             volume24h,
+            spotAsk: toFiniteNumber(spot.ask),
+            spotBid: toFiniteNumber(spot.bid),
+            spotAskNotional: toFiniteNumber(spot.askNotional ?? computeNotionalLocal(spot.ask, spot.askSize)),
+            spotBidNotional: toFiniteNumber(spot.bidNotional ?? computeNotionalLocal(spot.bid, spot.bidSize)),
+            futuresAsk: toFiniteNumber(futures.ask),
+            futuresBid: toFiniteNumber(futures.bid),
+            futuresAskNotional: toFiniteNumber(futures.askNotional ?? computeNotionalLocal(futures.ask, futures.askSize)),
+            futuresBidNotional: toFiniteNumber(futures.bidNotional ?? computeNotionalLocal(futures.bid, futures.bidSize)),
             depth: metrics.depthLabel || 'N/D',
             funding: toFiniteNumber(futures.fundingRate),
             risk: riskLabel,
@@ -4692,6 +4728,25 @@ function formatVolume(value) {
   return value.toFixed(0);
 }
 
+function formatPriceCompact(value) {
+  if (!Number.isFinite(value)) return '—';
+  if (value >= 1) return value.toFixed(4).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+  return value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function formatUptime(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '—';
+  const totalMinutes = Math.floor(ms / 60000);
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (hours || days) parts.push(`${hours}h`);
+  parts.push(`${minutes}min`);
+  return parts.join(' ');
+}
+
 function renderMonitoringSummary(filtered) {
   if (monitoringSummaryCountEl) monitoringSummaryCountEl.textContent = filtered.length;
   if (monitoringSummaryBlacklistEl) monitoringSummaryBlacklistEl.textContent = blacklist.size;
@@ -4699,6 +4754,27 @@ function renderMonitoringSummary(filtered) {
     const best = filtered.reduce((acc, coin) => (Number.isFinite(coin.arb) && coin.arb > (acc?.arb ?? -Infinity) ? coin : acc), null);
     monitoringSummaryBestEl.textContent = best ? `${best.symbol} • ${best.arb.toFixed(2)}%` : (monitoringLastFetchError ? 'Erro' : '-');
   }
+}
+
+function updateArbUptime(key, arb) {
+  const entry = monitoringArbTimers.get(key) || { start: null };
+  const now = Date.now();
+  if (Number.isFinite(arb) && arb > 0) {
+    if (!entry.start) entry.start = now;
+  } else {
+    entry.start = null;
+  }
+  monitoringArbTimers.set(key, entry);
+  return entry.start ? formatUptime(now - entry.start) : '—';
+}
+
+function renderLegDetails(label, ask, bid, askNotional, bidNotional) {
+  const lines = [];
+  const askVolLabel = Number.isFinite(askNotional) ? `${formatVolume(askNotional)} USDT` : 's/ dado';
+  const bidVolLabel = Number.isFinite(bidNotional) ? `${formatVolume(bidNotional)} USDT` : 's/ dado';
+  lines.push(`<div class="quote-chip ask"><span>${label}</span><strong>Ask ${formatPriceCompact(ask)}</strong><em>Vol: ${askVolLabel}</em></div>`);
+  lines.push(`<div class="quote-chip bid"><span>${label}</span><strong>Bid ${formatPriceCompact(bid)}</strong><em>Vol: ${bidVolLabel}</em></div>`);
+  return lines.join('');
 }
 
 function renderMonitoringTable() {
@@ -4762,7 +4838,8 @@ function renderMonitoringTable() {
     const metaInfo = monitoringMeta.get(coin.symbol);
     const favKey = buildOpportunityKey(coin);
     const isFavorite = monitoringFavorites.has(favKey);
-    const arbLabel = Number.isFinite(coin.arb) ? `${coin.arb.toFixed(2)}%` : '—';
+    const arbLabel = Number.isFinite(coin.arb) ? `${coin.arb.toFixed(3)}%` : '—';
+    const uptime = updateArbUptime(favKey, coin.arb);
     const spotList = coin.spotExchanges.length
       ? coin.spotExchanges.join(', ')
       : metaInfo?.spotHint?.length
@@ -4773,12 +4850,14 @@ function renderMonitoringTable() {
       : metaInfo?.futuresHint?.length
         ? `${metaInfo.futuresHint.join(', ')} (config)`
         : 'Sem dados';
+    const spotDetail = renderLegDetails(coin.spotExchanges[0] || 'SPOT', coin.spotAsk, coin.spotBid, coin.spotAskNotional, coin.spotBidNotional);
+    const futuresDetail = renderLegDetails(coin.futuresExchanges[0] || 'FUTUROS', coin.futuresAsk, coin.futuresBid, coin.futuresAskNotional, coin.futuresBidNotional);
     return `
       <tr>
         <td><strong>${coin.symbol}</strong><br/><span class="muted">${coin.name}</span></td>
-        <td>${arbLabel}</td>
-        <td>${spotList}</td>
-        <td>${futuresList}</td>
+        <td>${arbLabel}<div class="uptime-chip">⬆︎ acima de 0% por ${uptime}</div></td>
+        <td><div class="exchange-header">${spotList}</div>${spotDetail}</td>
+        <td><div class="exchange-header">${futuresList}</div>${futuresDetail}</td>
         <td>${formatVolume(coin.volume24h)} USDT</td>
         <td>${isFavorite ? '<span class="monitoring-favorite-flag">★ Favorito</span>' : '—'}</td>
         <td class="monitoring-actions-cell">
@@ -4933,6 +5012,7 @@ async function updateMonitoringChart(symbolInput) {
       monitoringHistoryCache.set(cacheKey, entry);
     } catch (err) {
       updateMonitoringHistorySource(null);
+      updateMonitoringHistoryExtremes(null);
       chart.data.labels = [];
       chart.data.datasets = [];
       chart.update();
@@ -4997,6 +5077,7 @@ async function updateMonitoringChart(symbolInput) {
   chart.update();
   syncMonitoringChartVisibilityFromChart(chart);
   updateMonitoringHistorySource(entry);
+  updateMonitoringHistoryExtremes(entry);
   if (!points.length) {
     const warning = entry.errors?.spot || entry.errors?.futures;
     if (warning) {

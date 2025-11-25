@@ -4020,6 +4020,12 @@ function toNumber(value) {
   return Number.isFinite(num) ? num : null;
 }
 
+function computeNotional(price, size) {
+  if (!Number.isFinite(price) || !Number.isFinite(size)) return null;
+  const notional = price * size;
+  return Number.isFinite(notional) ? notional : null;
+}
+
 function serializeMonitoringSymbols() {
   return Array.from(monitoringSymbolMeta.entries()).map(([symbol, meta]) => ({
     symbol,
@@ -4222,10 +4228,12 @@ function listMonitoringSymbols() {
 }
 
 function buildHistorySeries(spotCandles, futuresCandles, intervalMinutes) {
-  if (!spotCandles.length || !futuresCandles.length) return [];
+  if (!spotCandles.length || !futuresCandles.length) return { points: [], stats: null };
   const bucketMs = intervalMinutes * 60 * 1000;
   const futuresMap = bucketizeHistoryCandles(futuresCandles, bucketMs);
   const points = [];
+  const openValues = [];
+  const closeValues = [];
   for (const spot of spotCandles) {
     const bucket = Math.floor(spot.timestamp / bucketMs) * bucketMs;
     const futures = futuresMap.get(bucket);
@@ -4235,6 +4243,8 @@ function buildHistorySeries(spotCandles, futuresCandles, intervalMinutes) {
     if (!Number.isFinite(openArb) && !Number.isFinite(closeArb)) continue;
     const openArbPct = formatArbValue(openArb);
     const closeArbPct = formatArbValue(closeArb);
+    if (Number.isFinite(openArbPct)) openValues.push(openArbPct);
+    if (Number.isFinite(closeArbPct)) closeValues.push(closeArbPct);
     points.push({
       timestamp: bucket,
       openArbPct,
@@ -4244,7 +4254,14 @@ function buildHistorySeries(spotCandles, futuresCandles, intervalMinutes) {
       futuresVolume: futures.volume
     });
   }
-  return sortHistoryPoints(points);
+  const sortedPoints = sortHistoryPoints(points);
+  const stats = !openValues.length && !closeValues.length
+    ? null
+    : {
+        open: openValues.length ? { min: Math.min(...openValues), max: Math.max(...openValues) } : null,
+        close: closeValues.length ? { min: Math.min(...closeValues), max: Math.max(...closeValues) } : null
+      };
+  return { points: sortedPoints, stats };
 }
 
 function limitHistoryPoints(points, limit) {
@@ -4265,6 +4282,10 @@ async function fetchGateSpotTicker(meta) {
     ask: toNumber(payload.lowest_ask),
     last: toNumber(payload.last),
     volume: toNumber(payload.quote_volume ?? payload.base_volume),
+    bidSize: toNumber(payload.highest_bid_size),
+    askSize: toNumber(payload.lowest_ask_size),
+    bidNotional: computeNotional(toNumber(payload.highest_bid), toNumber(payload.highest_bid_size)),
+    askNotional: computeNotional(toNumber(payload.lowest_ask), toNumber(payload.lowest_ask_size)),
     changePct: toNumber(payload.change_percentage)
   };
 }
@@ -4279,6 +4300,10 @@ async function fetchMexcSpotTicker(meta) {
     ask: toNumber(data.askPrice),
     last: toNumber(data.lastPrice),
     volume: toNumber(data.quoteVolume),
+    bidSize: toNumber(data.bidQty),
+    askSize: toNumber(data.askQty),
+    bidNotional: computeNotional(toNumber(data.bidPrice), toNumber(data.bidQty)),
+    askNotional: computeNotional(toNumber(data.askPrice), toNumber(data.askQty)),
     changePct: toNumber(data.priceChangePercent)
   };
 }
@@ -4296,6 +4321,10 @@ async function fetchBitgetSpotTicker(meta) {
     ask: toNumber(payload.sellOne),
     last: toNumber(payload.close),
     volume: toNumber(payload.usdtVol ?? payload.quoteVol),
+    bidSize: toNumber(payload.bidSz),
+    askSize: toNumber(payload.askSz),
+    bidNotional: computeNotional(toNumber(payload.buyOne), toNumber(payload.bidSz)),
+    askNotional: computeNotional(toNumber(payload.sellOne), toNumber(payload.askSz)),
     changePct: toNumber(payload.change ?? payload.changeUtc)
   };
 }
@@ -4313,6 +4342,10 @@ async function fetchKucoinSpotTicker(meta) {
     ask: toNumber(payload.sell),
     last: toNumber(payload.last),
     volume: toNumber(payload.volValue),
+    bidSize: toNumber(payload.buySize),
+    askSize: toNumber(payload.sellSize),
+    bidNotional: computeNotional(toNumber(payload.buy), toNumber(payload.buySize)),
+    askNotional: computeNotional(toNumber(payload.sell), toNumber(payload.sellSize)),
     changePct: toNumber(payload.changeRate) ? toNumber(payload.changeRate) * 100 : null
   };
 }
@@ -4328,6 +4361,10 @@ async function fetchBinanceSpotTicker(meta) {
     ask: toNumber(data.askPrice),
     last: toNumber(data.lastPrice),
     volume: toNumber(data.quoteVolume),
+    bidSize: toNumber(data.bidQty),
+    askSize: toNumber(data.askQty),
+    bidNotional: computeNotional(toNumber(data.bidPrice), toNumber(data.bidQty)),
+    askNotional: computeNotional(toNumber(data.askPrice), toNumber(data.askQty)),
     changePct: toNumber(data.priceChangePercent)
   };
 }
@@ -4344,6 +4381,10 @@ async function fetchBybitSpotTicker(meta) {
     ask: toNumber(first.ask1Price),
     last: toNumber(first.lastPrice),
     volume: toNumber(first.turnover24h),
+    bidSize: toNumber(first.bid1Size),
+    askSize: toNumber(first.ask1Size),
+    bidNotional: computeNotional(toNumber(first.bid1Price), toNumber(first.bid1Size)),
+    askNotional: computeNotional(toNumber(first.ask1Price), toNumber(first.ask1Size)),
     changePct: toNumber(first.price24hPcnt) ? toNumber(first.price24hPcnt) * 100 : null
   };
 }
@@ -4359,6 +4400,10 @@ async function fetchGateFuturesTicker(meta) {
     ask: toNumber(payload.lowest_ask),
     last: toNumber(payload.last),
     volume: toNumber(payload.volume_24h_quote ?? payload.volume_24h),
+    bidSize: toNumber(payload.highest_bid_size),
+    askSize: toNumber(payload.lowest_ask_size),
+    bidNotional: computeNotional(toNumber(payload.highest_bid), toNumber(payload.highest_bid_size)),
+    askNotional: computeNotional(toNumber(payload.lowest_ask), toNumber(payload.lowest_ask_size)),
     fundingRate: toNumber(payload.funding_rate),
     changePct: toNumber(payload.change_percentage)
   };
@@ -4375,6 +4420,10 @@ async function fetchMexcFuturesTicker(meta) {
     ask: toNumber(payload.ask1),
     last: toNumber(payload.lastPrice),
     volume: toNumber(payload.amount24),
+    bidSize: toNumber(payload.bid1Size),
+    askSize: toNumber(payload.ask1Size),
+    bidNotional: computeNotional(toNumber(payload.bid1), toNumber(payload.bid1Size)),
+    askNotional: computeNotional(toNumber(payload.ask1), toNumber(payload.ask1Size)),
     fundingRate: toNumber(payload.fundingRate),
     changePct: toNumber(payload.riseFallRate) ? toNumber(payload.riseFallRate) * 100 : null
   };
@@ -4393,6 +4442,10 @@ async function fetchBitgetFuturesTicker(meta) {
     ask: toNumber(payload.bestAsk),
     last: toNumber(payload.last),
     volume: toNumber(payload.quoteVolume ?? payload.usdtVolume),
+    bidSize: toNumber(payload.bestBidSize ?? payload.bidSz),
+    askSize: toNumber(payload.bestAskSize ?? payload.askSz),
+    bidNotional: computeNotional(toNumber(payload.bestBid), toNumber(payload.bestBidSize ?? payload.bidSz)),
+    askNotional: computeNotional(toNumber(payload.bestAsk), toNumber(payload.bestAskSize ?? payload.askSz)),
     fundingRate: toNumber(payload.fundingRate),
     changePct: toNumber(payload.priceChangePercent)
   };
@@ -4411,6 +4464,10 @@ async function fetchKucoinFuturesTicker(meta) {
     ask: toNumber(payload.bestAskPrice),
     last: toNumber(payload.price),
     volume: toNumber(payload.turnover),
+    bidSize: toNumber(payload.bestBidSize),
+    askSize: toNumber(payload.bestAskSize),
+    bidNotional: computeNotional(toNumber(payload.bestBidPrice), toNumber(payload.bestBidSize)),
+    askNotional: computeNotional(toNumber(payload.bestAskPrice), toNumber(payload.bestAskSize)),
     fundingRate: toNumber(payload.fundingRate),
     changePct: toNumber(payload.changeRate) ? toNumber(payload.changeRate) * 100 : null
   };
@@ -4427,6 +4484,10 @@ async function fetchBinanceFuturesTicker(meta) {
     ask: toNumber(data.askPrice),
     last: toNumber(data.lastPrice),
     volume: toNumber(data.quoteVolume),
+    bidSize: toNumber(data.bidQty),
+    askSize: toNumber(data.askQty),
+    bidNotional: computeNotional(toNumber(data.bidPrice), toNumber(data.bidQty)),
+    askNotional: computeNotional(toNumber(data.askPrice), toNumber(data.askQty)),
     fundingRate: null,
     changePct: toNumber(data.priceChangePercent)
   };
@@ -4444,6 +4505,10 @@ async function fetchBybitFuturesTicker(meta) {
     ask: toNumber(payload.ask1Price),
     last: toNumber(payload.lastPrice),
     volume: toNumber(payload.turnover24h),
+    bidSize: toNumber(payload.bid1Size),
+    askSize: toNumber(payload.ask1Size),
+    bidNotional: computeNotional(toNumber(payload.bid1Price), toNumber(payload.bid1Size)),
+    askNotional: computeNotional(toNumber(payload.ask1Price), toNumber(payload.ask1Size)),
     fundingRate: toNumber(payload.fundingRate),
     changePct: toNumber(payload.price24hPcnt) ? toNumber(payload.price24hPcnt) * 100 : null
   };
@@ -5053,14 +5118,15 @@ app.get('/api/monitoring/history', async (req, res) => {
       fetchHistoryDataset(spotProvider, meta, intervalKey, limit),
       fetchHistoryDataset(futuresProvider, meta, intervalKey, limit)
     ]);
-    const points = buildHistorySeries(spotResult.candles, futuresResult.candles, intervalConfig.minutes);
+    const historySeries = buildHistorySeries(spotResult.candles, futuresResult.candles, intervalConfig.minutes);
     res.json({
       symbol: meta.symbol,
       label: MONITORING_DEFAULT_LABELS[meta.symbol] || meta.symbol,
       interval: { key: intervalKey, label: intervalConfig.label, minutes: intervalConfig.minutes },
       spot: { key: spotProvider.key, label: spotProvider.label },
       futures: { key: futuresProvider.key, label: futuresProvider.label },
-      points,
+      points: historySeries.points,
+      stats: historySeries.stats,
       spotError: spotResult.error,
       futuresError: futuresResult.error,
       requestedCandles: limit,
