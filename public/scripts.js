@@ -4782,7 +4782,13 @@ function renderMonitoringTable() {
         <td>${formatVolume(coin.volume24h)} USDT</td>
         <td>${isFavorite ? '<span class="monitoring-favorite-flag">★ Favorito</span>' : '—'}</td>
         <td class="monitoring-actions-cell">
-          <button type="button" class="monitoring-view-chart" data-symbol="${coin.symbol}">Ver gráfico</button>
+          <button
+            type="button"
+            class="monitoring-view-chart"
+            data-symbol="${coin.symbol}"
+            data-spot="${coin.spotExchanges.join('|')}"
+            data-futures="${coin.futuresExchanges.join('|')}"
+          >Ver gráfico</button>
           <button
             type="button"
             class="monitoring-favorite-btn ${isFavorite ? 'favorited' : ''}"
@@ -4896,7 +4902,8 @@ function ensureMonitoringChart() {
             callback: (value) => {
               const num = Number(value);
               if (!Number.isFinite(num)) return `${value}%`;
-              return `${num.toFixed(3)}%`;
+              const formatted = num.toFixed(3).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+              return `${formatted}%`;
             }
           }
         },
