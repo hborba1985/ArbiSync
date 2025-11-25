@@ -4246,6 +4246,8 @@ const topAssetsPaginationInfo = document.getElementById('topAssetsPaginationInfo
 const topAssetsPaginationStatus = document.getElementById('topAssetsPaginationStatus');
 const topAssetsPrev = document.getElementById('topAssetsPrev');
 const topAssetsNext = document.getElementById('topAssetsNext');
+const topAssetsPageSizeSelect = document.getElementById('topAssetsPageSize');
+const topAssetsLimitSelect = document.getElementById('topAssetsLimit');
 
 const MONITORING_PAGE_SIZE = 10;
 const monitoringPaginationState = { page: 1, perPage: MONITORING_PAGE_SIZE };
@@ -4254,7 +4256,8 @@ const MONITORING_REFRESH_DEFAULT_SECONDS = 3;
 let monitoringAutoRefreshTimer = null;
 let monitoringAutoRefreshPaused = false;
 const TOP_ASSETS_PAGE_SIZE = 8;
-const topAssetsState = { items: [], page: 1, perPage: TOP_ASSETS_PAGE_SIZE };
+const TOP_ASSETS_LIMIT_DEFAULT = 60;
+const topAssetsState = { items: [], page: 1, perPage: TOP_ASSETS_PAGE_SIZE, limit: TOP_ASSETS_LIMIT_DEFAULT };
 const topAssetsSelection = new Set();
 const monitoringFavorites = new Set();
 let executionToastTimer = null;
@@ -4275,6 +4278,33 @@ function getMonitoringName(symbol, fallbackLabel = null) {
   const normalized = symbol.toUpperCase();
   const meta = monitoringMeta.get(normalized);
   return meta?.name || fallbackLabel || normalized;
+}
+
+const SPOT_LABEL_TO_KEY = {
+  'gate.io': 'gate_spot',
+  'gate.io spot': 'gate_spot',
+  'mexc': 'mexc_spot',
+  'bitget': 'bitget_spot',
+  'kucoin': 'kucoin_spot',
+  'binance': 'binance_spot',
+  'bybit': 'bybit_spot'
+};
+
+const FUTURES_LABEL_TO_KEY = {
+  'gate.io futures': 'gate_futures',
+  'mexc futures': 'mexc_futures',
+  'bitget futures': 'bitget_futures',
+  'kucoin futures': 'kucoin_futures',
+  'binance futures': 'binance_futures',
+  'bybit futures': 'bybit_futures'
+};
+
+function resolveHistoryExchangeKey(label, type) {
+  const normalized = String(label || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (type === 'spot') return SPOT_LABEL_TO_KEY[normalized] || null;
+  if (type === 'futures') return FUTURES_LABEL_TO_KEY[normalized] || null;
+  return null;
 }
 
 function buildOpportunityKey(coin) {
@@ -4846,7 +4876,15 @@ function ensureMonitoringChart() {
         }
       },
       scales: {
-        y: { ticks: { callback: (value) => `${value}%` } },
+        y: {
+          ticks: {
+            callback: (value) => {
+              const num = Number(value);
+              if (!Number.isFinite(num)) return `${value}%`;
+              return `${num.toFixed(3)}%`;
+            }
+          }
+        },
         yVolume: { position: 'right', grid: { drawOnChartArea: false }, ticks: { callback: (value) => `${formatVolume(value)} USDT` } }
       }
     }
@@ -4995,17 +5033,24 @@ if (monitoringPaginationNext) {
   monitoringPaginationNext.addEventListener('click', () => changeMonitoringPage(1));
 }
 
-if (monitoringTableBody) {
-  monitoringTableBody.addEventListener('click', (event) => {
-    const chartBtn = event.target.closest('.monitoring-view-chart');
-    if (chartBtn) {
-      const { symbol } = chartBtn.dataset;
-      if (!symbol) return;
-      if (monitoringPairSelect) monitoringPairSelect.value = symbol;
-      updateMonitoringChart(symbol);
-      activateView('monitoringView');
-      return;
-    }
+  if (monitoringTableBody) {
+    monitoringTableBody.addEventListener('click', (event) => {
+      const chartBtn = event.target.closest('.monitoring-view-chart');
+      if (chartBtn) {
+        const { symbol } = chartBtn.dataset;
+        if (!symbol) return;
+        const spotLabel = (chartBtn.dataset.spot || '').split('|')[0];
+        const futuresLabel = (chartBtn.dataset.futures || '').split('|')[0];
+        const spotKey = resolveHistoryExchangeKey(spotLabel, 'spot');
+        const futuresKey = resolveHistoryExchangeKey(futuresLabel, 'futures');
+        if (monitoringPairSelect) monitoringPairSelect.value = symbol;
+        if (monitoringHistorySpotSelect && spotKey) monitoringHistorySpotSelect.value = spotKey;
+        if (monitoringHistoryFuturesSelect && futuresKey) monitoringHistoryFuturesSelect.value = futuresKey;
+        if (monitoringHistoryIntervalSelect) monitoringHistoryIntervalSelect.value = '30m';
+        updateMonitoringChart(symbol);
+        activateView('monitoringView');
+        return;
+      }
 
     const favBtn = event.target.closest('.monitoring-favorite-btn');
     if (favBtn) {
@@ -5156,15 +5201,17 @@ function renderTopAssetsList() {
   const visible = assets.slice(startIndex, startIndex + topAssetsState.perPage);
   topAssetsList.innerHTML = visible
     .map((asset) => {
-      const bestVolume = Number.isFinite(asset.bestVolume) ? formatVolume(asset.bestVolume) : 'N/D';
-      const exchanges = Array.isArray(asset.exchanges) && asset.exchanges.length ? asset.exchanges.join(', ') : '—';
+      const bestVolume = Number.isFinite(asset.bestVolume) ? `${formatVolume(asset.bestVolume)} USDT` : 'N/D';
       const checked = topAssetsSelection.has(asset.symbol) ? 'checked' : '';
+      const volumes = Array.isArray(asset.volumes) ? asset.volumes : [];
+      const volumeBadges = volumes.length
+        ? volumes.map((item) => `<span class="volume-badge"><strong>${item.exchange}</strong><span class="asset-volume">${formatVolume(item.volume)} USDT</span></span>`).join('')
+        : '<span class="muted">Sem volumes reportados</span>';
       return `<label class="top-assets-row">
         <span><input type="checkbox" class="top-asset-option" value="${asset.symbol}" data-label="${asset.label || asset.symbol}" ${checked}></span>
         <span class="asset-name">${asset.label || asset.symbol}</span>
-        <span class="asset-symbol">${asset.symbol}</span>
+        <span><div class="volume-badges">${volumeBadges}</div></span>
         <span class="asset-volume">${bestVolume}</span>
-        <span class="asset-exchanges">${exchanges}</span>
       </label>`;
     })
     .join('');
@@ -5251,12 +5298,17 @@ async function removeMonitoringSymbol(symbol) {
 async function discoverTopAssets() {
   if (!requireAdmin()) return;
   const selected = getSelectedTopExchanges();
+  const limitSelected = Number(topAssetsLimitSelect?.value);
+  if (Number.isFinite(limitSelected) && limitSelected > 0) {
+    topAssetsState.limit = limitSelected;
+  }
   if (topAssetsStatus) {
     topAssetsStatus.textContent = 'Buscando ativos com maior volume...';
     topAssetsStatus.classList.remove('error');
   }
   const params = new URLSearchParams();
   if (selected.length) params.set('exchanges', selected.join(','));
+  if (topAssetsState.limit) params.set('limit', topAssetsState.limit);
   try {
     const response = await fetch(`/api/monitoring/top-assets?${params.toString()}`);
     if (!response.ok) throw new Error(`Falha ao buscar top 24h (${response.status})`);
@@ -5264,6 +5316,9 @@ async function discoverTopAssets() {
     const assets = Array.isArray(payload?.assets) ? payload.assets : [];
     topAssetsState.items = assets;
     topAssetsState.page = 1;
+    if (Number.isFinite(payload?.limit)) {
+      topAssetsState.limit = Number(payload.limit);
+    }
     topAssetsSelection.clear();
     renderTopAssetsList();
     if (topAssetsResults) topAssetsResults.classList.toggle('hidden', !assets.length);
@@ -5272,7 +5327,7 @@ async function discoverTopAssets() {
         ? ` — ${payload.errors.length} fontes indisponíveis`
         : '';
       topAssetsStatus.textContent = assets.length
-        ? `Encontrados ${assets.length} ativos elegíveis${errors}`
+        ? `Encontrados ${assets.length} ativos elegíveis (limite ${topAssetsState.limit})${errors}`
         : `Nenhum ativo retornado${errors}`;
       topAssetsStatus.classList.remove('error');
     }
@@ -5296,24 +5351,22 @@ if (adminAddCoinForm) {
     event.preventDefault();
     if (!requireAdmin()) return;
     const symbolInput = document.getElementById('adminCoinSymbol');
-    const spotInput = document.getElementById('adminCoinSpot');
-    const futuresInput = document.getElementById('adminCoinFutures');
     if (!symbolInput) return;
     const symbol = normalizeMonitoringSymbolInput(symbolInput.value);
     const name = symbol;
     if (!symbol) return;
-    const spotHint = Array.from(spotInput?.selectedOptions || []).map((opt) => opt.value).filter(Boolean);
-    const futuresHint = Array.from(futuresInput?.selectedOptions || []).map((opt) => opt.value).filter(Boolean);
+    const spotHint = getCheckedValues('.admin-spot-option');
+    const futuresHint = getCheckedValues('.admin-futures-option');
     try {
       await persistMonitoringSymbol(symbol, { name, risk: 'Médio', spotHint, futuresHint });
       blacklist.delete(symbol);
       symbolInput.value = '';
-      if (spotInput) {
-        Array.from(spotInput.options).forEach((opt) => { opt.selected = opt.value === 'Gate.io'; });
-      }
-      if (futuresInput) {
-        Array.from(futuresInput.options).forEach((opt) => { opt.selected = opt.value === 'Gate.io Futures'; });
-      }
+      document.querySelectorAll('.admin-spot-option').forEach((input) => {
+        input.checked = input.value === 'Gate.io';
+      });
+      document.querySelectorAll('.admin-futures-option').forEach((input) => {
+        input.checked = input.value === 'Gate.io Futures';
+      });
       loadMonitoringData({ focusSymbol: symbol, silent: true });
       renderBlacklist();
     } catch (e) {
@@ -5374,6 +5427,33 @@ if (blacklistList) {
 
 if (discoverTopAssetsBtn) {
   discoverTopAssetsBtn.addEventListener('click', discoverTopAssets);
+}
+
+if (topAssetsPageSizeSelect) {
+  const initial = Number(topAssetsPageSizeSelect.value);
+  if (Number.isFinite(initial) && initial > 0) {
+    topAssetsState.perPage = initial;
+  }
+  topAssetsPageSizeSelect.addEventListener('change', () => {
+    const next = Number(topAssetsPageSizeSelect.value);
+    if (!Number.isFinite(next) || next <= 0) return;
+    topAssetsState.perPage = next;
+    topAssetsState.page = 1;
+    renderTopAssetsList();
+  });
+}
+
+if (topAssetsLimitSelect) {
+  const initialLimit = Number(topAssetsLimitSelect.value);
+  if (Number.isFinite(initialLimit) && initialLimit > 0) {
+    topAssetsState.limit = initialLimit;
+  }
+  topAssetsLimitSelect.addEventListener('change', () => {
+    const nextLimit = Number(topAssetsLimitSelect.value);
+    if (Number.isFinite(nextLimit) && nextLimit > 0) {
+      topAssetsState.limit = nextLimit;
+    }
+  });
 }
 
 if (topAssetsPrev) {

@@ -4760,6 +4760,7 @@ async function fetchBybitTopFuturesAssets() {
 }
 
 const TOP_ASSET_LIMIT = 60;
+const TOP_ASSET_LIMIT_MAX = 200;
 const topAssetProviders = [
   { key: 'gate_spot', label: 'Gate.io Spot', type: 'spot', list: fetchGateTopSpotAssets },
   { key: 'mexc_spot', label: 'MEXC Spot', type: 'spot', list: fetchMexcTopSpotAssets },
@@ -4788,7 +4789,12 @@ async function collectTopAssets(provider) {
   }
 }
 
-async function buildTopAssetsResponse(selectedKeys) {
+async function buildTopAssetsResponse(selectedKeys, limitInput) {
+  const safeLimit = (() => {
+    const raw = Number(limitInput);
+    if (!Number.isFinite(raw) || raw <= 0) return TOP_ASSET_LIMIT;
+    return Math.min(Math.max(5, Math.round(raw)), TOP_ASSET_LIMIT_MAX);
+  })();
   const providers = selectedKeys?.length
     ? selectedKeys.map((key) => findTopAssetProvider(key)).filter(Boolean)
     : topAssetProviders;
@@ -4821,12 +4827,12 @@ async function buildTopAssetsResponse(selectedKeys) {
       volumes: item.volumes.sort((a, b) => (b.volume || 0) - (a.volume || 0))
     }))
     .sort((a, b) => (b.bestVolume || 0) - (a.bestVolume || 0))
-    .slice(0, TOP_ASSET_LIMIT);
+    .slice(0, safeLimit);
   const errors = responses.filter((entry) => entry.error).map((entry) => ({
     provider: entry.provider?.label || entry.provider?.key,
     error: entry.error
   }));
-  return { assets, errors, exchanges: providers.map((p) => p.key) };
+  return { assets, errors, exchanges: providers.map((p) => p.key), limit: safeLimit };
 }
 
 async function fetchHistoryDataset(provider, meta, intervalKey, limit) {
@@ -5056,7 +5062,8 @@ app.get('/api/monitoring/top-assets', async (req, res) => {
       .split(',')
       .map((key) => key.trim())
       .filter(Boolean);
-    const result = await buildTopAssetsResponse(selected);
+    const limit = Number(req.query.limit);
+    const result = await buildTopAssetsResponse(selected, limit);
     res.json({ ...result, updatedAt: new Date().toISOString() });
   } catch (err) {
     console.error('[monitoring] erro ao buscar ativos mais negociados', err);

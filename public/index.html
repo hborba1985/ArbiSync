@@ -588,6 +588,20 @@
       align-items: center;
     }
 
+    .inline-input {
+      display: inline-flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .admin-exchange-groups {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
     .top-assets-results {
       display: flex;
       flex-direction: column;
@@ -605,7 +619,7 @@
     .top-assets-head,
     .top-assets-row {
       display: grid;
-      grid-template-columns: 0.7fr 1.4fr 1.1fr 1fr 1.3fr;
+      grid-template-columns: 0.6fr 1.4fr 2fr 1fr;
       gap: 12px;
       padding: 10px 14px;
       align-items: center;
@@ -643,6 +657,23 @@
 
     .top-assets-row .asset-volume {
       font-variant-numeric: tabular-nums;
+    }
+
+    .volume-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .volume-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 10px;
+      background: rgba(125, 97, 255, 0.12);
+      border: 1px solid rgba(125, 97, 255, 0.2);
+      font-size: 12px;
     }
 
     .top-assets-footer {
@@ -2309,26 +2340,26 @@
                   <label>Moeda
                     <input type="text" id="adminCoinSymbol" placeholder="FARM_USDT" required />
                   </label>
-                  <label>Corretoras SPOT
-                    <select id="adminCoinSpot" multiple>
-                      <option value="Gate.io" selected>Gate.io</option>
-                      <option value="MEXC">MEXC</option>
-                      <option value="Bitget">Bitget</option>
-                      <option value="KuCoin">KuCoin</option>
-                      <option value="Binance">Binance</option>
-                      <option value="Bybit">Bybit</option>
-                    </select>
-                  </label>
-                  <label>Corretoras FUTUROS
-                    <select id="adminCoinFutures" multiple>
-                      <option value="Gate.io Futures" selected>Gate.io Futures</option>
-                      <option value="MEXC Futures">MEXC Futures</option>
-                      <option value="Bitget Futures">Bitget Futures</option>
-                      <option value="KuCoin Futures">KuCoin Futures</option>
-                      <option value="Binance Futures">Binance Futures</option>
-                      <option value="Bybit Futures">Bybit Futures</option>
-                    </select>
-                  </label>
+                  <div class="admin-exchange-groups">
+                    <div class="exchange-group">
+                      <h5>Corretoras SPOT</h5>
+                      <label><input type="checkbox" class="admin-spot-option" value="Gate.io" checked />Gate.io</label>
+                      <label><input type="checkbox" class="admin-spot-option" value="MEXC" />MEXC</label>
+                      <label><input type="checkbox" class="admin-spot-option" value="Bitget" />Bitget</label>
+                      <label><input type="checkbox" class="admin-spot-option" value="KuCoin" />KuCoin</label>
+                      <label><input type="checkbox" class="admin-spot-option" value="Binance" />Binance</label>
+                      <label><input type="checkbox" class="admin-spot-option" value="Bybit" />Bybit</label>
+                    </div>
+                    <div class="exchange-group">
+                      <h5>Corretoras FUTUROS</h5>
+                      <label><input type="checkbox" class="admin-futures-option" value="Gate.io Futures" checked />Gate.io Futures</label>
+                      <label><input type="checkbox" class="admin-futures-option" value="MEXC Futures" />MEXC Futures</label>
+                      <label><input type="checkbox" class="admin-futures-option" value="Bitget Futures" />Bitget Futures</label>
+                      <label><input type="checkbox" class="admin-futures-option" value="KuCoin Futures" />KuCoin Futures</label>
+                      <label><input type="checkbox" class="admin-futures-option" value="Binance Futures" />Binance Futures</label>
+                      <label><input type="checkbox" class="admin-futures-option" value="Bybit Futures" />Bybit Futures</label>
+                    </div>
+                  </div>
                   <button type="submit">Cadastrar moeda</button>
                 </form>
                 <form id="adminRemoveCoinForm" class="admin-form">
@@ -2348,14 +2379,14 @@
             </div>
           </div>
 
-          <div class="card" id="adminDiscoveryCard">
-            <h3>Ativos mais negociados (24h)</h3>
-            <div class="card-body admin-tools hidden" id="adminDiscoveryTools">
-              <p class="muted">Escolha as corretoras e busque os pares com maior volume para adicioná-los rapidamente.</p>
-              <div class="discovery-controls">
-                <div class="discovery-exchanges">
-                  <div class="exchange-group">
-                    <h4>SPOT</h4>
+            <div class="card" id="adminDiscoveryCard">
+              <h3>Ativos mais negociados (24h)</h3>
+              <div class="card-body admin-tools hidden" id="adminDiscoveryTools">
+                <p class="muted">Escolha as corretoras e busque os pares com maior volume para adicioná-los rapidamente.</p>
+                <div class="discovery-controls">
+                  <div class="discovery-exchanges">
+                    <div class="exchange-group">
+                      <h4>SPOT</h4>
                     <label><input type="checkbox" class="top-exchange" value="gate_spot" checked />Gate.io Spot</label>
                     <label><input type="checkbox" class="top-exchange" value="mexc_spot" checked />MEXC Spot</label>
                     <label><input type="checkbox" class="top-exchange" value="bitget_spot" checked />Bitget Spot</label>
@@ -2370,22 +2401,40 @@
                     <label><input type="checkbox" class="top-exchange" value="bitget_futures" checked />Bitget Futures</label>
                     <label><input type="checkbox" class="top-exchange" value="kucoin_futures" checked />KuCoin Futures</label>
                     <label><input type="checkbox" class="top-exchange" value="binance_futures" checked />Binance Futures</label>
-                    <label><input type="checkbox" class="top-exchange" value="bybit_futures" checked />Bybit Futures</label>
+                      <label><input type="checkbox" class="top-exchange" value="bybit_futures" checked />Bybit Futures</label>
+                    </div>
+                  </div>
+                  <div class="discovery-actions">
+                    <button type="button" id="discoverTopAssets">Buscar top 24h</button>
+                    <label class="inline-input">
+                      Resultados/página
+                      <select id="topAssetsPageSize">
+                        <option value="6">6</option>
+                        <option value="8" selected>8</option>
+                        <option value="12">12</option>
+                        <option value="20">20</option>
+                      </select>
+                    </label>
+                    <label class="inline-input">
+                      Quantidade de ativos buscados
+                      <select id="topAssetsLimit">
+                        <option value="20">20</option>
+                        <option value="40">40</option>
+                        <option value="60" selected>60</option>
+                        <option value="100">100</option>
+                        <option value="150">150</option>
+                      </select>
+                    </label>
+                    <span id="topAssetsStatus" class="muted"></span>
                   </div>
                 </div>
-                <div class="discovery-actions">
-                  <button type="button" id="discoverTopAssets">Buscar top 24h</button>
-                  <span id="topAssetsStatus" class="muted"></span>
-                </div>
-              </div>
-              <div id="topAssetsResults" class="top-assets-results hidden">
-                <div class="top-assets-card">
+                <div id="topAssetsResults" class="top-assets-results hidden">
+                  <div class="top-assets-card">
                   <div class="top-assets-head">
                     <span>Selecionar</span>
                     <span>Ativo</span>
-                    <span>Símbolo</span>
-                    <span>Volume 24h</span>
-                    <span>Corretoras</span>
+                    <span>Volumes 24h por corretora</span>
+                    <span>Maior volume</span>
                   </div>
                   <div class="top-assets-list" id="topAssetsList"></div>
                   <div class="top-assets-footer">
