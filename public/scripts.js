@@ -4181,6 +4181,25 @@ const MONITORING_HISTORY_CACHE_TTL = 60 * 1000;
 let monitoringLoading = true;
 let monitoringLastFetchError = null;
 
+const MONITORING_VISIBILITY_STORAGE_KEY = 'monitoringChartVisibility';
+function loadMonitoringVisibility() {
+  try {
+    const raw = localStorage.getItem(MONITORING_VISIBILITY_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {}
+  return {};
+}
+
+function persistMonitoringVisibility(map) {
+  try {
+    localStorage.setItem(MONITORING_VISIBILITY_STORAGE_KEY, JSON.stringify(map || {}));
+  } catch {}
+}
+
+let monitoringDatasetVisibility = loadMonitoringVisibility();
+
 const blacklist = new Set();
 const ADMIN_PASSWORD = 'arbisync@2024';
 let isAdmin = false;
@@ -4782,6 +4801,29 @@ function updateMonitoringSelectors() {
 }
 
 let monitoringChart = null;
+function syncMonitoringChartVisibilityFromChart(chart) {
+  if (!chart || !chart.data?.datasets) return;
+  const next = { ...monitoringDatasetVisibility };
+  chart.data.datasets.forEach((dataset, idx) => {
+    const meta = chart.getDatasetMeta(idx);
+    next[dataset.label] = meta?.hidden !== true;
+  });
+  monitoringDatasetVisibility = next;
+  persistMonitoringVisibility(next);
+}
+
+function applyMonitoringChartVisibility(chart) {
+  if (!chart || !chart.data?.datasets) return;
+  chart.data.datasets.forEach((dataset, idx) => {
+    const visible = monitoringDatasetVisibility[dataset.label];
+    if (typeof visible === 'boolean') {
+      dataset.hidden = !visible;
+      const meta = chart.getDatasetMeta(idx);
+      if (meta) meta.hidden = visible ? null : true;
+    }
+  });
+}
+
 function ensureMonitoringChart() {
   if (monitoringChart) return monitoringChart;
   const ctx = document.getElementById('monitoringChart');
@@ -4793,6 +4835,17 @@ function ensureMonitoringChart() {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { intersect: false, mode: 'index' },
+      plugins: {
+        legend: {
+          onClick(event, legendItem, legend) {
+            const defaultHandler = (Chart.overrides?.line?.plugins?.legend?.onClick) || (Chart.defaults?.plugins?.legend?.onClick);
+            if (typeof defaultHandler === 'function') {
+              defaultHandler.call(this, event, legendItem, legend);
+            }
+            syncMonitoringChartVisibilityFromChart(legend?.chart);
+          }
+        }
+      },
       scales: {
         y: { ticks: { callback: (value) => `${value}%` } },
         yVolume: { position: 'right', grid: { drawOnChartArea: false }, ticks: { callback: (value) => `${formatVolume(value)} USDT` } }
@@ -4805,13 +4858,7 @@ function ensureMonitoringChart() {
 async function updateMonitoringChart(symbolInput) {
   const chart = ensureMonitoringChart();
   if (!chart) return;
-  const previousVisibility = new Map();
-  if (chart.data?.datasets?.length) {
-    chart.data.datasets.forEach((ds, idx) => {
-      const meta = chart.getDatasetMeta(idx);
-      previousVisibility.set(ds.label, meta?.hidden === true);
-    });
-  }
+  syncMonitoringChartVisibilityFromChart(chart);
   const fallbackSymbol = monitoringPairSelect?.value || monitoringRows[0]?.symbol || trackedMonitoringSymbols[0];
   const symbol = String(symbolInput || fallbackSymbol || '').toUpperCase();
   if (!symbol) return;
@@ -4887,12 +4934,9 @@ async function updateMonitoringChart(symbolInput) {
       yAxisID: 'yVolume'
     }
   ];
-  chart.data.datasets.forEach((dataset) => {
-    if (previousVisibility.has(dataset.label)) {
-      dataset.hidden = previousVisibility.get(dataset.label);
-    }
-  });
+  applyMonitoringChartVisibility(chart);
   chart.update();
+  syncMonitoringChartVisibilityFromChart(chart);
   updateMonitoringHistorySource(entry);
   if (!points.length) {
     const warning = entry.errors?.spot || entry.errors?.futures;
