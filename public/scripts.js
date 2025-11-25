@@ -4202,6 +4202,7 @@ const monitoringHistoryFuturesSelect = document.getElementById('monitoringHistor
 const monitoringHistorySourceEl = document.getElementById('monitoringHistorySource');
 const monitoringHistoryStatusEl = document.getElementById('monitoringHistoryStatus');
 const monitoringRefreshIntervalSelect = document.getElementById('monitoringRefreshInterval');
+const monitoringRefreshToggleBtn = document.getElementById('monitoringRefreshToggle');
 const monitoringPaginationInfo = document.getElementById('monitoringPaginationInfo');
 const monitoringPaginationStatus = document.getElementById('monitoringPaginationStatus');
 const monitoringPaginationPrev = document.getElementById('monitoringPaginationPrev');
@@ -4234,9 +4235,12 @@ const monitoringPaginationState = { page: 1, perPage: MONITORING_PAGE_SIZE };
 let monitoringFilteredRows = [];
 const MONITORING_REFRESH_DEFAULT_SECONDS = 3;
 let monitoringAutoRefreshTimer = null;
+let monitoringAutoRefreshPaused = false;
 const TOP_ASSETS_PAGE_SIZE = 8;
 const topAssetsState = { items: [], page: 1, perPage: TOP_ASSETS_PAGE_SIZE };
 const topAssetsSelection = new Set();
+const monitoringFavorites = new Set();
+let executionToastTimer = null;
 
 function getCheckedValues(selector) {
   return Array.from(document.querySelectorAll(selector))
@@ -4254,6 +4258,100 @@ function getMonitoringName(symbol, fallbackLabel = null) {
   const normalized = symbol.toUpperCase();
   const meta = monitoringMeta.get(normalized);
   return meta?.name || fallbackLabel || normalized;
+}
+
+function buildOpportunityKey(coin) {
+  if (!coin) return '';
+  const spot = Array.isArray(coin.spotExchanges) ? coin.spotExchanges.join('+') : String(coin.spotExchanges || 'SPOT');
+  const futures = Array.isArray(coin.futuresExchanges)
+    ? coin.futuresExchanges.join('+')
+    : String(coin.futuresExchanges || 'FUT');
+  return `${coin.symbol || ''}::${spot}::${futures}`.toUpperCase();
+}
+
+function loadMonitoringFavorites() {
+  try {
+    const raw = localStorage.getItem('monitoring_favorites');
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      monitoringFavorites.clear();
+      parsed.forEach((item) => {
+        if (typeof item === 'string') monitoringFavorites.add(item);
+      });
+    }
+  } catch (e) {
+    console.warn('Falha ao ler favoritos de monitoring:', e);
+  }
+}
+
+function persistMonitoringFavorites() {
+  try {
+    localStorage.setItem('monitoring_favorites', JSON.stringify(Array.from(monitoringFavorites)));
+  } catch (e) {
+    console.warn('Falha ao salvar favoritos de monitoring:', e);
+  }
+}
+
+loadMonitoringFavorites();
+
+function findOpportunityByKey(key) {
+  if (!key) return null;
+  const normalized = String(key).toUpperCase();
+  return monitoringRows.find((coin) => buildOpportunityKey(coin) === normalized) || null;
+}
+
+function setFavorite(key, enabled) {
+  if (!key) return;
+  const normalized = String(key).toUpperCase();
+  if (enabled) {
+    monitoringFavorites.add(normalized);
+  } else {
+    monitoringFavorites.delete(normalized);
+  }
+  persistMonitoringFavorites();
+}
+
+function toggleFavorite(key) {
+  if (!key) return;
+  const normalized = String(key).toUpperCase();
+  const nowFav = !monitoringFavorites.has(normalized);
+  setFavorite(normalized, nowFav);
+  renderMonitoringTable();
+  return nowFav;
+}
+
+function resolveSpotKeyFromLabel(labelList) {
+  const normalized = String(labelList || '').toLowerCase();
+  const entries = normalized.split('|');
+  for (const entry of entries) {
+    if (entry.includes('bitget')) return 'bitget';
+    if (entry.includes('gate')) return 'gate';
+    if (entry.includes('bybit')) return 'bitget';
+  }
+  return 'gate';
+}
+
+function showExecutionToast(message) {
+  const toast = document.getElementById('executionToast');
+  if (!toast) return;
+  toast.textContent = message;
+  toast.classList.add('visible');
+  if (executionToastTimer) clearTimeout(executionToastTimer);
+  executionToastTimer = setTimeout(() => {
+    toast.classList.remove('visible');
+  }, 2800);
+}
+
+function addExecutionTabFromOpportunity(coin, spotLabel) {
+  if (!coin) return null;
+  const spotKey = resolveSpotKeyFromLabel(spotLabel || coin.spotExchanges?.join('|'));
+  const inst = addInstance({ symbol: coin.symbol, spotExchange: spotKey, label: `${coin.symbol} (${spotKey})` }, { switchTo: true });
+  if (inst) {
+    activateView('executionView');
+    showExecutionToast(`${coin.symbol} adicionado ao menu de execução.`);
+  }
+  return inst;
 }
 
 function resetMonitoringPagination() {
@@ -4307,11 +4405,19 @@ function scheduleMonitoringAutoRefresh() {
     clearInterval(monitoringAutoRefreshTimer);
     monitoringAutoRefreshTimer = null;
   }
+  if (monitoringAutoRefreshPaused) return;
   const intervalMs = getMonitoringRefreshSeconds() * 1000;
   monitoringAutoRefreshTimer = setInterval(() => {
     if (document.hidden) return;
     loadMonitoringData({ silent: true, updateChart: false });
   }, intervalMs);
+}
+
+function updateMonitoringRefreshToggleUI() {
+  if (!monitoringRefreshToggleBtn) return;
+  monitoringRefreshToggleBtn.textContent = monitoringAutoRefreshPaused ? '▶ Retomar' : '⏸ Pausar';
+  monitoringRefreshToggleBtn.classList.toggle('paused', monitoringAutoRefreshPaused);
+  monitoringRefreshToggleBtn.setAttribute('aria-pressed', String(!monitoringAutoRefreshPaused));
 }
 
 function resetMonitoringHistory() {
@@ -4447,7 +4553,7 @@ async function loadMonitoringData({ focusSymbol = null, silent = false, updateCh
     monitoringLoading = true;
     monitoringLastFetchError = null;
     if (!silent && monitoringTableBody) {
-      monitoringTableBody.innerHTML = '<tr><td colspan="9">Carregando dados de arbitragem em tempo real...</td></tr>';
+      monitoringTableBody.innerHTML = '<tr><td colspan="10">Carregando dados de arbitragem em tempo real...</td></tr>';
     }
     const params = new URLSearchParams();
     params.set('symbols', trackedMonitoringSymbols.join(','));
@@ -4507,7 +4613,7 @@ async function loadMonitoringData({ focusSymbol = null, silent = false, updateCh
     monitoringLastFetchError = err;
     console.error('[monitoring] erro ao carregar dados', err);
     if (monitoringTableBody) {
-      monitoringTableBody.innerHTML = `<tr><td colspan="9">Erro ao carregar dados de arbitragem: ${err.message || err}</td></tr>`;
+      monitoringTableBody.innerHTML = `<tr><td colspan="10">Erro ao carregar dados de arbitragem: ${err.message || err}</td></tr>`;
     }
     monitoringFilteredRows = [];
     updateMonitoringPaginationUI(0);
@@ -4564,6 +4670,9 @@ function renderMonitoringTable() {
     .filter((coin) => stabilityFilter === 'flex' || coin.stability === stabilityFilter);
 
   filtered.sort((a, b) => {
+    const favA = monitoringFavorites.has(buildOpportunityKey(a));
+    const favB = monitoringFavorites.has(buildOpportunityKey(b));
+    if (favA !== favB) return favA ? -1 : 1;
     const aArb = Number.isFinite(a.arb) ? a.arb : -Infinity;
     const bArb = Number.isFinite(b.arb) ? b.arb : -Infinity;
     return bArb - aArb;
@@ -4578,7 +4687,7 @@ function renderMonitoringTable() {
       : monitoringLastFetchError
         ? `Última tentativa falhou: ${monitoringLastFetchError.message || monitoringLastFetchError}`
         : 'Nenhuma moeda atende aos filtros ativos.';
-    monitoringTableBody.innerHTML = `<tr><td colspan="9">${emptyMessage}</td></tr>`;
+    monitoringTableBody.innerHTML = `<tr><td colspan="10">${emptyMessage}</td></tr>`;
     renderMonitoringSummary(filtered);
     return;
   }
@@ -4588,6 +4697,8 @@ function renderMonitoringTable() {
 
   monitoringTableBody.innerHTML = visibleCoins.map((coin) => {
     const metaInfo = monitoringMeta.get(coin.symbol);
+    const favKey = buildOpportunityKey(coin);
+    const isFavorite = monitoringFavorites.has(favKey);
     const arbLabel = Number.isFinite(coin.arb) ? `${coin.arb.toFixed(2)}%` : '—';
     const fundingLabel = Number.isFinite(coin.funding) ? `${(coin.funding * 100).toFixed(3)}%` : '—';
     const spotList = coin.spotExchanges.length
@@ -4610,7 +4721,26 @@ function renderMonitoringTable() {
         <td>${coin.depth}</td>
         <td>${fundingLabel}</td>
         <td>${coin.risk}</td>
-        <td><button type="button" class="monitoring-view-chart" data-symbol="${coin.symbol}">Ver gráfico</button></td>
+        <td>${isFavorite ? '<span class="monitoring-favorite-flag">★ Favorito</span>' : '—'}</td>
+        <td class="monitoring-actions-cell">
+          <button type="button" class="monitoring-view-chart" data-symbol="${coin.symbol}">Ver gráfico</button>
+          <button
+            type="button"
+            class="monitoring-favorite-btn ${isFavorite ? 'favorited' : ''}"
+            data-favorite-key="${favKey}"
+            data-symbol="${coin.symbol}"
+            data-spot="${coin.spotExchanges.join('|')}"
+            data-futures="${coin.futuresExchanges.join('|')}"
+          >${isFavorite ? 'Desfavoritar' : 'Favoritar'}</button>
+          <button
+            type="button"
+            class="monitoring-exec-btn"
+            data-favorite-key="${favKey}"
+            data-symbol="${coin.symbol}"
+            data-spot="${coin.spotExchanges.join('|')}"
+            data-futures="${coin.futuresExchanges.join('|')}"
+          >Favoritar + Executar</button>
+        </td>
       </tr>`;
   }).join('');
 
@@ -4675,6 +4805,13 @@ function ensureMonitoringChart() {
 async function updateMonitoringChart(symbolInput) {
   const chart = ensureMonitoringChart();
   if (!chart) return;
+  const previousVisibility = new Map();
+  if (chart.data?.datasets?.length) {
+    chart.data.datasets.forEach((ds, idx) => {
+      const meta = chart.getDatasetMeta(idx);
+      previousVisibility.set(ds.label, meta?.hidden === true);
+    });
+  }
   const fallbackSymbol = monitoringPairSelect?.value || monitoringRows[0]?.symbol || trackedMonitoringSymbols[0];
   const symbol = String(symbolInput || fallbackSymbol || '').toUpperCase();
   if (!symbol) return;
@@ -4750,6 +4887,11 @@ async function updateMonitoringChart(symbolInput) {
       yAxisID: 'yVolume'
     }
   ];
+  chart.data.datasets.forEach((dataset) => {
+    if (previousVisibility.has(dataset.label)) {
+      dataset.hidden = previousVisibility.get(dataset.label);
+    }
+  });
   chart.update();
   updateMonitoringHistorySource(entry);
   if (!points.length) {
@@ -4812,13 +4954,34 @@ if (monitoringPaginationNext) {
 
 if (monitoringTableBody) {
   monitoringTableBody.addEventListener('click', (event) => {
-    const button = event.target.closest('.monitoring-view-chart');
-    if (!button) return;
-    const { symbol } = button.dataset;
-    if (!symbol) return;
-    if (monitoringPairSelect) monitoringPairSelect.value = symbol;
-    updateMonitoringChart(symbol);
-    activateView('monitoringView');
+    const chartBtn = event.target.closest('.monitoring-view-chart');
+    if (chartBtn) {
+      const { symbol } = chartBtn.dataset;
+      if (!symbol) return;
+      if (monitoringPairSelect) monitoringPairSelect.value = symbol;
+      updateMonitoringChart(symbol);
+      activateView('monitoringView');
+      return;
+    }
+
+    const favBtn = event.target.closest('.monitoring-favorite-btn');
+    if (favBtn) {
+      const key = favBtn.dataset.favoriteKey;
+      if (!key) return;
+      toggleFavorite(key);
+      return;
+    }
+
+    const execBtn = event.target.closest('.monitoring-exec-btn');
+    if (execBtn) {
+      const key = execBtn.dataset.favoriteKey;
+      const coin = findOpportunityByKey(key);
+      if (!coin) return;
+      setFavorite(key, true);
+      renderMonitoringTable();
+      addExecutionTabFromOpportunity(coin, execBtn.dataset.spot);
+      return;
+    }
   });
 }
 
@@ -4848,15 +5011,31 @@ if (refreshMonitoringChartBtn) {
   });
 }
 
+if (monitoringRefreshToggleBtn) {
+  monitoringRefreshToggleBtn.addEventListener('click', () => {
+    monitoringAutoRefreshPaused = !monitoringAutoRefreshPaused;
+    updateMonitoringRefreshToggleUI();
+    if (monitoringAutoRefreshPaused) {
+      scheduleMonitoringAutoRefresh();
+    } else {
+      loadMonitoringData({ silent: true, updateChart: false });
+      scheduleMonitoringAutoRefresh();
+    }
+  });
+  updateMonitoringRefreshToggleUI();
+}
+
 if (monitoringRefreshIntervalSelect) {
   monitoringRefreshIntervalSelect.addEventListener('change', () => {
     scheduleMonitoringAutoRefresh();
-    loadMonitoringData({ silent: true, updateChart: false });
+    if (!monitoringAutoRefreshPaused) {
+      loadMonitoringData({ silent: true, updateChart: false });
+    }
   });
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) {
+  if (!document.hidden && !monitoringAutoRefreshPaused) {
     loadMonitoringData({ silent: true, updateChart: false });
   }
 });
