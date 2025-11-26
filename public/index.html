@@ -501,11 +501,42 @@
       letter-spacing: 0.04em;
     }
 
-.monitoring-table button {
-  padding: 4px 10px;
-  font-size: 11px;
-  letter-spacing: 0.04em;
-}
+    .col-hidden {
+      display: none;
+    }
+
+    .monitoring-column-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 10px 0 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .monitoring-column-controls label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border: 1px solid rgba(125, 97, 255, 0.25);
+      border-radius: 10px;
+      background: rgba(26, 28, 60, 0.5);
+      color: var(--text-primary);
+      cursor: pointer;
+    }
+
+    .volume-inline {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .monitoring-table button {
+      padding: 4px 10px;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+    }
 
 .monitoring-actions-cell {
   display: flex;
@@ -2340,17 +2371,25 @@
               </div>
               <span class="monitoring-refresh-note">Atualiza automaticamente as oportunidades após os filtros ativos. Favoritos permanecem no topo.</span>
             </div>
+            <div class="monitoring-column-controls" id="monitoringColumnControls">
+              <span>Colunas:</span>
+              <label><input type="checkbox" class="monitoring-column-toggle" data-col="spot" checked />Corretoras SPOT</label>
+              <label><input type="checkbox" class="monitoring-column-toggle" data-col="futures" checked />Corretoras FUTUROS</label>
+              <label><input type="checkbox" class="monitoring-column-toggle" data-col="volume" checked />Volume 24h</label>
+              <label><input type="checkbox" class="monitoring-column-toggle" data-col="favorite" checked />Favorito</label>
+              <label><input type="checkbox" class="monitoring-column-toggle" data-col="actions" checked />Ações</label>
+            </div>
             <div class="table-scroll">
               <table class="monitoring-table">
                 <thead>
                   <tr>
-                    <th>Par</th>
-                    <th>% Arb</th>
-                    <th>Corretoras SPOT</th>
-                    <th>Corretoras FUTUROS</th>
-                    <th>Volume 24h</th>
-                    <th>Favorito</th>
-                    <th>Ações</th>
+                    <th class="col-symbol">Par</th>
+                    <th class="col-arb">% Arb</th>
+                    <th class="col-spot">Corretoras SPOT</th>
+                    <th class="col-futures">Corretoras FUTUROS</th>
+                    <th class="col-volume">Volume 24h</th>
+                    <th class="col-favorite">Favorito</th>
+                    <th class="col-actions">Ações</th>
                   </tr>
                 </thead>
                 <tbody id="monitoringTableBody"></tbody>

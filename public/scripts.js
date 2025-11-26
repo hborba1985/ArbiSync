@@ -4182,6 +4182,24 @@ let monitoringLoading = true;
 let monitoringLastFetchError = null;
 
 const MONITORING_VISIBILITY_STORAGE_KEY = 'monitoringChartVisibility';
+const MONITORING_COLUMNS_STORAGE_KEY = 'monitoringColumnVisibility';
+
+function loadMonitoringColumns() {
+  try {
+    const raw = localStorage.getItem(MONITORING_COLUMNS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {}
+  return {};
+}
+
+function persistMonitoringColumns(value) {
+  try {
+    localStorage.setItem(MONITORING_COLUMNS_STORAGE_KEY, JSON.stringify(value));
+  } catch {}
+}
+
 function loadMonitoringVisibility() {
   try {
     const raw = localStorage.getItem(MONITORING_VISIBILITY_STORAGE_KEY);
@@ -4198,7 +4216,9 @@ function persistMonitoringVisibility(map) {
   } catch {}
 }
 
+let monitoringColumnVisibility = loadMonitoringColumns();
 let monitoringDatasetVisibility = loadMonitoringVisibility();
+monitoringColumnVisibility = { ...MONITORING_DEFAULT_COLUMNS, ...monitoringColumnVisibility };
 
 const blacklist = new Set();
 const ADMIN_PASSWORD = 'arbisync@2024';
@@ -4222,6 +4242,7 @@ const monitoringOpenRangeEl = document.getElementById('monitoringOpenRange');
 const monitoringCloseRangeEl = document.getElementById('monitoringCloseRange');
 const monitoringRefreshIntervalSelect = document.getElementById('monitoringRefreshInterval');
 const monitoringRefreshToggleBtn = document.getElementById('monitoringRefreshToggle');
+const monitoringColumnToggles = Array.from(document.querySelectorAll('.monitoring-column-toggle'));
 const monitoringPaginationInfo = document.getElementById('monitoringPaginationInfo');
 const monitoringPaginationStatus = document.getElementById('monitoringPaginationStatus');
 const monitoringPaginationPrev = document.getElementById('monitoringPaginationPrev');
@@ -4257,6 +4278,7 @@ let monitoringFilteredRows = [];
 const MONITORING_REFRESH_DEFAULT_SECONDS = 3;
 let monitoringAutoRefreshTimer = null;
 let monitoringAutoRefreshPaused = false;
+const MONITORING_DEFAULT_COLUMNS = { spot: true, futures: true, volume: true, favorite: true, actions: true };
 const TOP_ASSETS_PAGE_SIZE = 8;
 const TOP_ASSETS_LIMIT_DEFAULT = 60;
 const topAssetsState = { items: [], page: 1, perPage: TOP_ASSETS_PAGE_SIZE, limit: TOP_ASSETS_LIMIT_DEFAULT };
@@ -4792,9 +4814,17 @@ function renderLegDetails(price, notional, side, fallbackVolume, fallbackSize) {
   const fallback = Number.isFinite(fallbackVolume) ? fallbackVolume : null;
   const volValue = Number.isFinite(computedNotional) && computedNotional > 0 ? computedNotional : fallback;
   const volLabel = Number.isFinite(volValue) ? `${formatVolume(volValue)} USDT` : 's/ dado';
-  const sideLabel = side === 'bid' ? 'Bid' : 'Ask';
   const chipClass = side === 'bid' ? 'bid' : 'ask';
-  return `<div class="quote-chip ${chipClass}"><strong>${sideLabel} ${formatPriceCompact(price)}</strong><em>Vol: ${volLabel}</em></div>`;
+  return `<div class="quote-chip ${chipClass}"><strong>${formatPriceCompact(price)}</strong><em>Vol: ${volLabel}</em></div>`;
+}
+
+function applyMonitoringColumnVisibility() {
+  Object.entries(MONITORING_DEFAULT_COLUMNS).forEach(([key]) => {
+    const visible = monitoringColumnVisibility[key] !== false;
+    document.querySelectorAll(`.col-${key}`).forEach((el) => el.classList.toggle('col-hidden', !visible));
+    const toggle = monitoringColumnToggles.find((input) => input.dataset.col === key);
+    if (toggle) toggle.checked = visible;
+  });
 }
 
 function renderMonitoringTable() {
@@ -4847,6 +4877,7 @@ function renderMonitoringTable() {
         ? `Última tentativa falhou: ${monitoringLastFetchError.message || monitoringLastFetchError}`
         : 'Nenhuma moeda atende aos filtros ativos.';
     monitoringTableBody.innerHTML = `<tr><td colspan="7">${emptyMessage}</td></tr>`;
+    applyMonitoringColumnVisibility();
     renderMonitoringSummary(merged);
     return;
   }
@@ -4875,20 +4906,16 @@ function renderMonitoringTable() {
     const futuresDetail = renderLegDetails(coin.futuresBid, coin.futuresBidNotional, 'bid', coin.futuresVolume, coin.futuresBidSize);
     const spotVolumeLabel = Number.isFinite(coin.spotVolume) ? `${formatVolume(coin.spotVolume)} USDT` : 's/ dado';
     const futuresVolumeLabel = Number.isFinite(coin.futuresVolume) ? `${formatVolume(coin.futuresVolume)} USDT` : 's/ dado';
+    const volume24hCell = `<div class="volume-inline"><span>${spotVolumeLabel}</span><span>|</span><span>${futuresVolumeLabel}</span></div>`;
     return `
       <tr>
-        <td><strong>${coin.symbol}</strong><br/><span class="muted">${coin.name}</span></td>
-        <td>${arbLabel}${uptime ? `<div class="uptime-chip">${uptime}</div>` : ''}</td>
-        <td><div class="exchange-header">${spotList}</div><div class="quote-chip-container">${spotDetail}</div></td>
-        <td><div class="exchange-header">${futuresList}</div><div class="quote-chip-container">${futuresDetail}</div></td>
-        <td>
-          <div class="volume-badges compact">
-            <span class="volume-badge"><strong>${coin.spotExchanges[0] || 'SPOT'}</strong><span class="asset-volume">${spotVolumeLabel}</span></span>
-            <span class="volume-badge"><strong>${coin.futuresExchanges[0] || 'FUTUROS'}</strong><span class="asset-volume">${futuresVolumeLabel}</span></span>
-          </div>
-        </td>
-        <td>${isFavorite ? '<span class="monitoring-favorite-flag">★ Favorito</span>' : '—'}</td>
-        <td class="monitoring-actions-cell">
+        <td class="col-symbol"><strong>${coin.symbol}</strong><br/><span class="muted">${coin.name}</span></td>
+        <td class="col-arb">${arbLabel}${uptime ? `<div class="uptime-chip">${uptime}</div>` : ''}</td>
+        <td class="col-spot"><div class="exchange-header">${spotList}</div><div class="quote-chip-container">${spotDetail}</div></td>
+        <td class="col-futures"><div class="exchange-header">${futuresList}</div><div class="quote-chip-container">${futuresDetail}</div></td>
+        <td class="col-volume">${volume24hCell}</td>
+        <td class="col-favorite">${isFavorite ? '<span class="monitoring-favorite-flag">★ Favorito</span>' : '—'}</td>
+        <td class="monitoring-actions-cell col-actions">
           <button
             type="button"
             class="monitoring-view-chart"
@@ -4916,6 +4943,7 @@ function renderMonitoringTable() {
       </tr>`;
   }).join('');
 
+  applyMonitoringColumnVisibility();
   renderMonitoringSummary(merged);
 
   if (merged.length && monitoringPairSelect && !monitoringPairSelect.value) {
@@ -5256,6 +5284,23 @@ if (monitoringRefreshIntervalSelect) {
       loadMonitoringData({ silent: true, updateChart: false });
     }
   });
+}
+
+if (monitoringColumnToggles.length) {
+  monitoringColumnToggles.forEach((input) => {
+    const key = input.dataset.col;
+    if (key && key in monitoringColumnVisibility) {
+      input.checked = monitoringColumnVisibility[key] !== false;
+    }
+    input.addEventListener('change', () => {
+      const colKey = input.dataset.col;
+      if (!colKey) return;
+      monitoringColumnVisibility[colKey] = input.checked;
+      persistMonitoringColumns(monitoringColumnVisibility);
+      applyMonitoringColumnVisibility();
+    });
+  });
+  applyMonitoringColumnVisibility();
 }
 
 document.addEventListener('visibilitychange', () => {
