@@ -4567,12 +4567,12 @@ function updateMonitoringHistoryExtremes(entry) {
   const closeStats = entry?.stats?.close;
   const formatRange = (stats) => {
     if (!stats || !Number.isFinite(stats.min) || !Number.isFinite(stats.max)) return '–';
-    const minStr = stats.min.toFixed(3).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
-    const maxStr = stats.max.toFixed(3).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
-    return `${minStr}% a ${maxStr}%`;
+    const minStr = Number(stats.min.toFixed(3)).toString();
+    const maxStr = Number(stats.max.toFixed(3)).toString();
+    return `<span class="extreme-min">${minStr}%</span> a <span class="extreme-max">${maxStr}%</span>`;
   };
-  openLabel.textContent = formatRange(openStats);
-  closeLabel.textContent = formatRange(closeStats);
+  openLabel.innerHTML = formatRange(openStats);
+  closeLabel.innerHTML = formatRange(closeStats);
 }
 
 async function fetchMonitoringHistorySeries(symbol, intervalKey, spotKey, futuresKey) {
@@ -4730,7 +4730,12 @@ function formatVolume(value) {
 
 function formatPriceCompact(value) {
   if (!Number.isFinite(value)) return '—';
-  if (value >= 1) return value.toFixed(4).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+  const absVal = Math.abs(value);
+  const decimalPart = value.toString().split('.')[1];
+  if ((absVal > 0 && absVal < 0.000001) || (decimalPart && decimalPart.length > 8)) {
+    return value.toExponential(2);
+  }
+  if (value >= 1 || value <= -1) return value.toFixed(4).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
   return value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
 }
 
@@ -4768,13 +4773,11 @@ function updateArbUptime(key, arb) {
   return entry.start ? formatUptime(now - entry.start) : '—';
 }
 
-function renderLegDetails(label, ask, bid, askNotional, bidNotional) {
-  const lines = [];
-  const askVolLabel = Number.isFinite(askNotional) ? `${formatVolume(askNotional)} USDT` : 's/ dado';
-  const bidVolLabel = Number.isFinite(bidNotional) ? `${formatVolume(bidNotional)} USDT` : 's/ dado';
-  lines.push(`<div class="quote-chip ask"><span>${label}</span><strong>Ask ${formatPriceCompact(ask)}</strong><em>Vol: ${askVolLabel}</em></div>`);
-  lines.push(`<div class="quote-chip bid"><span>${label}</span><strong>Bid ${formatPriceCompact(bid)}</strong><em>Vol: ${bidVolLabel}</em></div>`);
-  return lines.join('');
+function renderLegDetails(label, price, notional, side) {
+  const volLabel = Number.isFinite(notional) ? `${formatVolume(notional)} USDT` : 's/ dado';
+  const sideLabel = side === 'bid' ? 'Bid' : 'Ask';
+  const chipClass = side === 'bid' ? 'bid' : 'ask';
+  return `<div class="quote-chip ${chipClass}"><span>${label}</span><strong>${sideLabel} ${formatPriceCompact(price)}</strong><em>Vol: ${volLabel}</em></div>`;
 }
 
 function renderMonitoringTable() {
@@ -4850,12 +4853,12 @@ function renderMonitoringTable() {
       : metaInfo?.futuresHint?.length
         ? `${metaInfo.futuresHint.join(', ')} (config)`
         : 'Sem dados';
-    const spotDetail = renderLegDetails(coin.spotExchanges[0] || 'SPOT', coin.spotAsk, coin.spotBid, coin.spotAskNotional, coin.spotBidNotional);
-    const futuresDetail = renderLegDetails(coin.futuresExchanges[0] || 'FUTUROS', coin.futuresAsk, coin.futuresBid, coin.futuresAskNotional, coin.futuresBidNotional);
+    const spotDetail = renderLegDetails(coin.spotExchanges[0] || 'SPOT', coin.spotAsk, coin.spotAskNotional, 'ask');
+    const futuresDetail = renderLegDetails(coin.futuresExchanges[0] || 'FUTUROS', coin.futuresBid, coin.futuresBidNotional, 'bid');
     return `
       <tr>
         <td><strong>${coin.symbol}</strong><br/><span class="muted">${coin.name}</span></td>
-        <td>${arbLabel}<div class="uptime-chip">⬆︎ acima de 0% por ${uptime}</div></td>
+        <td>${arbLabel}<div class="uptime-chip">${uptime}</div></td>
         <td><div class="exchange-header">${spotList}</div>${spotDetail}</td>
         <td><div class="exchange-header">${futuresList}</div>${futuresDetail}</td>
         <td>${formatVolume(coin.volume24h)} USDT</td>
@@ -4981,7 +4984,7 @@ function ensureMonitoringChart() {
             callback: (value) => {
               const num = Number(value);
               if (!Number.isFinite(num)) return `${value}%`;
-              const formatted = num.toFixed(3).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+              const formatted = Number(num.toFixed(3)).toString();
               return `${formatted}%`;
             }
           }
