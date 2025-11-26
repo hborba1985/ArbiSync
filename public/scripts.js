@@ -4670,7 +4670,9 @@ async function loadMonitoringData({ focusSymbol = null, silent = false, updateCh
             : null;
           if (!Number.isFinite(arbRaw)) continue;
           const arb = Number(arbRaw.toFixed(3));
-          const volumeCandidates = [toFiniteNumber(spot.volume), toFiniteNumber(futures.volume)].filter((v) => Number.isFinite(v));
+          const spotVolume = toFiniteNumber(spot.volume);
+          const futuresVolume = toFiniteNumber(futures.volume);
+          const volumeCandidates = [spotVolume, futuresVolume].filter((v) => Number.isFinite(v));
           const volume24h = volumeCandidates.length ? Math.min(...volumeCandidates) : 0;
           combos.push({
             symbol,
@@ -4679,6 +4681,8 @@ async function loadMonitoringData({ focusSymbol = null, silent = false, updateCh
             spotExchanges: [spot.exchange || spot.key || 'SPOT'],
             futuresExchanges: [futures.exchange || futures.key || 'FUTUROS'],
             volume24h,
+            spotVolume,
+            futuresVolume,
             spotAsk: toFiniteNumber(spot.ask),
             spotBid: toFiniteNumber(spot.bid),
             spotAskNotional: toFiniteNumber(spot.askNotional ?? computeNotionalLocal(spot.ask, spot.askSize)),
@@ -4773,11 +4777,11 @@ function updateArbUptime(key, arb) {
   return entry.start ? formatUptime(now - entry.start) : '—';
 }
 
-function renderLegDetails(label, price, notional, side) {
+function renderLegDetails(price, notional, side) {
   const volLabel = Number.isFinite(notional) ? `${formatVolume(notional)} USDT` : 's/ dado';
   const sideLabel = side === 'bid' ? 'Bid' : 'Ask';
   const chipClass = side === 'bid' ? 'bid' : 'ask';
-  return `<div class="quote-chip ${chipClass}"><span>${label}</span><strong>${sideLabel} ${formatPriceCompact(price)}</strong><em>Vol: ${volLabel}</em></div>`;
+  return `<div class="quote-chip ${chipClass}"><strong>${sideLabel} ${formatPriceCompact(price)}</strong><em>Vol: ${volLabel}</em></div>`;
 }
 
 function renderMonitoringTable() {
@@ -4842,7 +4846,8 @@ function renderMonitoringTable() {
     const favKey = buildOpportunityKey(coin);
     const isFavorite = monitoringFavorites.has(favKey);
     const arbLabel = Number.isFinite(coin.arb) ? `${coin.arb.toFixed(3)}%` : '—';
-    const uptime = updateArbUptime(favKey, coin.arb);
+    const uptimeValue = updateArbUptime(favKey, coin.arb);
+    const uptime = Number.isFinite(coin.arb) && coin.arb > 0 ? uptimeValue : '';
     const spotList = coin.spotExchanges.length
       ? coin.spotExchanges.join(', ')
       : metaInfo?.spotHint?.length
@@ -4853,15 +4858,22 @@ function renderMonitoringTable() {
       : metaInfo?.futuresHint?.length
         ? `${metaInfo.futuresHint.join(', ')} (config)`
         : 'Sem dados';
-    const spotDetail = renderLegDetails(coin.spotExchanges[0] || 'SPOT', coin.spotAsk, coin.spotAskNotional, 'ask');
-    const futuresDetail = renderLegDetails(coin.futuresExchanges[0] || 'FUTUROS', coin.futuresBid, coin.futuresBidNotional, 'bid');
+    const spotDetail = renderLegDetails(coin.spotAsk, coin.spotAskNotional, 'ask');
+    const futuresDetail = renderLegDetails(coin.futuresBid, coin.futuresBidNotional, 'bid');
+    const spotVolumeLabel = Number.isFinite(coin.spotVolume) ? `${formatVolume(coin.spotVolume)} USDT` : 's/ dado';
+    const futuresVolumeLabel = Number.isFinite(coin.futuresVolume) ? `${formatVolume(coin.futuresVolume)} USDT` : 's/ dado';
     return `
       <tr>
         <td><strong>${coin.symbol}</strong><br/><span class="muted">${coin.name}</span></td>
-        <td>${arbLabel}<div class="uptime-chip">${uptime}</div></td>
-        <td><div class="exchange-header">${spotList}</div>${spotDetail}</td>
-        <td><div class="exchange-header">${futuresList}</div>${futuresDetail}</td>
-        <td>${formatVolume(coin.volume24h)} USDT</td>
+        <td>${arbLabel}${uptime ? `<div class="uptime-chip">${uptime}</div>` : ''}</td>
+        <td><div class="exchange-header">${spotList}</div><div class="quote-chip-container">${spotDetail}</div></td>
+        <td><div class="exchange-header">${futuresList}</div><div class="quote-chip-container">${futuresDetail}</div></td>
+        <td>
+          <div class="volume-badges compact">
+            <span class="volume-badge"><strong>${coin.spotExchanges[0] || 'SPOT'}</strong><span class="asset-volume">${spotVolumeLabel}</span></span>
+            <span class="volume-badge"><strong>${coin.futuresExchanges[0] || 'FUTUROS'}</strong><span class="asset-volume">${futuresVolumeLabel}</span></span>
+          </div>
+        </td>
         <td>${isFavorite ? '<span class="monitoring-favorite-flag">★ Favorito</span>' : '—'}</td>
         <td class="monitoring-actions-cell">
           <button

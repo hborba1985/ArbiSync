@@ -4419,7 +4419,7 @@ async function fetchMexcFuturesTicker(meta) {
     bid: toNumber(payload.bid1),
     ask: toNumber(payload.ask1),
     last: toNumber(payload.lastPrice),
-    volume: toNumber(payload.amount24),
+    volume: toNumber(payload.turnover24 ?? payload.amount24),
     bidSize: toNumber(payload.bid1Size),
     askSize: toNumber(payload.ask1Size),
     bidNotional: computeNotional(toNumber(payload.bid1), toNumber(payload.bid1Size)),
