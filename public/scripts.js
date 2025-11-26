@@ -4216,6 +4216,8 @@ function persistMonitoringVisibility(map) {
   } catch {}
 }
 
+const MONITORING_DEFAULT_COLUMNS = { spot: true, futures: true, volume: true, favorite: true, actions: true };
+
 let monitoringColumnVisibility = loadMonitoringColumns();
 let monitoringDatasetVisibility = loadMonitoringVisibility();
 monitoringColumnVisibility = { ...MONITORING_DEFAULT_COLUMNS, ...monitoringColumnVisibility };
@@ -4278,7 +4280,6 @@ let monitoringFilteredRows = [];
 const MONITORING_REFRESH_DEFAULT_SECONDS = 3;
 let monitoringAutoRefreshTimer = null;
 let monitoringAutoRefreshPaused = false;
-const MONITORING_DEFAULT_COLUMNS = { spot: true, futures: true, volume: true, favorite: true, actions: true };
 const TOP_ASSETS_PAGE_SIZE = 8;
 const TOP_ASSETS_LIMIT_DEFAULT = 60;
 const topAssetsState = { items: [], page: 1, perPage: TOP_ASSETS_PAGE_SIZE, limit: TOP_ASSETS_LIMIT_DEFAULT };
