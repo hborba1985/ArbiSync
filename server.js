@@ -4419,7 +4419,7 @@ async function fetchMexcFuturesTicker(meta) {
     bid: toNumber(payload.bid1),
     ask: toNumber(payload.ask1),
     last: toNumber(payload.lastPrice),
-    volume: toNumber(payload.turnover24 ?? payload.amount24),
+    volume: toNumber(payload.turnover24 ?? payload.amount24 ?? payload.volume),
     bidSize: toNumber(payload.bid1Size),
     askSize: toNumber(payload.ask1Size),
     bidNotional: computeNotional(toNumber(payload.bid1), toNumber(payload.bid1Size)),
@@ -4459,11 +4459,13 @@ async function fetchKucoinFuturesTicker(meta) {
     throw new Error(data?.msg || 'Erro KuCoin futures');
   }
   const payload = data.data;
+  const contract = await getKucoinFuturesContract(meta.kucoinFutures);
+  const contractVolume = toNumber(contract?.turnoverOf24h ?? contract?.turnover ?? contract?.turnoverValue);
   return {
     bid: toNumber(payload.bestBidPrice),
     ask: toNumber(payload.bestAskPrice),
     last: toNumber(payload.price),
-    volume: toNumber(payload.turnover),
+    volume: Number.isFinite(contractVolume) ? contractVolume : toNumber(payload.turnover),
     bidSize: toNumber(payload.bestBidSize),
     askSize: toNumber(payload.bestAskSize),
     bidNotional: computeNotional(toNumber(payload.bestBidPrice), toNumber(payload.bestBidSize)),
@@ -4471,6 +4473,29 @@ async function fetchKucoinFuturesTicker(meta) {
     fundingRate: toNumber(payload.fundingRate),
     changePct: toNumber(payload.changeRate) ? toNumber(payload.changeRate) * 100 : null
   };
+}
+
+const KUCOIN_FUTURES_CACHE_MS = 30_000;
+let kucoinFuturesContractCache = { ts: 0, data: [] };
+
+async function loadKucoinFuturesContracts(force = false) {
+  const now = Date.now();
+  if (!force && kucoinFuturesContractCache.data.length && now - kucoinFuturesContractCache.ts < KUCOIN_FUTURES_CACHE_MS) {
+    return kucoinFuturesContractCache.data;
+  }
+  try {
+    const { data } = await monitoringHttp.get('https://api-futures.kucoin.com/api/v1/contracts/active');
+    const list = Array.isArray(data?.data) ? data.data : [];
+    kucoinFuturesContractCache = { ts: now, data: list };
+    return list;
+  } catch (err) {
+    return kucoinFuturesContractCache.data;
+  }
+}
+
+async function getKucoinFuturesContract(symbol) {
+  const list = await loadKucoinFuturesContracts();
+  return list.find((item) => item.symbol === symbol);
 }
 
 async function fetchBinanceFuturesTicker(meta) {
@@ -4794,10 +4819,9 @@ async function fetchKucoinTopSpotAssets() {
 }
 
 async function fetchKucoinTopFuturesAssets() {
-  const { data } = await monitoringHttp.get('https://api-futures.kucoin.com/api/v1/allTickers');
-  const list = Array.isArray(data?.data?.ticker) ? data.data.ticker : [];
+  const list = await loadKucoinFuturesContracts();
   return list
-    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.turnover ?? item.turnoverValue) }))
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.turnoverOf24h ?? item.turnoverValue ?? item.turnover) }))
     .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
 }
 

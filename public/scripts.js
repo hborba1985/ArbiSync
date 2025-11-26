@@ -4685,10 +4685,14 @@ async function loadMonitoringData({ focusSymbol = null, silent = false, updateCh
             futuresVolume,
             spotAsk: toFiniteNumber(spot.ask),
             spotBid: toFiniteNumber(spot.bid),
+            spotAskSize: toFiniteNumber(spot.askSize),
+            spotBidSize: toFiniteNumber(spot.bidSize),
             spotAskNotional: toFiniteNumber(spot.askNotional ?? computeNotionalLocal(spot.ask, spot.askSize)),
             spotBidNotional: toFiniteNumber(spot.bidNotional ?? computeNotionalLocal(spot.bid, spot.bidSize)),
             futuresAsk: toFiniteNumber(futures.ask),
             futuresBid: toFiniteNumber(futures.bid),
+            futuresAskSize: toFiniteNumber(futures.askSize),
+            futuresBidSize: toFiniteNumber(futures.bidSize),
             futuresAskNotional: toFiniteNumber(futures.askNotional ?? computeNotionalLocal(futures.ask, futures.askSize)),
             futuresBidNotional: toFiniteNumber(futures.bidNotional ?? computeNotionalLocal(futures.bid, futures.bidSize)),
             depth: metrics.depthLabel || 'N/D',
@@ -4729,7 +4733,9 @@ function formatVolume(value) {
   if (!Number.isFinite(value)) return '-';
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-  return value.toFixed(0);
+  if (value >= 10) return value.toFixed(1);
+  if (value >= 1) return value.toFixed(2);
+  return value.toExponential(2);
 }
 
 function formatPriceCompact(value) {
@@ -4746,6 +4752,7 @@ function formatPriceCompact(value) {
 function formatUptime(ms) {
   if (!Number.isFinite(ms) || ms <= 0) return '—';
   const totalMinutes = Math.floor(ms / 60000);
+  const seconds = Math.floor((ms % 60000) / 1000);
   const days = Math.floor(totalMinutes / (60 * 24));
   const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
   const minutes = totalMinutes % 60;
@@ -4753,6 +4760,7 @@ function formatUptime(ms) {
   if (days) parts.push(`${days}d`);
   if (hours || days) parts.push(`${hours}h`);
   parts.push(`${minutes}min`);
+  parts.push(`${seconds}s`);
   return parts.join(' ');
 }
 
@@ -4777,8 +4785,13 @@ function updateArbUptime(key, arb) {
   return entry.start ? formatUptime(now - entry.start) : '—';
 }
 
-function renderLegDetails(price, notional, side) {
-  const volLabel = Number.isFinite(notional) ? `${formatVolume(notional)} USDT` : 's/ dado';
+function renderLegDetails(price, notional, side, fallbackVolume, fallbackSize) {
+  const computedNotional = Number.isFinite(notional)
+    ? notional
+    : computeNotionalLocal(price, fallbackSize);
+  const fallback = Number.isFinite(fallbackVolume) ? fallbackVolume : null;
+  const volValue = Number.isFinite(computedNotional) && computedNotional > 0 ? computedNotional : fallback;
+  const volLabel = Number.isFinite(volValue) ? `${formatVolume(volValue)} USDT` : 's/ dado';
   const sideLabel = side === 'bid' ? 'Bid' : 'Ask';
   const chipClass = side === 'bid' ? 'bid' : 'ask';
   return `<div class="quote-chip ${chipClass}"><strong>${sideLabel} ${formatPriceCompact(price)}</strong><em>Vol: ${volLabel}</em></div>`;
@@ -4858,8 +4871,8 @@ function renderMonitoringTable() {
       : metaInfo?.futuresHint?.length
         ? `${metaInfo.futuresHint.join(', ')} (config)`
         : 'Sem dados';
-    const spotDetail = renderLegDetails(coin.spotAsk, coin.spotAskNotional, 'ask');
-    const futuresDetail = renderLegDetails(coin.futuresBid, coin.futuresBidNotional, 'bid');
+    const spotDetail = renderLegDetails(coin.spotAsk, coin.spotAskNotional, 'ask', coin.spotVolume, coin.spotAskSize);
+    const futuresDetail = renderLegDetails(coin.futuresBid, coin.futuresBidNotional, 'bid', coin.futuresVolume, coin.futuresBidSize);
     const spotVolumeLabel = Number.isFinite(coin.spotVolume) ? `${formatVolume(coin.spotVolume)} USDT` : 's/ dado';
     const futuresVolumeLabel = Number.isFinite(coin.futuresVolume) ? `${formatVolume(coin.futuresVolume)} USDT` : 's/ dado';
     return `
