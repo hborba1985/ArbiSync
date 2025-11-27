@@ -28,6 +28,9 @@ const monitoringHttp = axios.create({
   }
 });
 
+// Avoid spamming the console when a MEXC futures symbol lacks depth support
+const mexcFuturesDepthWarnings = new Set();
+
 const SPOT_EXCHANGES = {
   gate: { key: 'gate', label: 'Gate.io' },
   bitget: { key: 'bitget', label: 'Bitget' }
@@ -4463,7 +4466,16 @@ async function fetchMexcFuturesTicker(meta) {
         askSize = toNumber(asks[0].vol) ?? askSize;
       }
     } catch (err) {
-      console.warn('[monitoring] mexc futures depth fallback falhou', meta.mexcFutures, err?.message || err);
+      const status = err?.response?.status;
+      const reason = err?.message || err;
+      if (status === 404) {
+        if (!mexcFuturesDepthWarnings.has(meta.mexcFutures)) {
+          mexcFuturesDepthWarnings.add(meta.mexcFutures);
+          console.info('[monitoring] mexc futures depth indisponível (404)', meta.mexcFutures);
+        }
+      } else {
+        console.warn('[monitoring] mexc futures depth fallback falhou', meta.mexcFutures, 'status=', status || 'n/a', 'reason=', reason);
+      }
     }
   }
 
