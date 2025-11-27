@@ -4808,15 +4808,20 @@ function updateArbUptime(key, arb) {
   return entry.start ? formatUptime(now - entry.start) : '—';
 }
 
-function renderLegDetails(price, notional, side, fallbackVolume, fallbackSize) {
+function renderLegDetails(price, notional, side, fallbackSize) {
+  const priceLabel = Number.isFinite(price) ? formatPriceCompact(price) : 's/ dado';
   const computedNotional = Number.isFinite(notional)
     ? notional
     : computeNotionalLocal(price, fallbackSize);
-  const fallback = Number.isFinite(fallbackVolume) ? fallbackVolume : null;
-  const volValue = Number.isFinite(computedNotional) && computedNotional > 0 ? computedNotional : fallback;
-  const volLabel = Number.isFinite(volValue) ? `${formatVolume(volValue)} USDT` : 's/ dado';
-  const chipClass = side === 'bid' ? 'bid' : 'ask';
-  return `<div class="quote-chip ${chipClass}"><strong>${formatPriceCompact(price)}</strong><em>Vol: ${volLabel}</em></div>`;
+  const volLabel = Number.isFinite(computedNotional) && computedNotional > 0
+    ? `${formatVolume(computedNotional)} USDT`
+    : 's/ dado';
+  const chipClass = side === 'bid' ? 'volume-chip volume-futures' : 'volume-chip volume-spot';
+  const sideLabel = side === 'bid' ? 'Bid' : 'Ask';
+  return `
+    <div class="quote-price">${sideLabel}: ${priceLabel}</div>
+    <div class="${chipClass}">${volLabel}</div>
+  `;
 }
 
 function applyMonitoringColumnVisibility() {
@@ -4903,8 +4908,8 @@ function renderMonitoringTable() {
       : metaInfo?.futuresHint?.length
         ? `${metaInfo.futuresHint.join(', ')} (config)`
         : 'Sem dados';
-    const spotDetail = renderLegDetails(coin.spotAsk, coin.spotAskNotional, 'ask', coin.spotVolume, coin.spotAskSize);
-    const futuresDetail = renderLegDetails(coin.futuresBid, coin.futuresBidNotional, 'bid', coin.futuresVolume, coin.futuresBidSize);
+    const spotDetail = renderLegDetails(coin.spotAsk, coin.spotAskNotional, 'ask', coin.spotAskSize);
+    const futuresDetail = renderLegDetails(coin.futuresBid, coin.futuresBidNotional, 'bid', coin.futuresBidSize);
     const spotVolumeLabel = Number.isFinite(coin.spotVolume) ? `${formatVolume(coin.spotVolume)} USDT` : 's/ dado';
     const futuresVolumeLabel = Number.isFinite(coin.futuresVolume) ? `${formatVolume(coin.futuresVolume)} USDT` : 's/ dado';
     const volume24hCell = `<div class="volume-inline"><span>${spotVolumeLabel}</span><span>|</span><span>${futuresVolumeLabel}</span></div>`;

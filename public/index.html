@@ -553,46 +553,40 @@
 .quote-chip-container {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
-.quote-chip {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 6px 8px;
-  border-radius: 10px;
-  margin-bottom: 6px;
+.quote-price {
   font-size: 12px;
-  gap: 10px;
-  background: rgba(125, 97, 255, 0.08);
-  border: 1px solid rgba(125, 97, 255, 0.25);
-}
-
-.quote-chip.ask {
-  border-color: rgba(63, 231, 195, 0.35);
-  background: rgba(63, 231, 195, 0.06);
-}
-
-.quote-chip.bid {
-  border-color: rgba(242, 183, 96, 0.45);
-  background: rgba(242, 183, 96, 0.06);
-}
-
-.quote-chip span {
-  font-size: 11px;
   color: var(--text-muted);
 }
 
-.quote-chip strong {
+.quote-price strong {
   color: var(--text);
-  letter-spacing: 0.02em;
 }
 
-.quote-chip em {
-  font-style: normal;
-  color: var(--text-muted);
-  font-size: 11px;
+.volume-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 6px;
+  width: fit-content;
+}
+
+.volume-chip.volume-spot {
+  background: rgba(80, 132, 233, 0.14);
+  border: 1px solid rgba(80, 132, 233, 0.35);
+  color: #2c73d2;
+}
+
+.volume-chip.volume-futures {
+  background: rgba(242, 183, 96, 0.18);
+  border: 1px solid rgba(242, 183, 96, 0.45);
+  color: #c76b08;
 }
 
 .volume-badges.compact {
