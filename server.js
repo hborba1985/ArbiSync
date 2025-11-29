@@ -4424,15 +4424,39 @@ async function fetchGateFuturesTicker(meta) {
   });
   const payload = Array.isArray(data) ? data[0] : data;
   if (!payload) throw new Error('Resposta vazia');
+  let bid = toNumber(payload.highest_bid);
+  let ask = toNumber(payload.lowest_ask);
+  let bidSize = toNumber(payload.highest_bid_size);
+  let askSize = toNumber(payload.lowest_ask_size);
+
+  if (!Number.isFinite(bidSize) || bidSize <= 0 || !Number.isFinite(askSize) || askSize <= 0) {
+    try {
+      const depth = await monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/order_book', {
+        params: { contract: meta.gateFutures, limit: 1 }
+      });
+      const bids = Array.isArray(depth?.data?.bids) ? depth.data.bids : [];
+      const asks = Array.isArray(depth?.data?.asks) ? depth.data.asks : [];
+      if (bids.length) {
+        bid = toNumber(bids[0].p) ?? bid;
+        bidSize = toNumber(bids[0].s) ?? bidSize;
+      }
+      if (asks.length) {
+        ask = toNumber(asks[0].p) ?? ask;
+        askSize = toNumber(asks[0].s) ?? askSize;
+      }
+    } catch (err) {
+      console.warn('[monitoring] gate futures depth fallback falhou', meta.gateFutures, err?.message || err);
+    }
+  }
   return {
-    bid: toNumber(payload.highest_bid),
-    ask: toNumber(payload.lowest_ask),
+    bid,
+    ask,
     last: toNumber(payload.last),
     volume: toNumber(payload.volume_24h_quote ?? payload.volume_24h),
-    bidSize: toNumber(payload.highest_bid_size),
-    askSize: toNumber(payload.lowest_ask_size),
-    bidNotional: computeNotional(toNumber(payload.highest_bid), toNumber(payload.highest_bid_size)),
-    askNotional: computeNotional(toNumber(payload.lowest_ask), toNumber(payload.lowest_ask_size)),
+    bidSize,
+    askSize,
+    bidNotional: computeNotional(bid, bidSize),
+    askNotional: computeNotional(ask, askSize),
     fundingRate: toNumber(payload.funding_rate),
     changePct: toNumber(payload.change_percentage)
   };
@@ -4447,8 +4471,8 @@ async function fetchMexcFuturesTicker(meta) {
 
   let bid = toNumber(payload.bid1);
   let ask = toNumber(payload.ask1);
-  let bidSize = toNumber(payload.bid1Size ?? payload.bidVol);
-  let askSize = toNumber(payload.ask1Size ?? payload.askVol);
+  let bidSize = toNumber(payload.bid1Size ?? payload.bidVol ?? payload.turnover ?? payload.amount24);
+  let askSize = toNumber(payload.ask1Size ?? payload.askVol ?? payload.turnover ?? payload.amount24);
 
   if (!Number.isFinite(bidSize) || bidSize <= 0 || !Number.isFinite(askSize) || askSize <= 0) {
     try {
@@ -4459,11 +4483,11 @@ async function fetchMexcFuturesTicker(meta) {
       const asks = Array.isArray(depth?.data?.asks) ? depth.data.asks : [];
       if (bids.length) {
         bid = toNumber(bids[0].price) ?? bid;
-        bidSize = toNumber(bids[0].vol) ?? bidSize;
+        bidSize = toNumber(bids[0].vol ?? bids[0].amount) ?? bidSize;
       }
       if (asks.length) {
         ask = toNumber(asks[0].price) ?? ask;
-        askSize = toNumber(asks[0].vol) ?? askSize;
+        askSize = toNumber(asks[0].vol ?? asks[0].amount) ?? askSize;
       }
     } catch (err) {
       const status = err?.response?.status;
