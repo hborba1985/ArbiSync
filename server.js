@@ -4486,40 +4486,45 @@ async function fetchMexcFuturesTicker(meta) {
   let bidSize = toBaseSize(payload.bid1Size ?? payload.bidVol);
   let askSize = toBaseSize(payload.ask1Size ?? payload.askVol);
 
-  if (!Number.isFinite(bidSize) || bidSize <= 0 || !Number.isFinite(askSize) || askSize <= 0) {
-    try {
-      const depth = await monitoringHttp.get('https://contract.mexc.com/api/v1/contract/depth', {
-        params: { symbol: meta.mexcFutures, depth: 1 }
-      });
-      const bids = Array.isArray(depth?.data?.bids) ? depth.data.bids : [];
-      const asks = Array.isArray(depth?.data?.asks) ? depth.data.asks : [];
-      if (bids.length) {
-        const bidPrice = toNumber(bids[0].price ?? bids[0][0]);
-        const bidContracts = toNumber(bids[0].vol ?? bids[0].amount ?? bids[0][1]);
-        bid = bidPrice ?? bid;
-        const depthBidSize = toBaseSize(bidContracts);
-        bidSize = Number.isFinite(depthBidSize) ? depthBidSize : bidSize;
+  let depthBids = [];
+  let depthAsks = [];
+  try {
+    const depthResp = await monitoringHttp.get(`https://contract.mexc.com/api/v1/contract/depth/${meta.mexcFutures}`, {
+      params: { limit: 5 }
+    });
+    const depthPayload = depthResp?.data?.data || depthResp?.data || {};
+    depthBids = Array.isArray(depthPayload?.bids) ? depthPayload.bids : [];
+    depthAsks = Array.isArray(depthPayload?.asks) ? depthPayload.asks : [];
+  } catch (err) {
+    const status = err?.response?.status;
+    const reason = err?.message || err;
+    if (status === 404) {
+      if (!mexcFuturesDepthWarnings.has(meta.mexcFutures)) {
+        mexcFuturesDepthWarnings.add(meta.mexcFutures);
+        console.info('[monitoring] mexc futures depth indisponível (404)', meta.mexcFutures);
       }
-      if (asks.length) {
-        const askPrice = toNumber(asks[0].price ?? asks[0][0]);
-        const askContracts = toNumber(asks[0].vol ?? asks[0].amount ?? asks[0][1]);
-        ask = askPrice ?? ask;
-        const depthAskSize = toBaseSize(askContracts);
-        askSize = Number.isFinite(depthAskSize) ? depthAskSize : askSize;
-      }
-    } catch (err) {
-      const status = err?.response?.status;
-      const reason = err?.message || err;
-      if (status === 404) {
-        if (!mexcFuturesDepthWarnings.has(meta.mexcFutures)) {
-          mexcFuturesDepthWarnings.add(meta.mexcFutures);
-          console.info('[monitoring] mexc futures depth indisponível (404)', meta.mexcFutures);
-        }
-      } else {
-        console.warn('[monitoring] mexc futures depth fallback falhou', meta.mexcFutures, 'status=', status || 'n/a', 'reason=', reason);
-      }
+    } else {
+      console.warn('[monitoring] mexc futures depth fallback falhou', meta.mexcFutures, 'status=', status || 'n/a', 'reason=', reason);
     }
   }
+
+  const applyDepthSize = (entry, setter) => {
+    if (!entry) return;
+    const price = toNumber(entry.price ?? entry[0]);
+    const contracts = toNumber(entry.vol ?? entry.amount ?? entry[1]);
+    const baseSize = toBaseSize(contracts);
+    if (Number.isFinite(price)) setter('price', price);
+    if (Number.isFinite(baseSize) && baseSize > 0) setter('size', baseSize);
+  };
+
+  applyDepthSize(depthBids[0], (field, value) => {
+    if (field === 'price') bid = value ?? bid;
+    if (field === 'size') bidSize = value;
+  });
+  applyDepthSize(depthAsks[0], (field, value) => {
+    if (field === 'price') ask = value ?? ask;
+    if (field === 'size') askSize = value;
+  });
 
   return {
     bid,
