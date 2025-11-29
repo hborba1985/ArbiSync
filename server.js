@@ -4469,10 +4469,22 @@ async function fetchMexcFuturesTicker(meta) {
   if (!data || data.code !== 0 || !data.data) throw new Error(data?.msg || 'Erro MEXC futures');
   const payload = data.data;
 
+  let contractSize = 1;
+  try {
+    const mergedMeta = await getMergedMeta(meta.symbol);
+    contractSize = Number(mergedMeta?.mexc?.contractSize) || 1;
+  } catch (err) {
+    console.warn('[monitoring] falha ao obter contractSize MEXC', meta.symbol, err?.message || err);
+  }
+  const toBaseSize = (contracts) => {
+    const num = toNumber(contracts);
+    return Number.isFinite(num) && num > 0 ? num * contractSize : null;
+  };
+
   let bid = toNumber(payload.bid1);
   let ask = toNumber(payload.ask1);
-  let bidSize = toNumber(payload.bid1Size ?? payload.bidVol ?? payload.turnover ?? payload.amount24);
-  let askSize = toNumber(payload.ask1Size ?? payload.askVol ?? payload.turnover ?? payload.amount24);
+  let bidSize = toBaseSize(payload.bid1Size ?? payload.bidVol);
+  let askSize = toBaseSize(payload.ask1Size ?? payload.askVol);
 
   if (!Number.isFinite(bidSize) || bidSize <= 0 || !Number.isFinite(askSize) || askSize <= 0) {
     try {
@@ -4482,12 +4494,18 @@ async function fetchMexcFuturesTicker(meta) {
       const bids = Array.isArray(depth?.data?.bids) ? depth.data.bids : [];
       const asks = Array.isArray(depth?.data?.asks) ? depth.data.asks : [];
       if (bids.length) {
-        bid = toNumber(bids[0].price) ?? bid;
-        bidSize = toNumber(bids[0].vol ?? bids[0].amount) ?? bidSize;
+        const bidPrice = toNumber(bids[0].price ?? bids[0][0]);
+        const bidContracts = toNumber(bids[0].vol ?? bids[0].amount ?? bids[0][1]);
+        bid = bidPrice ?? bid;
+        const depthBidSize = toBaseSize(bidContracts);
+        bidSize = Number.isFinite(depthBidSize) ? depthBidSize : bidSize;
       }
       if (asks.length) {
-        ask = toNumber(asks[0].price) ?? ask;
-        askSize = toNumber(asks[0].vol ?? asks[0].amount) ?? askSize;
+        const askPrice = toNumber(asks[0].price ?? asks[0][0]);
+        const askContracts = toNumber(asks[0].vol ?? asks[0].amount ?? asks[0][1]);
+        ask = askPrice ?? ask;
+        const depthAskSize = toBaseSize(askContracts);
+        askSize = Number.isFinite(depthAskSize) ? depthAskSize : askSize;
       }
     } catch (err) {
       const status = err?.response?.status;

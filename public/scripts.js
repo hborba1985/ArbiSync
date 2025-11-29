@@ -4285,6 +4285,7 @@ const TOP_ASSETS_LIMIT_DEFAULT = 60;
 const topAssetsState = { items: [], page: 1, perPage: TOP_ASSETS_PAGE_SIZE, limit: TOP_ASSETS_LIMIT_DEFAULT };
 const topAssetsSelection = new Set();
 const monitoringFavorites = new Set();
+const monitoringFavoriteSnapshots = new Map();
 const monitoringArbTimers = new Map();
 let executionToastTimer = null;
 
@@ -4392,6 +4393,7 @@ function setFavorite(key, enabled) {
     monitoringFavorites.add(normalized);
   } else {
     monitoringFavorites.delete(normalized);
+    monitoringFavoriteSnapshots.delete(normalized);
   }
   persistMonitoringFavorites();
 }
@@ -4674,7 +4676,9 @@ async function loadMonitoringData({ focusSymbol = null, silent = false, updateCh
     if (!response.ok) throw new Error(`Falha ao buscar dados (${response.status})`);
     const payload = await safeJson(response);
     const entries = Array.isArray(payload?.symbols) ? payload.symbols : [];
-    monitoringRows = entries.flatMap((entry) => {
+    const favoriteKeys = new Set(monitoringFavorites);
+    const snapshotSeen = new Set();
+    const baseRows = entries.flatMap((entry) => {
       const symbol = (entry?.symbol || '').toUpperCase();
       if (!symbol) return [];
       const name = getMonitoringName(symbol, entry?.label || symbol);
@@ -4728,6 +4732,21 @@ async function loadMonitoringData({ focusSymbol = null, silent = false, updateCh
       }
       return combos;
     });
+
+    for (const coin of baseRows) {
+      const key = buildOpportunityKey(coin);
+      snapshotSeen.add(key);
+      if (favoriteKeys.has(key)) {
+        monitoringFavoriteSnapshots.set(key, coin);
+      }
+    }
+
+    const missingFavorites = Array.from(favoriteKeys).filter((key) => !snapshotSeen.has(key));
+    const recoveredFavorites = missingFavorites
+      .map((key) => monitoringFavoriteSnapshots.get(key))
+      .filter(Boolean);
+
+    monitoringRows = [...baseRows, ...recoveredFavorites];
     resetMonitoringHistory();
     renderMonitoringTable();
     updateMonitoringSelectors();
@@ -4758,7 +4777,8 @@ function formatVolume(value) {
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
   if (value >= 10) return value.toFixed(1);
   if (value >= 1) return value.toFixed(2);
-  return value.toExponential(2);
+  if (value >= 0.01) return value.toFixed(4);
+  return value.toFixed(6);
 }
 
 function formatPriceCompact(value) {
