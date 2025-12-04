@@ -30,6 +30,8 @@ const monitoringHttp = axios.create({
 
 // Avoid spamming the console when a MEXC futures symbol lacks depth support
 const mexcFuturesDepthWarnings = new Set();
+// Skip repeated Gate futures history fetches for symbols that are not listed
+const gateFuturesHistoryUnavailable = new Set();
 
 const SPOT_EXCHANGES = {
   gate: { key: 'gate', label: 'Gate.io' },
@@ -5123,6 +5125,9 @@ function buildMonitoringMetrics(spotTickers, futuresTickers, historyPoints) {
 }
 
 async function fetchArbHistory(meta) {
+  if (gateFuturesHistoryUnavailable.has(meta.symbol)) {
+    return [];
+  }
   try {
     const [spotResp, futuresResp] = await Promise.all([
       monitoringHttp.get('https://api.gateio.ws/api/v4/spot/candlesticks', {
@@ -5166,10 +5171,14 @@ async function fetchArbHistory(meta) {
     points.sort((a, b) => a.timestamp - b.timestamp);
     return points;
   } catch (err) {
+    const reason = describeAxiosError(err);
+    if (reason?.includes('CONTRACT_NOT_FOUND')) {
+      gateFuturesHistoryUnavailable.add(meta.symbol);
+    }
     console.warn(
       '[monitoring] histórico indisponível',
       `${meta.symbol} (Gate spot=${meta.gateSpot}, futures=${meta.gateFutures}, intervalo=1h, candles=24)`,
-      describeAxiosError(err)
+      reason
     );
     return [];
   }
