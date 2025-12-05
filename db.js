@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS spread_snapshots (
   open_mexc_volumes TEXT,
   close_mexc_volumes TEXT
 );
+CREATE TABLE IF NOT EXISTS monitoring_symbols (
+  symbol TEXT PRIMARY KEY,
+  meta_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `);
 
 // Migração simples: garante colunas gate_status e mexc_status
@@ -74,6 +79,7 @@ try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN close_spot_volumes TEXT')
 try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN open_mexc_volumes TEXT'); } catch {}
 try { db.exec('ALTER TABLE spread_snapshots ADD COLUMN close_mexc_volumes TEXT'); } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_spread_symbol_exchange_ts ON spread_snapshots(symbol, spot_exchange, ts)'); } catch {}
+try { db.exec('CREATE TABLE IF NOT EXISTS monitoring_symbols (symbol TEXT PRIMARY KEY, meta_json TEXT NOT NULL, updated_at TEXT NOT NULL)'); } catch {}
 
 const upsertOverrideStmt = db.prepare(`
 INSERT INTO overrides(symbol, override_json, updated_at)
@@ -299,6 +305,42 @@ function clearSpreadSnapshots(symbol, spotExchange) {
   });
 }
 
+const upsertMonitoringSymbolStmt = db.prepare(`
+INSERT INTO monitoring_symbols(symbol, meta_json, updated_at)
+VALUES (@symbol, @json, @updated_at)
+ON CONFLICT(symbol) DO UPDATE SET
+  meta_json = excluded.meta_json,
+  updated_at = excluded.updated_at
+`);
+
+function upsertMonitoringSymbol(symbol, meta) {
+  if (!symbol) return;
+  upsertMonitoringSymbolStmt.run({
+    symbol: String(symbol).toUpperCase(),
+    json: JSON.stringify(meta || {}),
+    updated_at: new Date().toISOString()
+  });
+}
+
+const deleteMonitoringSymbolStmt = db.prepare('DELETE FROM monitoring_symbols WHERE symbol = ?');
+function deleteMonitoringSymbol(symbol) {
+  if (!symbol) return;
+  deleteMonitoringSymbolStmt.run(String(symbol).toUpperCase());
+}
+
+const loadMonitoringSymbolsStmt = db.prepare('SELECT symbol, meta_json FROM monitoring_symbols');
+function loadMonitoringSymbols() {
+  const arr = [];
+  for (const row of loadMonitoringSymbolsStmt.all()) {
+    try {
+      arr.push({ symbol: row.symbol, meta: JSON.parse(row.meta_json) });
+    } catch {
+      continue;
+    }
+  }
+  return arr;
+}
+
 module.exports = {
   DB_PATH,
   upsertOverride,
@@ -312,5 +354,8 @@ module.exports = {
   saveSpreadSnapshot,
   loadSpreadSnapshots,
   pruneSpreadSnapshots,
-  clearSpreadSnapshots
+  clearSpreadSnapshots,
+  upsertMonitoringSymbol,
+  deleteMonitoringSymbol,
+  loadMonitoringSymbols
 };

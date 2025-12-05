@@ -87,6 +87,7 @@ const DEFAULT_ALERT_CONFIG = {
   max: null,
   soundEnabled: false,
   telegramEnabled: false,
+  telegramMinUsdt: null,
   telegramVolumeGuard: false,
   telegramIncludeSymbol: true,
   telegramIncludeDiff: true,
@@ -155,6 +156,10 @@ function createDefaultAlertConfig(overrides) {
   if (has(overrides, 'max')) {
     const num = Number(overrides.max);
     config.max = Number.isFinite(num) ? num : null;
+  }
+  if (has(overrides, 'telegramMinUsdt')) {
+    const num = Number(overrides.telegramMinUsdt);
+    config.telegramMinUsdt = Number.isFinite(num) && num >= 0 ? num : null;
   }
   if (has(overrides, 'soundEnabled')) config.soundEnabled = !!overrides.soundEnabled;
   if (has(overrides, 'telegramEnabled')) config.telegramEnabled = !!overrides.telegramEnabled;
@@ -256,6 +261,7 @@ function getAlertElements() {
     max: document.getElementById('alertMax'),
     sound: document.getElementById('soundToggle'),
     telegram: document.getElementById('telegramToggle'),
+    telegramMinVolume: document.getElementById('telegramMinVolume'),
     volumeGuard: document.getElementById('telegramVolumeGuard'),
     includeSymbol: document.getElementById('telegramIncludeSymbol'),
     includeDiff: document.getElementById('telegramIncludeDiff'),
@@ -265,7 +271,7 @@ function getAlertElements() {
 
 function applyAlertConfigToUI(config) {
   const cfg = createDefaultAlertConfig(config);
-  const { min, max, sound, telegram, volumeGuard, includeSymbol, includeDiff, includeVolumes } = getAlertElements();
+  const { min, max, sound, telegram, telegramMinVolume, volumeGuard, includeSymbol, includeDiff, includeVolumes } = getAlertElements();
   if (min) {
     if (Number.isFinite(cfg.min)) {
       min.value = cfg.min;
@@ -280,6 +286,13 @@ function applyAlertConfigToUI(config) {
       max.value = '';
     }
   }
+  if (telegramMinVolume) {
+    if (Number.isFinite(cfg.telegramMinUsdt)) {
+      telegramMinVolume.value = cfg.telegramMinUsdt;
+    } else {
+      telegramMinVolume.value = '';
+    }
+  }
   if (sound) sound.checked = !!cfg.soundEnabled;
   if (telegram) telegram.checked = !!cfg.telegramEnabled;
   if (volumeGuard) volumeGuard.checked = !!cfg.telegramVolumeGuard;
@@ -292,7 +305,7 @@ function captureAlertControlsToState(inst) {
   if (!inst) return;
   const state = ensureInstanceState(inst);
   const cfg = createDefaultAlertConfig(state.alertConfig);
-  const { min, max, sound, telegram, volumeGuard, includeSymbol, includeDiff, includeVolumes } = getAlertElements();
+  const { min, max, sound, telegram, telegramMinVolume, volumeGuard, includeSymbol, includeDiff, includeVolumes } = getAlertElements();
   if (min) {
     const num = Number(min.value);
     cfg.min = Number.isFinite(num) ? num : null;
@@ -300,6 +313,10 @@ function captureAlertControlsToState(inst) {
   if (max) {
     const num = Number(max.value);
     cfg.max = Number.isFinite(num) ? num : null;
+  }
+  if (telegramMinVolume) {
+    const num = Number(telegramMinVolume.value);
+    cfg.telegramMinUsdt = Number.isFinite(num) && num >= 0 ? num : null;
   }
   if (sound) cfg.soundEnabled = sound.checked;
   if (telegram) cfg.telegramEnabled = telegram.checked;
@@ -1799,6 +1816,14 @@ async function notifyTelegram(diff, { quotesData = lastQuotes, meta = currentMet
     }
   }
 
+  if (Number.isFinite(cfg.telegramMinUsdt) && cfg.telegramMinUsdt > 0) {
+    const effectiveQuote = Math.min(
+      Number.isFinite(stats.gateQuote) ? stats.gateQuote : 0,
+      Number.isFinite(stats.mexcQuote) ? stats.mexcQuote : 0
+    );
+    if (!Number.isFinite(effectiveQuote) || effectiveQuote < cfg.telegramMinUsdt) return;
+  }
+
   run.lastTgSent = now;
   const sanitizeLevel = (entry) => {
     const level = Number(entry?.level);
@@ -1879,7 +1904,7 @@ function handleAlertsForInstance(inst, state, quotesData) {
   }
 }
 
-const { min: alertMinInput, max: alertMaxInput, sound: soundToggleEl, telegram: telegramToggleEl, volumeGuard: telegramVolumeGuardEl, includeSymbol: telegramIncludeSymbolEl, includeDiff: telegramIncludeDiffEl, includeVolumes: telegramIncludeVolumesEl } = getAlertElements();
+const { min: alertMinInput, max: alertMaxInput, sound: soundToggleEl, telegram: telegramToggleEl, telegramMinVolume: telegramMinVolumeEl, volumeGuard: telegramVolumeGuardEl, includeSymbol: telegramIncludeSymbolEl, includeDiff: telegramIncludeDiffEl, includeVolumes: telegramIncludeVolumesEl } = getAlertElements();
 
 alertMinInput?.addEventListener('change', (e) => {
   const num = Number(e.target.value);
@@ -1915,6 +1940,14 @@ telegramToggleEl?.addEventListener('change', (e) => {
     if (!checked && state?.alertRuntime) {
       state.alertRuntime.lastTgSent = 0;
     }
+  });
+  refreshAlertUIFromActiveInstance();
+});
+
+telegramMinVolumeEl?.addEventListener('change', (e) => {
+  const num = Number(e.target.value);
+  mutateActiveAlertConfig((cfg) => {
+    cfg.telegramMinUsdt = Number.isFinite(num) && num >= 0 ? num : null;
   });
   refreshAlertUIFromActiveInstance();
 });
@@ -4130,3 +4163,1608 @@ if (positionDismantleBtn) {
   persistInstances();
 
 })();
+
+// ======== Shell / Monitoring / Admin UI ========
+const appShellEl = document.getElementById('appShell');
+const sidebarToggleBtn = document.getElementById('sidebarToggle');
+function refreshSidebarToggleLabel() {
+  if (!sidebarToggleBtn || !appShellEl) return;
+  const hidden = appShellEl.classList.contains('sidebar-hidden');
+  sidebarToggleBtn.textContent = hidden ? 'Mostrar menu' : 'Ocultar menu';
+  sidebarToggleBtn.setAttribute('aria-expanded', String(!hidden));
+}
+if (sidebarToggleBtn && appShellEl) {
+  sidebarToggleBtn.addEventListener('click', () => {
+    appShellEl.classList.toggle('sidebar-hidden');
+    refreshSidebarToggleLabel();
+  });
+  refreshSidebarToggleLabel();
+}
+
+const navButtons = Array.from(document.querySelectorAll('.sidebar-link[data-view-target]'));
+function activateView(targetId) {
+  navButtons.forEach((btn) => {
+    const isActive = btn.dataset.viewTarget === targetId;
+    if (isActive) btn.classList.add('active'); else btn.classList.remove('active');
+  });
+  document.querySelectorAll('.view').forEach((view) => {
+    if (view.id === targetId) {
+      view.classList.add('active');
+    } else {
+      view.classList.remove('active');
+    }
+  });
+}
+
+navButtons.forEach((btn) => {
+  btn.addEventListener('click', () => activateView(btn.dataset.viewTarget));
+});
+
+const monitoringMeta = new Map([
+  ['CPOOL_USDT', { name: 'Clearpool', risk: 'Baixo', spotHint: ['Gate.io', 'Binance'], futuresHint: ['MEXC Futures', 'Gate.io Futures'] }],
+  ['MAT_USDT', { name: 'Mycelium', risk: 'Médio', spotHint: ['Gate.io', 'KuCoin'], futuresHint: ['Bybit', 'MEXC Futures'] }],
+  ['FARM_USDT', { name: 'Harvest Finance', risk: 'Baixo', spotHint: ['Gate.io', 'Binance'], futuresHint: ['MEXC Futures'] }]
+]);
+
+let trackedMonitoringSymbols = Array.from(monitoringMeta.keys());
+let monitoringRows = [];
+const monitoringHistoryCache = new Map();
+const MONITORING_HISTORY_DEFAULTS = { interval: '1h', spot: 'gate_spot', futures: 'gate_futures' };
+const MONITORING_HISTORY_CACHE_TTL = 60 * 1000;
+let monitoringLoading = true;
+let monitoringLastFetchError = null;
+
+const MONITORING_VISIBILITY_STORAGE_KEY = 'monitoringChartVisibility';
+const MONITORING_COLUMNS_STORAGE_KEY = 'monitoringColumnVisibility';
+
+function loadMonitoringColumns() {
+  try {
+    const raw = localStorage.getItem(MONITORING_COLUMNS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {}
+  return {};
+}
+
+function persistMonitoringColumns(value) {
+  try {
+    localStorage.setItem(MONITORING_COLUMNS_STORAGE_KEY, JSON.stringify(value));
+  } catch {}
+}
+
+function loadMonitoringVisibility() {
+  try {
+    const raw = localStorage.getItem(MONITORING_VISIBILITY_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {}
+  return {};
+}
+
+function persistMonitoringVisibility(map) {
+  try {
+    localStorage.setItem(MONITORING_VISIBILITY_STORAGE_KEY, JSON.stringify(map || {}));
+  } catch {}
+}
+
+const MONITORING_DEFAULT_COLUMNS = { spot: true, futures: true, volume: true, favorite: true, actions: true };
+
+let monitoringColumnVisibility = loadMonitoringColumns();
+let monitoringDatasetVisibility = loadMonitoringVisibility();
+monitoringColumnVisibility = { ...MONITORING_DEFAULT_COLUMNS, ...monitoringColumnVisibility };
+
+const blacklist = new Set();
+const ADMIN_PASSWORD = 'arbisync@2024';
+let isAdmin = false;
+
+const monitoringTableBody = document.getElementById('monitoringTableBody');
+const filterSearchEl = document.getElementById('filterSearch');
+const filterMinArbEl = document.getElementById('filterMinArb');
+const filterMinArbValueEl = document.getElementById('filterMinArbValue');
+const filterVolumeEl = document.getElementById('filterVolume');
+const monitoringSummaryBestEl = document.getElementById('monitoringSummaryBest');
+const monitoringSummaryCountEl = document.getElementById('monitoringResultCount');
+const monitoringSummaryBlacklistEl = document.getElementById('monitoringSummaryBlacklist');
+const monitoringPairSelect = document.getElementById('monitoringPairSelect');
+const monitoringHistoryIntervalSelect = document.getElementById('monitoringHistoryInterval');
+const monitoringHistorySpotSelect = document.getElementById('monitoringHistorySpot');
+const monitoringHistoryFuturesSelect = document.getElementById('monitoringHistoryFutures');
+const monitoringHistorySourceEl = document.getElementById('monitoringHistorySource');
+const monitoringHistoryStatusEl = document.getElementById('monitoringHistoryStatus');
+const monitoringOpenRangeEl = document.getElementById('monitoringOpenRange');
+const monitoringCloseRangeEl = document.getElementById('monitoringCloseRange');
+const monitoringRefreshIntervalSelect = document.getElementById('monitoringRefreshInterval');
+const monitoringRefreshToggleBtn = document.getElementById('monitoringRefreshToggle');
+const monitoringColumnToggles = Array.from(document.querySelectorAll('.monitoring-column-toggle'));
+const monitoringPaginationInfo = document.getElementById('monitoringPaginationInfo');
+const monitoringPaginationStatus = document.getElementById('monitoringPaginationStatus');
+const monitoringPaginationPrev = document.getElementById('monitoringPaginationPrev');
+const monitoringPaginationNext = document.getElementById('monitoringPaginationNext');
+const adminStatusLabel = document.getElementById('adminStatusLabel');
+const adminStatusLabelInline = document.getElementById('adminStatusLabelInline');
+const adminLoginFeedback = document.getElementById('adminLoginFeedback');
+const adminTools = document.getElementById('adminTools');
+const adminDiscoveryTools = document.getElementById('adminDiscoveryTools');
+const adminLoginForm = document.getElementById('adminLoginForm');
+const adminPasswordInput = document.getElementById('adminPassword');
+const adminAddCoinForm = document.getElementById('adminAddCoinForm');
+const adminRemoveCoinForm = document.getElementById('adminRemoveCoinForm');
+const adminRemoveCoinSelect = document.getElementById('adminRemoveCoinSelect');
+const blacklistForm = document.getElementById('blacklistForm');
+const blacklistInput = document.getElementById('blacklistInput');
+const blacklistList = document.getElementById('blacklistList');
+const discoverTopAssetsBtn = document.getElementById('discoverTopAssets');
+const addSelectedTopAssetsBtn = document.getElementById('addSelectedTopAssets');
+const topAssetsList = document.getElementById('topAssetsList');
+const topAssetsStatus = document.getElementById('topAssetsStatus');
+const topAssetsResults = document.getElementById('topAssetsResults');
+const topAssetsPaginationInfo = document.getElementById('topAssetsPaginationInfo');
+const topAssetsPaginationStatus = document.getElementById('topAssetsPaginationStatus');
+const topAssetsPrev = document.getElementById('topAssetsPrev');
+const topAssetsNext = document.getElementById('topAssetsNext');
+const topAssetsPageSizeSelect = document.getElementById('topAssetsPageSize');
+const topAssetsLimitSelect = document.getElementById('topAssetsLimit');
+
+const MONITORING_PAGE_SIZE = 10;
+const monitoringPaginationState = { page: 1, perPage: MONITORING_PAGE_SIZE };
+let monitoringFilteredRows = [];
+const MONITORING_REFRESH_DEFAULT_SECONDS = 3;
+let monitoringAutoRefreshTimer = null;
+let monitoringAutoRefreshPaused = false;
+const TOP_ASSETS_PAGE_SIZE = 8;
+const TOP_ASSETS_LIMIT_DEFAULT = 60;
+const topAssetsState = { items: [], page: 1, perPage: TOP_ASSETS_PAGE_SIZE, limit: TOP_ASSETS_LIMIT_DEFAULT };
+const topAssetsSelection = new Set();
+const monitoringFavorites = new Set();
+const monitoringFavoriteSnapshots = new Map();
+const monitoringArbTimers = new Map();
+let executionToastTimer = null;
+
+const EXECUTION_SPOT_PROVIDERS = ['Gate.io', 'Bitget'];
+const EXECUTION_FUTURES_PROVIDERS = ['MEXC Futures'];
+
+function getCheckedValues(selector) {
+  return Array.from(document.querySelectorAll(selector))
+    .filter((el) => el.checked)
+    .map((el) => el.value);
+}
+
+function toFiniteNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function computeNotionalLocal(price, size) {
+  const p = toFiniteNumber(price);
+  const s = toFiniteNumber(size);
+  if (!Number.isFinite(p) || !Number.isFinite(s)) return null;
+  const notional = p * s;
+  return Number.isFinite(notional) ? notional : null;
+}
+
+function getMonitoringName(symbol, fallbackLabel = null) {
+  if (!symbol) return fallbackLabel || '';
+  const normalized = symbol.toUpperCase();
+  const meta = monitoringMeta.get(normalized);
+  return meta?.name || fallbackLabel || normalized;
+}
+
+const SPOT_LABEL_TO_KEY = {
+  'gate.io': 'gate_spot',
+  'gate.io spot': 'gate_spot',
+  'mexc': 'mexc_spot',
+  'bitget': 'bitget_spot',
+  'kucoin': 'kucoin_spot',
+  'binance': 'binance_spot',
+  'bybit': 'bybit_spot'
+};
+
+const FUTURES_LABEL_TO_KEY = {
+  'gate.io futures': 'gate_futures',
+  'mexc futures': 'mexc_futures',
+  'bitget futures': 'bitget_futures',
+  'kucoin futures': 'kucoin_futures',
+  'binance futures': 'binance_futures',
+  'bybit futures': 'bybit_futures'
+};
+
+function resolveHistoryExchangeKey(label, type) {
+  const normalized = String(label || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (type === 'spot') return SPOT_LABEL_TO_KEY[normalized] || null;
+  if (type === 'futures') return FUTURES_LABEL_TO_KEY[normalized] || null;
+  return null;
+}
+
+function buildOpportunityKey(coin) {
+  if (!coin) return '';
+  const spot = Array.isArray(coin.spotExchanges) ? coin.spotExchanges.join('+') : String(coin.spotExchanges || 'SPOT');
+  const futures = Array.isArray(coin.futuresExchanges)
+    ? coin.futuresExchanges.join('+')
+    : String(coin.futuresExchanges || 'FUT');
+  return `${coin.symbol || ''}::${spot}::${futures}`.toUpperCase();
+}
+
+function loadMonitoringFavorites() {
+  try {
+    const raw = localStorage.getItem('monitoring_favorites');
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      monitoringFavorites.clear();
+      parsed.forEach((item) => {
+        if (typeof item === 'string') monitoringFavorites.add(item);
+      });
+    }
+  } catch (e) {
+    console.warn('Falha ao ler favoritos de monitoring:', e);
+  }
+}
+
+function persistMonitoringFavorites() {
+  try {
+    localStorage.setItem('monitoring_favorites', JSON.stringify(Array.from(monitoringFavorites)));
+  } catch (e) {
+    console.warn('Falha ao salvar favoritos de monitoring:', e);
+  }
+}
+
+loadMonitoringFavorites();
+
+function findOpportunityByKey(key) {
+  if (!key) return null;
+  const normalized = String(key).toUpperCase();
+  return monitoringRows.find((coin) => buildOpportunityKey(coin) === normalized) || null;
+}
+
+function setFavorite(key, enabled) {
+  if (!key) return;
+  const normalized = String(key).toUpperCase();
+  if (enabled) {
+    monitoringFavorites.add(normalized);
+  } else {
+    monitoringFavorites.delete(normalized);
+    monitoringFavoriteSnapshots.delete(normalized);
+  }
+  persistMonitoringFavorites();
+}
+
+function toggleFavorite(key) {
+  if (!key) return;
+  const normalized = String(key).toUpperCase();
+  const nowFav = !monitoringFavorites.has(normalized);
+  setFavorite(normalized, nowFav);
+  renderMonitoringTable();
+  return nowFav;
+}
+
+function getMissingExecutionExchanges(coin) {
+  if (!coin) return [];
+  const missing = [];
+  const spotList = Array.isArray(coin.spotExchanges) ? coin.spotExchanges : [];
+  const futuresList = Array.isArray(coin.futuresExchanges) ? coin.futuresExchanges : [];
+  const unsupportedSpot = spotList.filter((ex) => !EXECUTION_SPOT_PROVIDERS.includes(ex));
+  const unsupportedFutures = futuresList.filter((ex) => !EXECUTION_FUTURES_PROVIDERS.includes(ex));
+  if (unsupportedSpot.length) missing.push(`SPOT: ${unsupportedSpot.join(', ')}`);
+  if (unsupportedFutures.length) missing.push(`FUTUROS: ${unsupportedFutures.join(', ')}`);
+  return missing;
+}
+
+function resolveSpotKeyFromLabel(labelList) {
+  const normalized = String(labelList || '').toLowerCase();
+  const entries = normalized.split('|');
+  for (const entry of entries) {
+    if (entry.includes('bitget')) return 'bitget';
+    if (entry.includes('gate')) return 'gate';
+    if (entry.includes('bybit')) return 'bitget';
+  }
+  return 'gate';
+}
+
+function showExecutionToast(message) {
+  const toast = document.getElementById('executionToast');
+  if (!toast) return;
+  toast.textContent = message;
+  toast.classList.add('visible');
+  if (executionToastTimer) clearTimeout(executionToastTimer);
+  executionToastTimer = setTimeout(() => {
+    toast.classList.remove('visible');
+  }, 2800);
+}
+
+function addExecutionTabFromOpportunity(coin, spotLabel) {
+  if (!coin) return null;
+  const spotKey = resolveSpotKeyFromLabel(spotLabel || coin.spotExchanges?.join('|'));
+  const inst = addInstance({ symbol: coin.symbol, spotExchange: spotKey, label: `${coin.symbol} (${spotKey})` }, { switchTo: true });
+  if (inst) {
+    activateView('executionView');
+    showExecutionToast(`${coin.symbol} adicionado ao menu de execução.`);
+  }
+  return inst;
+}
+
+function resetMonitoringPagination() {
+  monitoringPaginationState.page = 1;
+}
+
+function updateMonitoringPaginationUI(totalRows) {
+  const total = Number(totalRows) || 0;
+  const totalPages = total ? Math.max(1, Math.ceil(total / monitoringPaginationState.perPage)) : 1;
+  if (monitoringPaginationState.page < 1) {
+    monitoringPaginationState.page = 1;
+  }
+  if (!total) {
+    monitoringPaginationState.page = 1;
+  } else if (monitoringPaginationState.page > totalPages) {
+    monitoringPaginationState.page = totalPages;
+  }
+  const start = total ? (monitoringPaginationState.page - 1) * monitoringPaginationState.perPage + 1 : 0;
+  const end = total ? Math.min(start + monitoringPaginationState.perPage - 1, total) : 0;
+  if (monitoringPaginationInfo) {
+    monitoringPaginationInfo.textContent = total
+      ? `Mostrando ${start}–${end} de ${total} oportunidades`
+      : 'Nenhuma oportunidade encontrada';
+  }
+  if (monitoringPaginationStatus) {
+    monitoringPaginationStatus.textContent = total
+      ? `Página ${monitoringPaginationState.page} de ${totalPages}`
+      : 'Página 0 de 0';
+  }
+  if (monitoringPaginationPrev) monitoringPaginationPrev.disabled = monitoringPaginationState.page <= 1 || !total;
+  if (monitoringPaginationNext) monitoringPaginationNext.disabled = monitoringPaginationState.page >= totalPages || !total;
+}
+
+function changeMonitoringPage(delta) {
+  if (!Number.isFinite(delta) || !monitoringFilteredRows.length) return;
+  const totalPages = Math.max(1, Math.ceil(monitoringFilteredRows.length / monitoringPaginationState.perPage));
+  const nextPage = Math.min(Math.max(1, monitoringPaginationState.page + delta), totalPages);
+  if (nextPage === monitoringPaginationState.page) return;
+  monitoringPaginationState.page = nextPage;
+  renderMonitoringTable();
+}
+
+function getMonitoringRefreshSeconds() {
+  const seconds = Number(monitoringRefreshIntervalSelect?.value);
+  if (!Number.isFinite(seconds)) return MONITORING_REFRESH_DEFAULT_SECONDS;
+  return Math.min(Math.max(seconds, 0.5), 5);
+}
+
+function scheduleMonitoringAutoRefresh() {
+  if (monitoringAutoRefreshTimer) {
+    clearInterval(monitoringAutoRefreshTimer);
+    monitoringAutoRefreshTimer = null;
+  }
+  if (monitoringAutoRefreshPaused) return;
+  const intervalMs = getMonitoringRefreshSeconds() * 1000;
+  monitoringAutoRefreshTimer = setInterval(() => {
+    if (document.hidden) return;
+    loadMonitoringData({ silent: true, updateChart: false });
+  }, intervalMs);
+}
+
+function updateMonitoringRefreshToggleUI() {
+  if (!monitoringRefreshToggleBtn) return;
+  monitoringRefreshToggleBtn.textContent = monitoringAutoRefreshPaused ? '▶ Retomar' : '⏸ Pausar';
+  monitoringRefreshToggleBtn.classList.toggle('paused', monitoringAutoRefreshPaused);
+  monitoringRefreshToggleBtn.setAttribute('aria-pressed', String(!monitoringAutoRefreshPaused));
+}
+
+function resetMonitoringHistory() {
+  monitoringHistoryCache.clear();
+}
+
+function buildMonitoringHistoryCacheKey(symbol, intervalKey, spotKey, futuresKey) {
+  const base = String(symbol || '').toUpperCase();
+  return `${base}:${intervalKey}:${spotKey}:${futuresKey}`;
+}
+
+function purgeMonitoringHistoryCache(symbol) {
+  if (!symbol) return;
+  const prefix = `${String(symbol).toUpperCase()}:`;
+  Array.from(monitoringHistoryCache.keys()).forEach((key) => {
+    if (key.startsWith(prefix)) {
+      monitoringHistoryCache.delete(key);
+    }
+  });
+}
+
+function getCachedMonitoringHistory(cacheKey) {
+  const cached = monitoringHistoryCache.get(cacheKey);
+  if (!cached) return null;
+  if (Date.now() - cached.fetchedAt > MONITORING_HISTORY_CACHE_TTL) {
+    monitoringHistoryCache.delete(cacheKey);
+    return null;
+  }
+  return cached;
+}
+
+function formatHistoryLabel(timestamp) {
+  try {
+    return new Date(timestamp).toLocaleString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+  } catch {
+    return '';
+  }
+}
+
+function setMonitoringHistoryStatus(message, tone = 'muted') {
+  if (!monitoringHistoryStatusEl) return;
+  monitoringHistoryStatusEl.textContent = message || '';
+  monitoringHistoryStatusEl.classList.remove('error', 'success');
+  if (tone === 'error') {
+    monitoringHistoryStatusEl.classList.add('error');
+  } else if (tone === 'success') {
+    monitoringHistoryStatusEl.classList.add('success');
+  }
+}
+
+function updateMonitoringHistorySource(entry) {
+  if (!monitoringHistorySourceEl) return;
+  const parts = [];
+  if (entry?.meta?.spot?.label && entry?.meta?.futures?.label) {
+    parts.push(`${entry.meta.spot.label} (SPOT) × ${entry.meta.futures.label} (Futuros)`);
+  }
+  if (entry?.meta?.interval?.label) {
+    parts.push(`${entry.meta.interval.label} • ${entry.points?.length || 0} candles`);
+  }
+  monitoringHistorySourceEl.textContent = parts.length ? parts.join(' — ') : '';
+}
+
+function updateMonitoringHistoryExtremes(entry) {
+  const openLabel = monitoringOpenRangeEl;
+  const closeLabel = monitoringCloseRangeEl;
+  if (!openLabel || !closeLabel) return;
+  const openStats = entry?.stats?.open;
+  const closeStats = entry?.stats?.close;
+  const formatRange = (stats) => {
+    if (!stats || !Number.isFinite(stats.min) || !Number.isFinite(stats.max)) return '–';
+    const minStr = Number(stats.min.toFixed(3)).toString();
+    const maxStr = Number(stats.max.toFixed(3)).toString();
+    return `<span class="extreme-min">${minStr}%</span> a <span class="extreme-max">${maxStr}%</span>`;
+  };
+  openLabel.innerHTML = formatRange(openStats);
+  closeLabel.innerHTML = formatRange(closeStats);
+}
+
+async function fetchMonitoringHistorySeries(symbol, intervalKey, spotKey, futuresKey) {
+  const params = new URLSearchParams({ symbol, interval: intervalKey, spot: spotKey, futures: futuresKey });
+  const response = await fetch(`/api/monitoring/history?${params.toString()}`);
+  const data = await safeJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error || 'Erro ao buscar histórico');
+  }
+  const points = (Array.isArray(data?.points) ? data.points : [])
+    .map((point) => {
+      const ts = toFiniteNumber(point.timestamp);
+      const close = toFiniteNumber(point.closeArbPct ?? point.arbPct ?? point.closeArb);
+      const open = toFiniteNumber(point.openArbPct ?? point.arbPct ?? point.openArb);
+      const mid = toFiniteNumber(point.midArbPct ?? point.midArb ?? point.arbPct);
+      if (!Number.isFinite(ts) || (!Number.isFinite(close) && !Number.isFinite(open) && !Number.isFinite(mid))) {
+        return null;
+      }
+      let avg = mid;
+      if (!Number.isFinite(avg)) {
+        if (Number.isFinite(open) && Number.isFinite(close)) {
+          avg = Number(((open + close) / 2).toFixed(4));
+        } else if (Number.isFinite(open)) {
+          avg = open;
+        } else if (Number.isFinite(close)) {
+          avg = close;
+        } else {
+          avg = 0;
+        }
+      }
+      return {
+        timestamp: ts,
+        label: formatHistoryLabel(ts),
+        arb: avg,
+        open: Number.isFinite(open) ? open : Number.isFinite(close) ? close : avg,
+        close: Number.isFinite(close) ? close : Number.isFinite(open) ? open : avg,
+        spotVol: toFiniteNumber(point.spotVolume) ?? 0,
+        futuresVol: toFiniteNumber(point.futuresVolume) ?? 0
+      };
+    })
+    .filter(Boolean);
+  return {
+    fetchedAt: Date.now(),
+    points,
+    stats: data?.stats || null,
+    meta: {
+      interval: data?.interval || null,
+      spot: data?.spot || null,
+      futures: data?.futures || null
+    },
+    errors: { spot: data?.spotError || null, futures: data?.futuresError || null }
+  };
+}
+
+async function loadMonitoringData({ focusSymbol = null, silent = false, updateChart = true } = {}) {
+  if (!trackedMonitoringSymbols.length) {
+    monitoringRows = [];
+    resetMonitoringHistory();
+    renderMonitoringTable();
+    updateMonitoringSelectors();
+    monitoringLoading = false;
+    return;
+  }
+  if (monitoringLoading && silent) {
+    return;
+  }
+  try {
+    monitoringLoading = true;
+    monitoringLastFetchError = null;
+    if (!silent && monitoringTableBody) {
+      monitoringTableBody.innerHTML = '<tr><td colspan="7">Carregando dados de arbitragem em tempo real...</td></tr>';
+    }
+    const params = new URLSearchParams();
+    params.set('symbols', trackedMonitoringSymbols.join(','));
+    const response = await fetch(`/api/monitoring/markets?${params.toString()}`);
+    if (!response.ok) throw new Error(`Falha ao buscar dados (${response.status})`);
+    const payload = await safeJson(response);
+    const entries = Array.isArray(payload?.symbols) ? payload.symbols : [];
+    const favoriteKeys = new Set(monitoringFavorites);
+    const snapshotSeen = new Set();
+    const baseRows = entries.flatMap((entry) => {
+      const symbol = (entry?.symbol || '').toUpperCase();
+      if (!symbol) return [];
+      const name = getMonitoringName(symbol, entry?.label || symbol);
+      const metrics = entry?.metrics || {};
+      const volatility = toFiniteNumber(metrics.volatilityPct);
+      const metaInfo = monitoringMeta.get(symbol);
+      const stability = metrics.stability || metaInfo?.stability || (Number.isFinite(volatility) ? (volatility > 6 ? 'Volátil' : 'Estável') : 'Indefinido');
+      const riskLabel = metrics.riskLabel || metaInfo?.risk || 'Indefinido';
+      const spotTickers = (entry?.spot || []).filter((ticker) => !ticker.error && Number.isFinite(ticker.ask) && ticker.ask > 0);
+      const futuresTickers = (entry?.futures || []).filter((ticker) => !ticker.error && Number.isFinite(ticker.bid));
+      const combos = [];
+      for (const spot of spotTickers) {
+        for (const futures of futuresTickers) {
+          const arbRaw = Number.isFinite(spot.ask) && spot.ask > 0 && Number.isFinite(futures.bid)
+            ? ((futures.bid - spot.ask) / spot.ask) * 100
+            : null;
+          if (!Number.isFinite(arbRaw)) continue;
+          const arb = Number(arbRaw.toFixed(3));
+          const spotVolume = toFiniteNumber(spot.volume);
+          const futuresVolume = toFiniteNumber(futures.volume);
+          const volumeCandidates = [spotVolume, futuresVolume].filter((v) => Number.isFinite(v));
+          const volume24h = volumeCandidates.length ? Math.min(...volumeCandidates) : 0;
+          combos.push({
+            symbol,
+            name,
+            arb,
+            spotExchanges: [spot.exchange || spot.key || 'SPOT'],
+            futuresExchanges: [futures.exchange || futures.key || 'FUTUROS'],
+            volume24h,
+            spotVolume,
+            futuresVolume,
+            spotAsk: toFiniteNumber(spot.ask),
+            spotBid: toFiniteNumber(spot.bid),
+            spotAskSize: toFiniteNumber(spot.askSize),
+            spotBidSize: toFiniteNumber(spot.bidSize),
+            spotAskNotional: toFiniteNumber(spot.askNotional ?? computeNotionalLocal(spot.ask, spot.askSize)),
+            spotBidNotional: toFiniteNumber(spot.bidNotional ?? computeNotionalLocal(spot.bid, spot.bidSize)),
+            futuresAsk: toFiniteNumber(futures.ask),
+            futuresBid: toFiniteNumber(futures.bid),
+            futuresAskSize: toFiniteNumber(futures.askSize),
+            futuresBidSize: toFiniteNumber(futures.bidSize),
+            futuresAskNotional: toFiniteNumber(futures.askNotional ?? computeNotionalLocal(futures.ask, futures.askSize)),
+            futuresBidNotional: toFiniteNumber(futures.bidNotional ?? computeNotionalLocal(futures.bid, futures.bidSize)),
+            depth: metrics.depthLabel || 'N/D',
+            funding: toFiniteNumber(futures.fundingRate),
+            risk: riskLabel,
+            stability,
+            combination: `${spot.exchange || spot.key || 'SPOT'} → ${futures.exchange || futures.key || 'FUTUROS'}`
+          });
+        }
+      }
+      return combos;
+    });
+
+    for (const coin of baseRows) {
+      const key = buildOpportunityKey(coin);
+      snapshotSeen.add(key);
+      if (favoriteKeys.has(key)) {
+        monitoringFavoriteSnapshots.set(key, coin);
+      }
+    }
+
+    const missingFavorites = Array.from(favoriteKeys).filter((key) => !snapshotSeen.has(key));
+    const recoveredFavorites = missingFavorites
+      .map((key) => monitoringFavoriteSnapshots.get(key))
+      .filter(Boolean);
+
+    monitoringRows = [...baseRows, ...recoveredFavorites];
+    resetMonitoringHistory();
+    renderMonitoringTable();
+    updateMonitoringSelectors();
+    if (updateChart) {
+      const preferredSymbol = focusSymbol || monitoringPairSelect?.value || monitoringRows[0]?.symbol || null;
+      if (preferredSymbol && monitoringPairSelect) {
+        monitoringPairSelect.value = preferredSymbol;
+      }
+      if (preferredSymbol) updateMonitoringChart(preferredSymbol);
+    }
+  } catch (err) {
+    monitoringLastFetchError = err;
+    console.error('[monitoring] erro ao carregar dados', err);
+    if (monitoringTableBody) {
+    monitoringTableBody.innerHTML = `<tr><td colspan="7">Erro ao carregar dados de arbitragem: ${err.message || err}</td></tr>`;
+    }
+    monitoringFilteredRows = [];
+    updateMonitoringPaginationUI(0);
+    renderMonitoringSummary([]);
+  } finally {
+    monitoringLoading = false;
+  }
+}
+
+function formatVolume(value) {
+  if (!Number.isFinite(value)) return '-';
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  if (value >= 10) return value.toFixed(1);
+  if (value >= 1) return value.toFixed(2);
+  if (value >= 0.01) return value.toFixed(4);
+  return value.toFixed(6);
+}
+
+function formatPriceCompact(value) {
+  if (!Number.isFinite(value)) return '—';
+  const absVal = Math.abs(value);
+  const decimalPart = value.toString().split('.')[1];
+  if ((absVal > 0 && absVal < 0.000001) || (decimalPart && decimalPart.length > 8)) {
+    return value.toExponential(2);
+  }
+  if (value >= 1 || value <= -1) return value.toFixed(4).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+  return value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function formatUptime(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '—';
+  const totalMinutes = Math.floor(ms / 60000);
+  const seconds = Math.floor((ms % 60000) / 1000);
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (hours || days) parts.push(`${hours}h`);
+  parts.push(`${minutes}min`);
+  parts.push(`${seconds}s`);
+  return parts.join(' ');
+}
+
+function renderMonitoringSummary(filtered) {
+  if (monitoringSummaryCountEl) monitoringSummaryCountEl.textContent = filtered.length;
+  if (monitoringSummaryBlacklistEl) monitoringSummaryBlacklistEl.textContent = blacklist.size;
+  if (monitoringSummaryBestEl) {
+    const best = filtered.reduce((acc, coin) => (Number.isFinite(coin.arb) && coin.arb > (acc?.arb ?? -Infinity) ? coin : acc), null);
+    monitoringSummaryBestEl.textContent = best ? `${best.symbol} • ${best.arb.toFixed(2)}%` : (monitoringLastFetchError ? 'Erro' : '-');
+  }
+}
+
+function updateArbUptime(key, arb) {
+  const entry = monitoringArbTimers.get(key) || { start: null };
+  const now = Date.now();
+  if (Number.isFinite(arb) && arb > 0) {
+    if (!entry.start) entry.start = now;
+  } else {
+    entry.start = null;
+  }
+  monitoringArbTimers.set(key, entry);
+  return entry.start ? formatUptime(now - entry.start) : '—';
+}
+
+function renderLegDetails(price, notional, side, fallbackSize) {
+  const priceLabel = Number.isFinite(price) ? formatPriceCompact(price) : 's/ dado';
+  const computedNotional = Number.isFinite(notional)
+    ? notional
+    : computeNotionalLocal(price, fallbackSize);
+  const volLabel = Number.isFinite(computedNotional) && computedNotional > 0
+    ? `${formatVolume(computedNotional)} USDT`
+    : 's/ dado';
+  const chipClass = side === 'bid' ? 'volume-chip volume-futures' : 'volume-chip volume-spot';
+  const sideLabel = side === 'bid' ? 'Bid' : 'Ask';
+  return `
+    <div class="quote-price">${sideLabel}: ${priceLabel}</div>
+    <div class="${chipClass}">${volLabel}</div>
+  `;
+}
+
+function applyMonitoringColumnVisibility() {
+  Object.entries(MONITORING_DEFAULT_COLUMNS).forEach(([key]) => {
+    const visible = monitoringColumnVisibility[key] !== false;
+    document.querySelectorAll(`.col-${key}`).forEach((el) => el.classList.toggle('col-hidden', !visible));
+    const toggle = monitoringColumnToggles.find((input) => input.dataset.col === key);
+    if (toggle) toggle.checked = visible;
+  });
+}
+
+function renderMonitoringTable() {
+  if (!monitoringTableBody) return;
+  const searchTerm = (filterSearchEl?.value || '').trim().toUpperCase();
+  const minArbRaw = Number(filterMinArbEl?.value);
+  const minArb = Number.isFinite(minArbRaw) ? Math.max(0, minArbRaw) : 0;
+  const minVolume = Number(filterVolumeEl?.value) || 0;
+  const selectedSpot = getCheckedValues('.filter-spot');
+  const selectedFutures = getCheckedValues('.filter-futures');
+  const favoritesSet = new Set(Array.from(monitoringFavorites));
+  const baseRows = monitoringRows
+    .filter((coin) => trackedMonitoringSymbols.includes(coin.symbol))
+    .filter((coin) => !blacklist.has(coin.symbol));
+
+  const favoriteRows = baseRows.filter((coin) => favoritesSet.has(buildOpportunityKey(coin)));
+
+  const filteredNonFavorites = baseRows
+    .filter((coin) => !favoritesSet.has(buildOpportunityKey(coin)))
+    .filter((coin) => (searchTerm ? coin.symbol.includes(searchTerm) || coin.name?.toUpperCase().includes(searchTerm) : true))
+    .filter((coin) => Number.isFinite(coin.arb) && coin.arb >= minArb)
+    .filter((coin) => coin.volume24h >= minVolume)
+    .filter((coin) => !selectedSpot.length || coin.spotExchanges.some((ex) => selectedSpot.includes(ex)))
+    .filter((coin) => !selectedFutures.length || coin.futuresExchanges.some((ex) => selectedFutures.includes(ex)));
+
+  const seen = new Set();
+  const merged = [...favoriteRows, ...filteredNonFavorites].filter((coin) => {
+    const key = buildOpportunityKey(coin);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  merged.sort((a, b) => {
+    const favA = favoritesSet.has(buildOpportunityKey(a));
+    const favB = favoritesSet.has(buildOpportunityKey(b));
+    if (favA !== favB) return favA ? -1 : 1;
+    const aArb = Number.isFinite(a.arb) ? a.arb : -Infinity;
+    const bArb = Number.isFinite(b.arb) ? b.arb : -Infinity;
+    return bArb - aArb;
+  });
+
+  monitoringFilteredRows = merged;
+  updateMonitoringPaginationUI(merged.length);
+
+  if (!merged.length) {
+    const emptyMessage = monitoringLoading
+      ? 'Atualizando dados de arbitragem...'
+      : monitoringLastFetchError
+        ? `Última tentativa falhou: ${monitoringLastFetchError.message || monitoringLastFetchError}`
+        : 'Nenhuma moeda atende aos filtros ativos.';
+    monitoringTableBody.innerHTML = `<tr><td colspan="7">${emptyMessage}</td></tr>`;
+    applyMonitoringColumnVisibility();
+    renderMonitoringSummary(merged);
+    return;
+  }
+
+  const startIndex = (monitoringPaginationState.page - 1) * monitoringPaginationState.perPage;
+  const visibleCoins = merged.slice(startIndex, startIndex + monitoringPaginationState.perPage);
+
+  monitoringTableBody.innerHTML = visibleCoins.map((coin) => {
+    const metaInfo = monitoringMeta.get(coin.symbol);
+    const favKey = buildOpportunityKey(coin);
+    const isFavorite = monitoringFavorites.has(favKey);
+    const arbLabel = Number.isFinite(coin.arb) ? `${coin.arb.toFixed(3)}%` : '—';
+    const uptimeValue = updateArbUptime(favKey, coin.arb);
+    const uptime = Number.isFinite(coin.arb) && coin.arb > 0 ? uptimeValue : '';
+    const spotList = coin.spotExchanges.length
+      ? coin.spotExchanges.join(', ')
+      : metaInfo?.spotHint?.length
+        ? `${metaInfo.spotHint.join(', ')} (config)`
+        : 'Sem dados';
+    const futuresList = coin.futuresExchanges.length
+      ? coin.futuresExchanges.join(', ')
+      : metaInfo?.futuresHint?.length
+        ? `${metaInfo.futuresHint.join(', ')} (config)`
+        : 'Sem dados';
+    const spotDetail = renderLegDetails(coin.spotAsk, coin.spotAskNotional, 'ask', coin.spotAskSize);
+    const futuresDetail = renderLegDetails(coin.futuresBid, coin.futuresBidNotional, 'bid', coin.futuresBidSize);
+    const spotVolumeLabel = Number.isFinite(coin.spotVolume) ? `${formatVolume(coin.spotVolume)} USDT` : 's/ dado';
+    const futuresVolumeLabel = Number.isFinite(coin.futuresVolume) ? `${formatVolume(coin.futuresVolume)} USDT` : 's/ dado';
+    const volume24hCell = `<div class="volume-inline"><span>${spotVolumeLabel}</span><span>|</span><span>${futuresVolumeLabel}</span></div>`;
+    return `
+      <tr>
+        <td class="col-symbol"><strong>${coin.symbol}</strong><br/><span class="muted">${coin.name}</span></td>
+        <td class="col-arb">${arbLabel}${uptime ? `<div class="uptime-chip">${uptime}</div>` : ''}</td>
+        <td class="col-spot"><div class="exchange-header">${spotList}</div><div class="quote-chip-container">${spotDetail}</div></td>
+        <td class="col-futures"><div class="exchange-header">${futuresList}</div><div class="quote-chip-container">${futuresDetail}</div></td>
+        <td class="col-volume">${volume24hCell}</td>
+        <td class="col-favorite">${isFavorite ? '<span class="monitoring-favorite-flag">★ Favorito</span>' : '—'}</td>
+        <td class="monitoring-actions-cell col-actions">
+          <button
+            type="button"
+            class="monitoring-view-chart"
+            data-symbol="${coin.symbol}"
+            data-spot="${coin.spotExchanges.join('|')}"
+            data-futures="${coin.futuresExchanges.join('|')}"
+          >Ver gráfico</button>
+          <button
+            type="button"
+            class="monitoring-favorite-btn ${isFavorite ? 'favorited' : ''}"
+            data-favorite-key="${favKey}"
+            data-symbol="${coin.symbol}"
+            data-spot="${coin.spotExchanges.join('|')}"
+            data-futures="${coin.futuresExchanges.join('|')}"
+          >${isFavorite ? 'Desfavoritar' : 'Favoritar'}</button>
+          <button
+            type="button"
+            class="monitoring-exec-btn"
+            data-favorite-key="${favKey}"
+            data-symbol="${coin.symbol}"
+            data-spot="${coin.spotExchanges.join('|')}"
+            data-futures="${coin.futuresExchanges.join('|')}"
+          >Executar</button>
+        </td>
+      </tr>`;
+  }).join('');
+
+  applyMonitoringColumnVisibility();
+  renderMonitoringSummary(merged);
+
+  if (merged.length && monitoringPairSelect && !monitoringPairSelect.value) {
+    monitoringPairSelect.value = merged[0].symbol;
+    updateMonitoringChart(merged[0].symbol);
+  }
+}
+
+function renderBlacklist() {
+  if (!blacklistList) return;
+  const entries = Array.from(blacklist).sort();
+  blacklistList.innerHTML = entries.length
+    ? entries.map((symbol) => `<span>${symbol} <button type="button" data-remove-symbol="${symbol}">×</button></span>`).join('')
+    : '<span class="muted">Nenhuma moeda bloqueada.</span>';
+}
+
+function updateMonitoringSelectors() {
+  const previousSymbol = monitoringPairSelect?.value;
+  if (monitoringPairSelect) {
+    monitoringPairSelect.innerHTML = trackedMonitoringSymbols
+      .map((symbol) => {
+        const row = monitoringRows.find((coin) => coin.symbol === symbol);
+        const label = getMonitoringName(symbol, row?.name || symbol);
+        return `<option value="${symbol}">${symbol} — ${label}</option>`;
+      })
+      .join('');
+    if (previousSymbol && trackedMonitoringSymbols.includes(previousSymbol)) {
+      monitoringPairSelect.value = previousSymbol;
+    }
+  }
+  if (adminRemoveCoinSelect) {
+    const previousRemoval = adminRemoveCoinSelect.value;
+    adminRemoveCoinSelect.innerHTML = trackedMonitoringSymbols
+      .map((symbol) => `<option value="${symbol}">${symbol}</option>`)
+      .join('');
+    if (previousRemoval && trackedMonitoringSymbols.includes(previousRemoval)) {
+      adminRemoveCoinSelect.value = previousRemoval;
+    }
+  }
+}
+
+let monitoringChart = null;
+function syncMonitoringChartVisibilityFromChart(chart) {
+  if (!chart || !chart.data?.datasets) return;
+  const next = { ...monitoringDatasetVisibility };
+  chart.data.datasets.forEach((dataset, idx) => {
+    const meta = chart.getDatasetMeta(idx);
+    next[dataset.label] = meta?.hidden !== true;
+  });
+  monitoringDatasetVisibility = next;
+  persistMonitoringVisibility(next);
+}
+
+function applyMonitoringChartVisibility(chart) {
+  if (!chart || !chart.data?.datasets) return;
+  chart.data.datasets.forEach((dataset, idx) => {
+    const visible = monitoringDatasetVisibility[dataset.label];
+    if (typeof visible === 'boolean') {
+      dataset.hidden = !visible;
+      const meta = chart.getDatasetMeta(idx);
+      if (meta) meta.hidden = visible ? null : true;
+    }
+  });
+}
+
+function ensureMonitoringChart() {
+  if (monitoringChart) return monitoringChart;
+  const ctx = document.getElementById('monitoringChart');
+  if (!ctx) return null;
+  monitoringChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: [], datasets: [] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: {
+        legend: {
+          onClick(event, legendItem, legend) {
+            const defaultHandler = (Chart.overrides?.line?.plugins?.legend?.onClick) || (Chart.defaults?.plugins?.legend?.onClick);
+            if (typeof defaultHandler === 'function') {
+              defaultHandler.call(this, event, legendItem, legend);
+            }
+            syncMonitoringChartVisibilityFromChart(legend?.chart);
+          }
+        }
+      },
+      scales: {
+        y: {
+          ticks: {
+            callback: (value) => {
+              const num = Number(value);
+              if (!Number.isFinite(num)) return `${value}%`;
+              const formatted = Number(num.toFixed(3)).toString();
+              return `${formatted}%`;
+            }
+          }
+        },
+        yVolume: { position: 'right', grid: { drawOnChartArea: false }, ticks: { callback: (value) => `${formatVolume(value)} USDT` } }
+      }
+    }
+  });
+  return monitoringChart;
+}
+
+async function updateMonitoringChart(symbolInput) {
+  const chart = ensureMonitoringChart();
+  if (!chart) return;
+  syncMonitoringChartVisibilityFromChart(chart);
+  const fallbackSymbol = monitoringPairSelect?.value || monitoringRows[0]?.symbol || trackedMonitoringSymbols[0];
+  const symbol = String(symbolInput || fallbackSymbol || '').toUpperCase();
+  if (!symbol) return;
+  const intervalKey = monitoringHistoryIntervalSelect?.value || MONITORING_HISTORY_DEFAULTS.interval;
+  const spotKey = monitoringHistorySpotSelect?.value || MONITORING_HISTORY_DEFAULTS.spot;
+  const futuresKey = monitoringHistoryFuturesSelect?.value || MONITORING_HISTORY_DEFAULTS.futures;
+  const cacheKey = buildMonitoringHistoryCacheKey(symbol, intervalKey, spotKey, futuresKey);
+  let entry = getCachedMonitoringHistory(cacheKey);
+  if (!entry) {
+    setMonitoringHistoryStatus('Carregando histórico em tempo real...');
+    try {
+      entry = await fetchMonitoringHistorySeries(symbol, intervalKey, spotKey, futuresKey);
+      monitoringHistoryCache.set(cacheKey, entry);
+    } catch (err) {
+      updateMonitoringHistorySource(null);
+      updateMonitoringHistoryExtremes(null);
+      chart.data.labels = [];
+      chart.data.datasets = [];
+      chart.update();
+      setMonitoringHistoryStatus(`Erro ao carregar histórico: ${err.message || err}`, 'error');
+      return;
+    }
+  }
+  const points = entry.points || [];
+  chart.data.labels = points.map((p) => p.label);
+  chart.data.datasets = [
+    {
+      type: 'line',
+      label: '% Arb médio',
+      data: points.map((p) => p.arb),
+      borderColor: '#8d6cff',
+      backgroundColor: 'rgba(141, 108, 255, 0.2)',
+      tension: 0.35,
+      yAxisID: 'y',
+      fill: false,
+      borderWidth: 2
+    },
+    {
+      type: 'line',
+      label: 'Linha de abertura',
+      data: points.map((p) => p.open),
+      borderColor: '#3fe7c3',
+      borderDash: [6, 6],
+      tension: 0.3,
+      yAxisID: 'y',
+      fill: false,
+      borderWidth: 1.5
+    },
+    {
+      type: 'line',
+      label: 'Linha de fechamento',
+      data: points.map((p) => p.close),
+      borderColor: '#f2b760',
+      borderDash: [6, 6],
+      tension: 0.3,
+      yAxisID: 'y',
+      fill: false,
+      borderWidth: 1.5
+    },
+    {
+      type: 'bar',
+      label: 'Volume Spot',
+      data: points.map((p) => p.spotVol),
+      backgroundColor: 'rgba(141, 108, 255, 0.35)',
+      borderRadius: 4,
+      yAxisID: 'yVolume'
+    },
+    {
+      type: 'bar',
+      label: 'Volume Futuros',
+      data: points.map((p) => p.futuresVol),
+      backgroundColor: 'rgba(63, 231, 195, 0.35)',
+      borderRadius: 4,
+      yAxisID: 'yVolume'
+    }
+  ];
+  applyMonitoringChartVisibility(chart);
+  chart.update();
+  syncMonitoringChartVisibilityFromChart(chart);
+  updateMonitoringHistorySource(entry);
+  updateMonitoringHistoryExtremes(entry);
+  if (!points.length) {
+    const warning = entry.errors?.spot || entry.errors?.futures;
+    if (warning) {
+      setMonitoringHistoryStatus(`Sem candles para esta combinação (${warning})`, 'error');
+    } else {
+      setMonitoringHistoryStatus('Nenhum candle disponível nas últimas 24h para esta combinação.');
+    }
+    return;
+  }
+  const updatedAt = new Date(entry.fetchedAt || Date.now()).toLocaleTimeString('pt-BR', { hour12: false });
+  const errorParts = [];
+  if (entry.errors?.spot) errorParts.push(`SPOT: ${entry.errors.spot}`);
+  if (entry.errors?.futures) errorParts.push(`FUTUROS: ${entry.errors.futures}`);
+  if (errorParts.length) {
+    setMonitoringHistoryStatus(`Dados parciais — ${errorParts.join(' | ')}`, 'error');
+  } else {
+    setMonitoringHistoryStatus(`Atualizado às ${updatedAt}`, 'success');
+  }
+}
+
+const filterInputs = [filterSearchEl, filterVolumeEl];
+filterInputs.forEach((input) => {
+  if (!input) return;
+  const eventName = input.tagName === 'SELECT' ? 'change' : 'input';
+  input.addEventListener(eventName, () => {
+    resetMonitoringPagination();
+    renderMonitoringTable();
+  });
+});
+
+if (filterMinArbEl) {
+  filterMinArbEl.addEventListener('input', () => {
+    if (filterMinArbValueEl) {
+      const value = Number(filterMinArbEl.value) || 0;
+      filterMinArbValueEl.textContent = `${value.toFixed(2)}%`;
+    }
+    resetMonitoringPagination();
+    renderMonitoringTable();
+  });
+}
+
+['.filter-spot', '.filter-futures'].forEach((selector) => {
+  document.querySelectorAll(selector).forEach((input) => {
+    input.addEventListener('change', () => {
+      resetMonitoringPagination();
+      renderMonitoringTable();
+    });
+  });
+});
+
+if (monitoringPaginationPrev) {
+  monitoringPaginationPrev.addEventListener('click', () => changeMonitoringPage(-1));
+}
+
+if (monitoringPaginationNext) {
+  monitoringPaginationNext.addEventListener('click', () => changeMonitoringPage(1));
+}
+
+  if (monitoringTableBody) {
+    monitoringTableBody.addEventListener('click', (event) => {
+      const chartBtn = event.target.closest('.monitoring-view-chart');
+      if (chartBtn) {
+        const { symbol } = chartBtn.dataset;
+        if (!symbol) return;
+        const spotLabel = (chartBtn.dataset.spot || '').split('|')[0];
+        const futuresLabel = (chartBtn.dataset.futures || '').split('|')[0];
+        const spotKey = resolveHistoryExchangeKey(spotLabel, 'spot');
+        const futuresKey = resolveHistoryExchangeKey(futuresLabel, 'futures');
+        if (monitoringPairSelect) monitoringPairSelect.value = symbol;
+        if (monitoringHistorySpotSelect && spotKey) monitoringHistorySpotSelect.value = spotKey;
+        if (monitoringHistoryFuturesSelect && futuresKey) monitoringHistoryFuturesSelect.value = futuresKey;
+        if (monitoringHistoryIntervalSelect) monitoringHistoryIntervalSelect.value = '30m';
+        updateMonitoringChart(symbol);
+        activateView('monitoringView');
+        return;
+      }
+
+    const favBtn = event.target.closest('.monitoring-favorite-btn');
+    if (favBtn) {
+      const key = favBtn.dataset.favoriteKey;
+      if (!key) return;
+      toggleFavorite(key);
+      return;
+    }
+
+    const execBtn = event.target.closest('.monitoring-exec-btn');
+    if (execBtn) {
+      const key = execBtn.dataset.favoriteKey;
+      const coin = findOpportunityByKey(key);
+      if (!coin) return;
+      const missing = getMissingExecutionExchanges(coin);
+      if (missing.length) {
+        showExecutionToast(`Ainda não há API de execução para ${missing.join(' | ')}`);
+        return;
+      }
+      setFavorite(key, true);
+      renderMonitoringTable();
+      addExecutionTabFromOpportunity(coin, execBtn.dataset.spot);
+      return;
+    }
+  });
+}
+
+if (monitoringPairSelect) {
+  monitoringPairSelect.addEventListener('change', () => updateMonitoringChart(monitoringPairSelect.value));
+}
+
+[monitoringHistoryIntervalSelect, monitoringHistorySpotSelect, monitoringHistoryFuturesSelect].forEach((select) => {
+  if (!select) return;
+  select.addEventListener('change', () => {
+    const symbol = monitoringPairSelect?.value || monitoringRows[0]?.symbol || trackedMonitoringSymbols[0];
+    if (symbol) updateMonitoringChart(symbol);
+  });
+});
+
+const refreshMonitoringChartBtn = document.getElementById('refreshMonitoringChart');
+if (refreshMonitoringChartBtn) {
+  refreshMonitoringChartBtn.addEventListener('click', () => {
+    const symbol = monitoringPairSelect?.value || monitoringRows[0]?.symbol || trackedMonitoringSymbols[0];
+    if (!symbol) return;
+    const intervalKey = monitoringHistoryIntervalSelect?.value || MONITORING_HISTORY_DEFAULTS.interval;
+    const spotKey = monitoringHistorySpotSelect?.value || MONITORING_HISTORY_DEFAULTS.spot;
+    const futuresKey = monitoringHistoryFuturesSelect?.value || MONITORING_HISTORY_DEFAULTS.futures;
+    const cacheKey = buildMonitoringHistoryCacheKey(symbol, intervalKey, spotKey, futuresKey);
+    monitoringHistoryCache.delete(cacheKey);
+    updateMonitoringChart(symbol);
+  });
+}
+
+if (monitoringRefreshToggleBtn) {
+  monitoringRefreshToggleBtn.addEventListener('click', () => {
+    monitoringAutoRefreshPaused = !monitoringAutoRefreshPaused;
+    updateMonitoringRefreshToggleUI();
+    if (monitoringAutoRefreshPaused) {
+      scheduleMonitoringAutoRefresh();
+    } else {
+      loadMonitoringData({ silent: true, updateChart: false });
+      scheduleMonitoringAutoRefresh();
+    }
+  });
+  updateMonitoringRefreshToggleUI();
+}
+
+if (monitoringRefreshIntervalSelect) {
+  monitoringRefreshIntervalSelect.addEventListener('change', () => {
+    scheduleMonitoringAutoRefresh();
+    if (!monitoringAutoRefreshPaused) {
+      loadMonitoringData({ silent: true, updateChart: false });
+    }
+  });
+}
+
+if (monitoringColumnToggles.length) {
+  monitoringColumnToggles.forEach((input) => {
+    const key = input.dataset.col;
+    if (key && key in monitoringColumnVisibility) {
+      input.checked = monitoringColumnVisibility[key] !== false;
+    }
+    input.addEventListener('change', () => {
+      const colKey = input.dataset.col;
+      if (!colKey) return;
+      monitoringColumnVisibility[colKey] = input.checked;
+      persistMonitoringColumns(monitoringColumnVisibility);
+      applyMonitoringColumnVisibility();
+    });
+  });
+  applyMonitoringColumnVisibility();
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && !monitoringAutoRefreshPaused) {
+    loadMonitoringData({ silent: true, updateChart: false });
+  }
+});
+
+if (adminLoginForm) {
+  adminLoginForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const password = adminPasswordInput?.value || '';
+    if (password === ADMIN_PASSWORD) {
+      isAdmin = true;
+      adminLoginFeedback.textContent = 'Acesso liberado';
+      adminLoginFeedback.classList.remove('muted');
+      adminLoginFeedback.style.color = '#3fe7c3';
+      adminStatusLabel.textContent = 'Conectado';
+      if (adminStatusLabelInline) adminStatusLabelInline.textContent = 'Conectado';
+      if (adminTools) adminTools.classList.remove('hidden');
+      if (adminDiscoveryTools) adminDiscoveryTools.classList.remove('hidden');
+    } else {
+      isAdmin = false;
+      adminLoginFeedback.textContent = 'Senha incorreta';
+      adminLoginFeedback.classList.add('muted');
+      adminStatusLabel.textContent = 'Visitante';
+      if (adminStatusLabelInline) adminStatusLabelInline.textContent = 'Visitante';
+      if (adminTools) adminTools.classList.add('hidden');
+      if (adminDiscoveryTools) adminDiscoveryTools.classList.add('hidden');
+    }
+    if (adminPasswordInput) adminPasswordInput.value = '';
+  });
+}
+
+function requireAdmin() {
+  if (isAdmin) return true;
+  if (adminLoginFeedback) {
+    adminLoginFeedback.textContent = 'Faça login como administrador para continuar.';
+    adminLoginFeedback.classList.remove('muted');
+    adminLoginFeedback.style.color = '#ff6b9a';
+  }
+  return false;
+}
+
+function getSelectedTopExchanges() {
+  return Array.from(document.querySelectorAll('.top-exchange'))
+    .filter((el) => el.checked)
+    .map((el) => el.value);
+}
+
+function updateTopAssetsPagination(total) {
+  const totalPages = total ? Math.max(1, Math.ceil(total / topAssetsState.perPage)) : 1;
+  if (topAssetsState.page < 1) topAssetsState.page = 1;
+  if (topAssetsState.page > totalPages) topAssetsState.page = totalPages;
+  const start = total ? (topAssetsState.page - 1) * topAssetsState.perPage + 1 : 0;
+  const end = total ? Math.min(start + topAssetsState.perPage - 1, total) : 0;
+  if (topAssetsPaginationInfo) {
+    topAssetsPaginationInfo.textContent = total
+      ? `Mostrando ${start}–${end} de ${total} ativos`
+      : 'Nenhum ativo carregado';
+  }
+  if (topAssetsPaginationStatus) {
+    topAssetsPaginationStatus.textContent = total ? `Página ${topAssetsState.page} de ${totalPages}` : 'Página 0 de 0';
+  }
+  if (topAssetsPrev) topAssetsPrev.disabled = topAssetsState.page <= 1 || !total;
+  if (topAssetsNext) topAssetsNext.disabled = topAssetsState.page >= totalPages || !total;
+}
+
+function renderTopAssetsList() {
+  if (!topAssetsList) return;
+  const assets = topAssetsState.items || [];
+  const total = assets.length;
+  if (!total) {
+    topAssetsList.innerHTML = '<p class="muted" style="padding:12px;">Nenhum ativo retornado para as corretoras selecionadas.</p>';
+    updateTopAssetsPagination(0);
+    return;
+  }
+  const startIndex = (topAssetsState.page - 1) * topAssetsState.perPage;
+  const visible = assets.slice(startIndex, startIndex + topAssetsState.perPage);
+  topAssetsList.innerHTML = visible
+    .map((asset) => {
+      const bestVolume = Number.isFinite(asset.bestVolume) ? `${formatVolume(asset.bestVolume)} USDT` : 'N/D';
+      const checked = topAssetsSelection.has(asset.symbol) ? 'checked' : '';
+      const volumes = Array.isArray(asset.volumes) ? asset.volumes : [];
+      const volumeBadges = volumes.length
+        ? volumes.map((item) => `<span class="volume-badge"><strong>${item.exchange}</strong><span class="asset-volume">${formatVolume(item.volume)} USDT</span></span>`).join('')
+        : '<span class="muted">Sem volumes reportados</span>';
+      return `<label class="top-assets-row">
+        <span><input type="checkbox" class="top-asset-option" value="${asset.symbol}" data-label="${asset.label || asset.symbol}" ${checked}></span>
+        <span class="asset-name">${asset.label || asset.symbol}</span>
+        <span><div class="volume-badges">${volumeBadges}</div></span>
+        <span class="asset-volume">${bestVolume}</span>
+      </label>`;
+    })
+    .join('');
+  topAssetsList.querySelectorAll('.top-asset-option').forEach((input) => {
+    input.addEventListener('change', () => {
+      const symbol = input.value;
+      if (!symbol) return;
+      if (input.checked) topAssetsSelection.add(symbol); else topAssetsSelection.delete(symbol);
+    });
+  });
+  updateTopAssetsPagination(total);
+}
+
+function normalizeMonitoringSymbolInput(value) {
+  const str = String(value || '').trim().toUpperCase();
+  if (!str) return null;
+  if (str.includes('-')) return str.replace(/-/g, '_');
+  if (str.includes('_')) return str;
+  if (str.endsWith('USDT')) {
+    const base = str.slice(0, -4);
+    return base ? `${base}_USDT` : null;
+  }
+  return str;
+}
+
+function applyMonitoringSymbols(list) {
+  const entries = Array.isArray(list) ? list : [];
+  monitoringMeta.clear();
+  entries.forEach((item) => {
+    const normalized = normalizeMonitoringSymbolInput(item?.symbol);
+    if (!normalized) return;
+    monitoringMeta.set(normalized, item?.meta || {});
+  });
+  if (!monitoringMeta.size) {
+    monitoringMeta.set('CPOOL_USDT', { name: 'Clearpool', risk: 'Baixo' });
+    monitoringMeta.set('MAT_USDT', { name: 'Mycelium', risk: 'Médio' });
+    monitoringMeta.set('FARM_USDT', { name: 'Harvest Finance', risk: 'Baixo' });
+  }
+  trackedMonitoringSymbols = Array.from(monitoringMeta.keys());
+  updateMonitoringSelectors();
+  renderMonitoringTable();
+}
+
+async function hydrateMonitoringSymbolsFromServer() {
+  try {
+    const resp = await fetch('/api/monitoring/symbols');
+    const data = await safeJson(resp);
+    if (resp.ok && Array.isArray(data?.symbols)) {
+      applyMonitoringSymbols(data.symbols);
+      return;
+    }
+  } catch (e) {
+    console.warn('[monitoring] fallback para símbolos locais', e?.message || e);
+  }
+  applyMonitoringSymbols(Array.from(monitoringMeta.entries()).map(([symbol, meta]) => ({ symbol, meta })));
+}
+
+async function persistMonitoringSymbol(symbol, meta = {}) {
+  const response = await fetch('/api/monitoring/symbols', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol, meta })
+  });
+  const data = await safeJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error || 'Falha ao salvar ativo');
+  }
+  applyMonitoringSymbols(data?.symbols || []);
+  return data;
+}
+
+async function removeMonitoringSymbol(symbol) {
+  const response = await fetch(`/api/monitoring/symbols/${encodeURIComponent(symbol)}`, {
+    method: 'DELETE'
+  });
+  const data = await safeJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error || 'Falha ao remover ativo');
+  }
+  applyMonitoringSymbols(data?.symbols || []);
+  return data;
+}
+
+async function discoverTopAssets() {
+  if (!requireAdmin()) return;
+  const selected = getSelectedTopExchanges();
+  const limitSelected = Number(topAssetsLimitSelect?.value);
+  if (Number.isFinite(limitSelected) && limitSelected > 0) {
+    topAssetsState.limit = limitSelected;
+  }
+  if (topAssetsStatus) {
+    topAssetsStatus.textContent = 'Buscando ativos com maior volume...';
+    topAssetsStatus.classList.remove('error');
+  }
+  const params = new URLSearchParams();
+  if (selected.length) params.set('exchanges', selected.join(','));
+  if (topAssetsState.limit) params.set('limit', topAssetsState.limit);
+  try {
+    const response = await fetch(`/api/monitoring/top-assets?${params.toString()}`);
+    if (!response.ok) throw new Error(`Falha ao buscar top 24h (${response.status})`);
+    const payload = await safeJson(response);
+    const assets = Array.isArray(payload?.assets) ? payload.assets : [];
+    topAssetsState.items = assets;
+    topAssetsState.page = 1;
+    if (Number.isFinite(payload?.limit)) {
+      topAssetsState.limit = Number(payload.limit);
+    }
+    topAssetsSelection.clear();
+    renderTopAssetsList();
+    if (topAssetsResults) topAssetsResults.classList.toggle('hidden', !assets.length);
+    if (topAssetsStatus) {
+      const errors = Array.isArray(payload?.errors) && payload.errors.length
+        ? ` — ${payload.errors.length} fontes indisponíveis`
+        : '';
+      topAssetsStatus.textContent = assets.length
+        ? `Encontrados ${assets.length} ativos elegíveis (limite ${topAssetsState.limit})${errors}`
+        : `Nenhum ativo retornado${errors}`;
+      topAssetsStatus.classList.remove('error');
+    }
+  } catch (err) {
+    if (topAssetsStatus) {
+      topAssetsStatus.textContent = err.message || 'Erro ao buscar ativos';
+      topAssetsStatus.classList.add('error');
+    }
+    if (topAssetsResults) topAssetsResults.classList.add('hidden');
+  }
+}
+
+function getSelectedDiscoveredAssets() {
+  return topAssetsState.items
+    .filter((asset) => topAssetsSelection.has(asset.symbol))
+    .map((asset) => ({ symbol: asset.symbol, label: asset.label || asset.symbol }));
+}
+
+if (adminAddCoinForm) {
+  adminAddCoinForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!requireAdmin()) return;
+    const symbolInput = document.getElementById('adminCoinSymbol');
+    if (!symbolInput) return;
+    const symbol = normalizeMonitoringSymbolInput(symbolInput.value);
+    const name = symbol;
+    if (!symbol) return;
+    const spotHint = getCheckedValues('.admin-spot-option');
+    const futuresHint = getCheckedValues('.admin-futures-option');
+    try {
+      await persistMonitoringSymbol(symbol, { name, risk: 'Médio', spotHint, futuresHint });
+      blacklist.delete(symbol);
+      symbolInput.value = '';
+      document.querySelectorAll('.admin-spot-option').forEach((input) => {
+        input.checked = input.value === 'Gate.io';
+      });
+      document.querySelectorAll('.admin-futures-option').forEach((input) => {
+        input.checked = input.value === 'Gate.io Futures';
+      });
+      loadMonitoringData({ focusSymbol: symbol, silent: true });
+      renderBlacklist();
+    } catch (e) {
+      if (adminLoginFeedback) {
+        adminLoginFeedback.textContent = e.message || 'Falha ao salvar ativo';
+        adminLoginFeedback.style.color = '#ff6b9a';
+      }
+    }
+  });
+}
+
+if (adminRemoveCoinForm) {
+  adminRemoveCoinForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!requireAdmin()) return;
+    const symbol = adminRemoveCoinSelect?.value;
+    if (!symbol) return;
+    try {
+      await removeMonitoringSymbol(symbol);
+      blacklist.delete(symbol);
+      purgeMonitoringHistoryCache(symbol);
+      monitoringRows = monitoringRows.filter((coin) => coin.symbol !== symbol);
+      renderMonitoringTable();
+      renderBlacklist();
+    } catch (e) {
+      if (adminLoginFeedback) {
+        adminLoginFeedback.textContent = e.message || 'Falha ao remover ativo';
+        adminLoginFeedback.style.color = '#ff6b9a';
+      }
+    }
+  });
+}
+
+if (blacklistForm) {
+  blacklistForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!requireAdmin()) return;
+    const symbol = (blacklistInput?.value || '').trim().toUpperCase();
+    if (!symbol) return;
+    blacklist.add(symbol);
+    if (blacklistInput) blacklistInput.value = '';
+    renderBlacklist();
+    renderMonitoringTable();
+  });
+}
+
+if (blacklistList) {
+  blacklistList.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-remove-symbol]');
+    if (!button) return;
+    if (!requireAdmin()) return;
+    const symbol = button.dataset.removeSymbol;
+    blacklist.delete(symbol);
+    renderBlacklist();
+    renderMonitoringTable();
+  });
+}
+
+if (discoverTopAssetsBtn) {
+  discoverTopAssetsBtn.addEventListener('click', discoverTopAssets);
+}
+
+if (topAssetsPageSizeSelect) {
+  const initial = Number(topAssetsPageSizeSelect.value);
+  if (Number.isFinite(initial) && initial > 0) {
+    topAssetsState.perPage = initial;
+  }
+  topAssetsPageSizeSelect.addEventListener('change', () => {
+    const next = Number(topAssetsPageSizeSelect.value);
+    if (!Number.isFinite(next) || next <= 0) return;
+    topAssetsState.perPage = next;
+    topAssetsState.page = 1;
+    renderTopAssetsList();
+  });
+}
+
+if (topAssetsLimitSelect) {
+  const initialLimit = Number(topAssetsLimitSelect.value);
+  if (Number.isFinite(initialLimit) && initialLimit > 0) {
+    topAssetsState.limit = initialLimit;
+  }
+  topAssetsLimitSelect.addEventListener('change', () => {
+    const nextLimit = Number(topAssetsLimitSelect.value);
+    if (Number.isFinite(nextLimit) && nextLimit > 0) {
+      topAssetsState.limit = nextLimit;
+    }
+  });
+}
+
+if (topAssetsPrev) {
+  topAssetsPrev.addEventListener('click', () => {
+    if (topAssetsState.page > 1) {
+      topAssetsState.page -= 1;
+      renderTopAssetsList();
+    }
+  });
+}
+
+if (topAssetsNext) {
+  topAssetsNext.addEventListener('click', () => {
+    const total = topAssetsState.items.length;
+    const totalPages = total ? Math.max(1, Math.ceil(total / topAssetsState.perPage)) : 1;
+    if (topAssetsState.page < totalPages) {
+      topAssetsState.page += 1;
+      renderTopAssetsList();
+    }
+  });
+}
+
+if (addSelectedTopAssetsBtn) {
+  addSelectedTopAssetsBtn.addEventListener('click', async () => {
+    if (!requireAdmin()) return;
+    const selected = getSelectedDiscoveredAssets();
+    if (!selected.length) {
+      if (topAssetsStatus) {
+        topAssetsStatus.textContent = 'Selecione ao menos um ativo da lista retornada.';
+        topAssetsStatus.classList.add('error');
+      }
+      return;
+    }
+    const added = [];
+    try {
+      for (const { symbol, label } of selected) {
+        const normalized = normalizeMonitoringSymbolInput(symbol);
+        if (!normalized) continue;
+        await persistMonitoringSymbol(normalized, { name: label || normalized, risk: 'Médio' });
+        blacklist.delete(normalized);
+        added.push(normalized);
+      }
+      renderBlacklist();
+      renderMonitoringTable();
+      if (added.length) {
+        loadMonitoringData({ focusSymbol: added[0], silent: true });
+        if (topAssetsStatus) {
+          topAssetsStatus.textContent = `Adicionados ${added.length} ativo(s) ao monitoramento.`;
+          topAssetsStatus.classList.remove('error');
+        }
+      }
+    } catch (e) {
+      if (topAssetsStatus) {
+        topAssetsStatus.textContent = e.message || 'Erro ao adicionar ativos';
+        topAssetsStatus.classList.add('error');
+      }
+    }
+  });
+}
+
+async function bootstrapMonitoring() {
+  await hydrateMonitoringSymbolsFromServer();
+  updateMonitoringSelectors();
+  renderMonitoringTable();
+  if (filterMinArbValueEl && filterMinArbEl) {
+    const value = Number(filterMinArbEl.value) || 0;
+    filterMinArbValueEl.textContent = `${value.toFixed(2)}%`;
+  }
+  renderBlacklist();
+  loadMonitoringData();
+  scheduleMonitoringAutoRefresh();
+}
+
+bootstrapMonitoring().catch((err) => console.error('Erro ao iniciar monitoramento', err));

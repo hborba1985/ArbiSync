@@ -21,6 +21,18 @@ const DEFAULT_RISK_TEST_QUOTE = (() => {
 const app = express();
 const PORT = 3000;
 
+const monitoringHttp = axios.create({
+  timeout: 9000,
+  headers: {
+    'User-Agent': 'ArbiSync-Monitor/1.0'
+  }
+});
+
+// Avoid spamming the console when a MEXC futures symbol lacks depth support
+const mexcFuturesDepthWarnings = new Set();
+// Skip repeated Gate futures history fetches for symbols that are not listed
+const gateFuturesHistoryUnavailable = new Set();
+
 const SPOT_EXCHANGES = {
   gate: { key: 'gate', label: 'Gate.io' },
   bitget: { key: 'bitget', label: 'Bitget' }
@@ -68,6 +80,18 @@ const SPREAD_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const autoMetaCache = new Map();
 const overridesBySymbol = new Map();
+const DEFAULT_MONITORING_SYMBOLS = [
+  { symbol: 'CPOOL_USDT', meta: { name: 'Clearpool', risk: 'Baixo', spotHint: ['Gate.io', 'Binance'], futuresHint: ['MEXC Futures', 'Gate.io Futures'] } },
+  { symbol: 'MAT_USDT', meta: { name: 'Mycelium', risk: 'Médio', spotHint: ['Gate.io', 'KuCoin'], futuresHint: ['Bybit', 'MEXC Futures'] } },
+  { symbol: 'FARM_USDT', meta: { name: 'Harvest Finance', risk: 'Baixo', spotHint: ['Gate.io', 'Binance'], futuresHint: ['MEXC Futures'] } }
+];
+const MONITORING_DEFAULT_SYMBOLS = DEFAULT_MONITORING_SYMBOLS.map((item) => item.symbol);
+const MONITORING_DEFAULT_LABELS = {
+  CPOOL_USDT: 'Clearpool',
+  MAT_USDT: 'Mycelium',
+  FARM_USDT: 'Harvest Finance'
+};
+let monitoringSymbolMeta = new Map();
 
 let orderHistory = [];
 
@@ -342,6 +366,21 @@ try {
 } catch (e) {
   console.warn('[SQLite] Falha ao carregar estado:', e?.message || e);
 }
+
+function hydrateMonitoringSymbols() {
+  try {
+    const stored = db.loadMonitoringSymbols();
+    if (stored && stored.length) {
+      monitoringSymbolMeta = new Map(stored.map((item) => [String(item.symbol).toUpperCase(), item.meta || {}]));
+      return;
+    }
+  } catch (e) {
+    console.warn('[SQLite] Falha ao carregar monitoring_symbols:', e?.message || e);
+  }
+  monitoringSymbolMeta = new Map(DEFAULT_MONITORING_SYMBOLS.map((item) => [item.symbol, item.meta]));
+}
+
+hydrateMonitoringSymbols();
 
 try {
   const savedPos = db.loadPositionState();
@@ -1740,8 +1779,10 @@ app.post('/api/symbol', async (req, res) => {
 
 // ===== /api/data — ask/bid de Gate e bid/ask de MEXC + diffs para open/close
 app.get('/api/data', async (req, res) => {
+  let requestedSymbol = null;
+  let debugSpotExchange = null;
   try {
-    const requestedSymbol = String(req.query.symbol || currentSymbol || '').toUpperCase();
+    requestedSymbol = String(req.query.symbol || currentSymbol || '').toUpperCase();
     if (!requestedSymbol) {
       return res.status(400).json({ error: 'Símbolo inválido.' });
     }
@@ -1752,6 +1793,7 @@ app.get('/api/data', async (req, res) => {
       ? normalizeSpotExchange(req.query.spotExchange)
       : (positionState?.spotExchange || currentSpotExchange);
     const spotInfo = getSpotInfo(requestedSpot);
+    debugSpotExchange = spotInfo.normalized;
     const { asks: spotAsksRaw, bids: spotBidsRaw } = await fetchSpotOrderBook(requestedSymbol, 5, spotInfo.normalized);
     const m = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${requestedSymbol}?limit=5`);
 
@@ -1931,7 +1973,11 @@ app.get('/api/data', async (req, res) => {
       close: { diff: closeLevels[0]?.diffPct ?? null, levels: closeLevels }
     });
   } catch (e) {
-    console.error('[ERRO /api/data]:', e.response?.data || e.message);
+    console.error(
+      '[ERRO /api/data]:',
+      requestedSymbol ? `${requestedSymbol} spot=${debugSpotExchange || 'desconhecido'}` : 'símbolo não definido',
+      describeAxiosError(e)
+    );
     res.status(500).json({ error: 'Erro ao obter dados.' });
   }
 });
@@ -3937,6 +3983,1319 @@ async function pollOpenOrders() {
 setInterval(() => {
   pollOpenOrders().catch(err => console.error('[POLL]', err));
 }, 4000);
+
+function normalizeMonitoringSymbol(value) {
+  if (!value && value !== 0) return null;
+  const str = String(value).trim().toUpperCase();
+  if (!str) return null;
+  if (str.includes('-')) return str.replace(/-/g, '_');
+  if (str.includes('_')) return str;
+  const match = str.match(/^([A-Z0-9]+)(USDT)$/);
+  if (match) return `${match[1]}_${match[2]}`;
+  return str;
+}
+
+function buildSymbolMeta(raw) {
+  const normalized = normalizeMonitoringSymbol(raw);
+  if (!normalized) return null;
+  const [base, quote] = normalized.split('_');
+  if (!base || !quote) return null;
+  const baseUpper = base.toUpperCase();
+  const quoteUpper = quote.toUpperCase();
+  const compact = `${baseUpper}${quoteUpper}`;
+  return {
+    symbol: `${baseUpper}_${quoteUpper}`,
+    base: baseUpper,
+    quote: quoteUpper,
+    compact,
+    dashed: `${baseUpper}-${quoteUpper}`,
+    gateSpot: `${baseUpper}_${quoteUpper}`,
+    gateFutures: `${baseUpper}_${quoteUpper}`,
+    mexcSpot: `${baseUpper}${quoteUpper}`,
+    mexcFutures: `${baseUpper}_${quoteUpper}`,
+    bitgetSpot: `${compact}_SPBL`,
+    bitgetFutures: `${compact}_UMCBL`,
+    kucoinFutures: `${compact}M`,
+    bybit: compact
+  };
+}
+
+function toNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function computeNotional(price, size) {
+  if (!Number.isFinite(price) || !Number.isFinite(size)) return null;
+  const notional = price * size;
+  return Number.isFinite(notional) ? notional : null;
+}
+
+function serializeMonitoringSymbols() {
+  return Array.from(monitoringSymbolMeta.entries()).map(([symbol, meta]) => ({
+    symbol,
+    meta: meta || {}
+  }));
+}
+
+function describeAxiosError(err) {
+  if (!err) return 'erro desconhecido';
+  if (err.response) {
+    const { status, statusText, data } = err.response;
+    const prefix = [status, statusText].filter(Boolean).join(' ').trim();
+    if (typeof data === 'string') {
+      return [prefix, data.slice(0, 160)].filter(Boolean).join(' — ');
+    }
+    if (data && typeof data === 'object') {
+      return [prefix, JSON.stringify(data).slice(0, 160)].filter(Boolean).join(' — ');
+    }
+    return prefix || err.message || 'erro HTTP';
+  }
+  return err.message || String(err);
+}
+
+const MONITORING_HISTORY_INTERVALS = {
+  '3m': {
+    label: '3 minutos',
+    minutes: 3,
+    gate: '3m',
+    mexc: '3m',
+    mexcFutures: 'Min1',
+    bitget: '3min',
+    bitgetFutures: '3m',
+    kucoin: '3min',
+    kucoinFutures: 3 * 60,
+    binance: '3m',
+    bybit: '3'
+  },
+  '5m': {
+    label: '5 minutos',
+    minutes: 5,
+    gate: '5m',
+    mexc: '5m',
+    mexcFutures: 'Min5',
+    bitget: '5min',
+    bitgetFutures: '5m',
+    kucoin: '5min',
+    kucoinFutures: 5 * 60,
+    binance: '5m',
+    bybit: '5'
+  },
+  '15m': {
+    label: '15 minutos',
+    minutes: 15,
+    gate: '15m',
+    mexc: '15m',
+    mexcFutures: 'Min15',
+    bitget: '15min',
+    bitgetFutures: '15m',
+    kucoin: '15min',
+    kucoinFutures: 15 * 60,
+    binance: '15m',
+    bybit: '15'
+  },
+  '30m': {
+    label: '30 minutos',
+    minutes: 30,
+    gate: '30m',
+    mexc: '30m',
+    mexcFutures: 'Min30',
+    bitget: '30min',
+    bitgetFutures: '30m',
+    kucoin: '30min',
+    kucoinFutures: 30 * 60,
+    binance: '30m',
+    bybit: '30'
+  },
+  '1h': {
+    label: '1 hora',
+    minutes: 60,
+    gate: '1h',
+    mexc: '1h',
+    mexcFutures: 'Min60',
+    bitget: '1hour',
+    bitgetFutures: '1h',
+    kucoin: '1hour',
+    kucoinFutures: 60 * 60,
+    binance: '1h',
+    bybit: '60'
+  },
+  '4h': {
+    label: '4 horas',
+    minutes: 240,
+    gate: '4h',
+    mexc: '4h',
+    mexcFutures: 'Hour4',
+    bitget: '4hour',
+    bitgetFutures: '4h',
+    kucoin: '4hour',
+    kucoinFutures: 240 * 60,
+    binance: '4h',
+    bybit: '240'
+  }
+};
+
+const MONITORING_HISTORY_DEFAULT_INTERVAL = '1h';
+
+function getHistoryIntervalConfig(key) {
+  return MONITORING_HISTORY_INTERVALS[key] || MONITORING_HISTORY_INTERVALS[MONITORING_HISTORY_DEFAULT_INTERVAL];
+}
+
+function computeHistoryLimit(intervalKey) {
+  const interval = getHistoryIntervalConfig(intervalKey);
+  const desired = Math.ceil((24 * 60) / interval.minutes);
+  return desired;
+}
+
+function computeHistoryWindow(intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey);
+  const seconds = interval.minutes * 60 * limit;
+  const end = Math.floor(Date.now() / 1000);
+  const start = Math.max(0, end - seconds);
+  return { start, end };
+}
+
+function toMsTimestamp(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  return num < 1e12 ? num * 1000 : num;
+}
+
+function normalizeHistoryPoint({ timestamp, open, close, volume }) {
+  const ts = toMsTimestamp(timestamp);
+  const o = toNumber(open);
+  const c = toNumber(close);
+  const v = toNumber(volume);
+  if (!Number.isFinite(ts) || !Number.isFinite(o) || !Number.isFinite(c)) return null;
+  return { timestamp: ts, open: o, close: c, volume: Number.isFinite(v) ? v : null };
+}
+
+function sortHistoryPoints(points) {
+  return points.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function aggregateHistoryPoints(points, size) {
+  if (!Array.isArray(points) || size <= 1) return points;
+  const aggregated = [];
+  const sorted = sortHistoryPoints(points.slice());
+  for (let i = 0; i < sorted.length; i += size) {
+    const chunk = sorted.slice(i, i + size);
+    if (!chunk.length) continue;
+    const first = chunk[0];
+    const last = chunk[chunk.length - 1];
+    aggregated.push({
+      timestamp: first.timestamp,
+      open: first.open,
+      close: last.close,
+      volume: chunk.reduce((sum, entry) => sum + (Number.isFinite(entry.volume) ? entry.volume : 0), 0)
+    });
+  }
+  return aggregated;
+}
+
+function bucketizeHistoryCandles(candles, bucketMs) {
+  const map = new Map();
+  for (const candle of candles) {
+    const bucket = Math.floor(candle.timestamp / bucketMs) * bucketMs;
+    if (!Number.isFinite(bucket)) continue;
+    map.set(bucket, candle);
+  }
+  return map;
+}
+
+function formatArbValue(value) {
+  if (!Number.isFinite(value)) return null;
+  return Number(value.toFixed(4));
+}
+
+function computeSpreadPct(sellPrice, buyPrice) {
+  const sell = toNumber(sellPrice);
+  const buy = toNumber(buyPrice);
+  if (!Number.isFinite(sell) || !Number.isFinite(buy) || buy <= 0) return null;
+  return ((sell - buy) / buy) * 100;
+}
+
+function computeMidArbValue(openValue, closeValue) {
+  const open = Number.isFinite(openValue) ? openValue : null;
+  const close = Number.isFinite(closeValue) ? closeValue : null;
+  if (open !== null && close !== null) {
+    return Number(((open + close) / 2).toFixed(4));
+  }
+  if (close !== null) return Number(close.toFixed(4));
+  if (open !== null) return Number(open.toFixed(4));
+  return null;
+}
+
+function listMonitoringSymbols() {
+  const symbols = Array.from(monitoringSymbolMeta.keys());
+  if (symbols.length) return symbols;
+  return MONITORING_DEFAULT_SYMBOLS;
+}
+
+function buildHistorySeries(spotCandles, futuresCandles, intervalMinutes) {
+  if (!spotCandles.length || !futuresCandles.length) return { points: [], stats: null };
+  const bucketMs = intervalMinutes * 60 * 1000;
+  const futuresMap = bucketizeHistoryCandles(futuresCandles, bucketMs);
+  const points = [];
+  const openValues = [];
+  const closeValues = [];
+  for (const spot of spotCandles) {
+    const bucket = Math.floor(spot.timestamp / bucketMs) * bucketMs;
+    const futures = futuresMap.get(bucket);
+    if (!futures) continue;
+    const openArb = computeSpreadPct(futures.open, spot.open);
+    const closeArb = computeSpreadPct(spot.close, futures.close);
+    if (!Number.isFinite(openArb) && !Number.isFinite(closeArb)) continue;
+    const openArbPct = formatArbValue(openArb);
+    const closeArbPct = formatArbValue(closeArb);
+    if (Number.isFinite(openArbPct)) openValues.push(openArbPct);
+    if (Number.isFinite(closeArbPct)) closeValues.push(closeArbPct);
+    points.push({
+      timestamp: bucket,
+      openArbPct,
+      closeArbPct,
+      midArbPct: computeMidArbValue(openArb, closeArb),
+      spotVolume: spot.volume,
+      futuresVolume: futures.volume
+    });
+  }
+  const sortedPoints = sortHistoryPoints(points);
+  const stats = !openValues.length && !closeValues.length
+    ? null
+    : {
+        open: openValues.length ? { min: Math.min(...openValues), max: Math.max(...openValues) } : null,
+        close: closeValues.length ? { min: Math.min(...closeValues), max: Math.max(...closeValues) } : null
+      };
+  return { points: sortedPoints, stats };
+}
+
+function limitHistoryPoints(points, limit) {
+  if (!Array.isArray(points)) return [];
+  const sorted = sortHistoryPoints(points);
+  if (!Number.isFinite(limit) || limit <= 0 || sorted.length <= limit) return sorted;
+  return sorted.slice(sorted.length - limit);
+}
+
+async function fetchGateSpotTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/spot/tickers', {
+    params: { currency_pair: meta.gateSpot }
+  });
+  const payload = Array.isArray(data) ? data[0] : data;
+  if (!payload) throw new Error('Resposta vazia');
+
+  let bid = toNumber(payload.highest_bid);
+  let ask = toNumber(payload.lowest_ask);
+  let bidSize = toNumber(payload.highest_bid_size);
+  let askSize = toNumber(payload.lowest_ask_size);
+
+  if (!Number.isFinite(bidSize) || bidSize <= 0 || !Number.isFinite(askSize) || askSize <= 0) {
+    try {
+      const depth = await monitoringHttp.get('https://api.gateio.ws/api/v4/spot/order_book', {
+        params: { currency_pair: meta.gateSpot, limit: 1 }
+      });
+      const bids = Array.isArray(depth?.data?.bids) ? depth.data.bids : [];
+      const asks = Array.isArray(depth?.data?.asks) ? depth.data.asks : [];
+      if (bids.length) {
+        bid = toNumber(bids[0][0]) ?? bid;
+        bidSize = toNumber(bids[0][1]) ?? bidSize;
+      }
+      if (asks.length) {
+        ask = toNumber(asks[0][0]) ?? ask;
+        askSize = toNumber(asks[0][1]) ?? askSize;
+      }
+    } catch (err) {
+      console.warn('[monitoring] gate spot depth fallback falhou', meta.gateSpot, err?.message || err);
+    }
+  }
+
+  return {
+    bid,
+    ask,
+    last: toNumber(payload.last),
+    volume: toNumber(payload.quote_volume ?? payload.base_volume),
+    bidSize,
+    askSize,
+    bidNotional: computeNotional(bid, bidSize),
+    askNotional: computeNotional(ask, askSize),
+    changePct: toNumber(payload.change_percentage)
+  };
+}
+
+async function fetchMexcSpotTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.mexc.com/api/v3/ticker/24hr', {
+    params: { symbol: meta.mexcSpot }
+  });
+  if (!data || data.code) throw new Error(data?.msg || 'Sem dados MEXC');
+  return {
+    bid: toNumber(data.bidPrice),
+    ask: toNumber(data.askPrice),
+    last: toNumber(data.lastPrice),
+    volume: toNumber(data.quoteVolume),
+    bidSize: toNumber(data.bidQty),
+    askSize: toNumber(data.askQty),
+    bidNotional: computeNotional(toNumber(data.bidPrice), toNumber(data.bidQty)),
+    askNotional: computeNotional(toNumber(data.askPrice), toNumber(data.askQty)),
+    changePct: toNumber(data.priceChangePercent)
+  };
+}
+
+async function fetchBitgetSpotTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/spot/v1/market/ticker', {
+    params: { symbol: meta.bitgetSpot }
+  });
+  if (!data || data.code !== '00000' || !data.data) {
+    throw new Error(data?.msg || 'Erro Bitget spot');
+  }
+  const payload = data.data;
+  return {
+    bid: toNumber(payload.buyOne),
+    ask: toNumber(payload.sellOne),
+    last: toNumber(payload.close),
+    volume: toNumber(payload.usdtVol ?? payload.quoteVol),
+    bidSize: toNumber(payload.bidSz),
+    askSize: toNumber(payload.askSz),
+    bidNotional: computeNotional(toNumber(payload.buyOne), toNumber(payload.bidSz)),
+    askNotional: computeNotional(toNumber(payload.sellOne), toNumber(payload.askSz)),
+    changePct: toNumber(payload.change ?? payload.changeUtc)
+  };
+}
+
+async function fetchKucoinSpotTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.kucoin.com/api/v1/market/stats', {
+    params: { symbol: meta.dashed }
+  });
+  if (!data || data.code !== '200000' || !data.data) {
+    throw new Error(data?.msg || 'Erro KuCoin spot');
+  }
+  const payload = data.data;
+  return {
+    bid: toNumber(payload.buy),
+    ask: toNumber(payload.sell),
+    last: toNumber(payload.last),
+    volume: toNumber(payload.volValue),
+    bidSize: toNumber(payload.buySize),
+    askSize: toNumber(payload.sellSize),
+    bidNotional: computeNotional(toNumber(payload.buy), toNumber(payload.buySize)),
+    askNotional: computeNotional(toNumber(payload.sell), toNumber(payload.sellSize)),
+    changePct: toNumber(payload.changeRate) ? toNumber(payload.changeRate) * 100 : null
+  };
+}
+
+async function fetchBinanceSpotTicker(meta) {
+  const { data } = await monitoringHttp.get('https://data-api.binance.vision/api/v3/ticker/24hr', {
+    params: { symbol: meta.compact }
+  });
+  if (data?.code && data?.code !== 200) throw new Error(data.msg || 'Erro Binance spot');
+  if (!data?.lastPrice) throw new Error('Ticker indisponível');
+  return {
+    bid: toNumber(data.bidPrice),
+    ask: toNumber(data.askPrice),
+    last: toNumber(data.lastPrice),
+    volume: toNumber(data.quoteVolume),
+    bidSize: toNumber(data.bidQty),
+    askSize: toNumber(data.askQty),
+    bidNotional: computeNotional(toNumber(data.bidPrice), toNumber(data.bidQty)),
+    askNotional: computeNotional(toNumber(data.askPrice), toNumber(data.askQty)),
+    changePct: toNumber(data.priceChangePercent)
+  };
+}
+
+async function fetchBybitSpotTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.bybit.com/v5/market/tickers', {
+    params: { category: 'spot', symbol: meta.bybit }
+  });
+  if (data?.retCode !== 0) throw new Error(data?.retMsg || 'Erro Bybit spot');
+  const first = data?.result?.list?.[0];
+  if (!first) throw new Error('Ticker não encontrado');
+  return {
+    bid: toNumber(first.bid1Price),
+    ask: toNumber(first.ask1Price),
+    last: toNumber(first.lastPrice),
+    volume: toNumber(first.turnover24h),
+    bidSize: toNumber(first.bid1Size),
+    askSize: toNumber(first.ask1Size),
+    bidNotional: computeNotional(toNumber(first.bid1Price), toNumber(first.bid1Size)),
+    askNotional: computeNotional(toNumber(first.ask1Price), toNumber(first.ask1Size)),
+    changePct: toNumber(first.price24hPcnt) ? toNumber(first.price24hPcnt) * 100 : null
+  };
+}
+
+async function fetchGateFuturesTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/tickers', {
+    params: { contract: meta.gateFutures }
+  });
+  const payload = Array.isArray(data) ? data[0] : data;
+  if (!payload) throw new Error('Resposta vazia');
+  let bid = toNumber(payload.highest_bid);
+  let ask = toNumber(payload.lowest_ask);
+  let bidSize = toNumber(payload.highest_bid_size);
+  let askSize = toNumber(payload.lowest_ask_size);
+
+  if (!Number.isFinite(bidSize) || bidSize <= 0 || !Number.isFinite(askSize) || askSize <= 0) {
+    try {
+      const depth = await monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/order_book', {
+        params: { contract: meta.gateFutures, limit: 1 }
+      });
+      const bids = Array.isArray(depth?.data?.bids) ? depth.data.bids : [];
+      const asks = Array.isArray(depth?.data?.asks) ? depth.data.asks : [];
+      if (bids.length) {
+        bid = toNumber(bids[0].p) ?? bid;
+        bidSize = toNumber(bids[0].s) ?? bidSize;
+      }
+      if (asks.length) {
+        ask = toNumber(asks[0].p) ?? ask;
+        askSize = toNumber(asks[0].s) ?? askSize;
+      }
+    } catch (err) {
+      console.warn('[monitoring] gate futures depth fallback falhou', meta.gateFutures, err?.message || err);
+    }
+  }
+  return {
+    bid,
+    ask,
+    last: toNumber(payload.last),
+    volume: toNumber(payload.volume_24h_quote ?? payload.volume_24h),
+    bidSize,
+    askSize,
+    bidNotional: computeNotional(bid, bidSize),
+    askNotional: computeNotional(ask, askSize),
+    fundingRate: toNumber(payload.funding_rate),
+    changePct: toNumber(payload.change_percentage)
+  };
+}
+
+async function fetchMexcFuturesTicker(meta) {
+  const { data } = await monitoringHttp.get('https://contract.mexc.com/api/v1/contract/ticker', {
+    params: { symbol: meta.mexcFutures }
+  });
+  if (!data || data.code !== 0 || !data.data) throw new Error(data?.msg || 'Erro MEXC futures');
+  const payload = data.data;
+
+  let contractSize = 1;
+  try {
+    const mergedMeta = await getMergedMeta(meta.symbol);
+    contractSize = Number(mergedMeta?.mexc?.contractSize) || 1;
+  } catch (err) {
+    console.warn('[monitoring] falha ao obter contractSize MEXC', meta.symbol, err?.message || err);
+  }
+  const toBaseSize = (contracts) => {
+    const num = toNumber(contracts);
+    return Number.isFinite(num) && num > 0 ? num * contractSize : null;
+  };
+
+  let bid = toNumber(payload.bid1);
+  let ask = toNumber(payload.ask1);
+  let bidSize = toBaseSize(payload.bid1Size ?? payload.bidVol);
+  let askSize = toBaseSize(payload.ask1Size ?? payload.askVol);
+
+  let depthBids = [];
+  let depthAsks = [];
+  try {
+    const depthResp = await monitoringHttp.get(`https://contract.mexc.com/api/v1/contract/depth/${meta.mexcFutures}`, {
+      params: { limit: 5 }
+    });
+    const depthPayload = depthResp?.data?.data || depthResp?.data || {};
+    depthBids = Array.isArray(depthPayload?.bids) ? depthPayload.bids : [];
+    depthAsks = Array.isArray(depthPayload?.asks) ? depthPayload.asks : [];
+  } catch (err) {
+    const status = err?.response?.status;
+    const reason = err?.message || err;
+    if (status === 404) {
+      if (!mexcFuturesDepthWarnings.has(meta.mexcFutures)) {
+        mexcFuturesDepthWarnings.add(meta.mexcFutures);
+        console.info('[monitoring] mexc futures depth indisponível (404)', meta.mexcFutures);
+      }
+    } else {
+      console.warn('[monitoring] mexc futures depth fallback falhou', meta.mexcFutures, 'status=', status || 'n/a', 'reason=', reason);
+    }
+  }
+
+  const applyDepthSize = (entry, setter) => {
+    if (!entry) return;
+    const price = toNumber(entry.price ?? entry[0]);
+    const contracts = toNumber(entry.vol ?? entry.amount ?? entry[1]);
+    const baseSize = toBaseSize(contracts);
+    if (Number.isFinite(price)) setter('price', price);
+    if (Number.isFinite(baseSize) && baseSize > 0) setter('size', baseSize);
+  };
+
+  applyDepthSize(depthBids[0], (field, value) => {
+    if (field === 'price') bid = value ?? bid;
+    if (field === 'size') bidSize = value;
+  });
+  applyDepthSize(depthAsks[0], (field, value) => {
+    if (field === 'price') ask = value ?? ask;
+    if (field === 'size') askSize = value;
+  });
+
+  return {
+    bid,
+    ask,
+    last: toNumber(payload.lastPrice),
+    volume: toNumber(payload.turnover24 ?? payload.amount24 ?? payload.volume),
+    bidSize,
+    askSize,
+    bidNotional: computeNotional(bid, bidSize),
+    askNotional: computeNotional(ask, askSize),
+    fundingRate: toNumber(payload.fundingRate),
+    changePct: toNumber(payload.riseFallRate) ? toNumber(payload.riseFallRate) * 100 : null
+  };
+}
+
+async function fetchBitgetFuturesTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/mix/v1/market/ticker', {
+    params: { symbol: meta.bitgetFutures }
+  });
+  if (!data || data.code !== '00000' || !data.data) {
+    throw new Error(data?.msg || 'Erro Bitget futures');
+  }
+  const payload = data.data;
+  return {
+    bid: toNumber(payload.bestBid),
+    ask: toNumber(payload.bestAsk),
+    last: toNumber(payload.last),
+    volume: toNumber(payload.quoteVolume ?? payload.usdtVolume),
+    bidSize: toNumber(payload.bestBidSize ?? payload.bidSz),
+    askSize: toNumber(payload.bestAskSize ?? payload.askSz),
+    bidNotional: computeNotional(toNumber(payload.bestBid), toNumber(payload.bestBidSize ?? payload.bidSz)),
+    askNotional: computeNotional(toNumber(payload.bestAsk), toNumber(payload.bestAskSize ?? payload.askSz)),
+    fundingRate: toNumber(payload.fundingRate),
+    changePct: toNumber(payload.priceChangePercent)
+  };
+}
+
+async function fetchKucoinFuturesTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api-futures.kucoin.com/api/v1/ticker', {
+    params: { symbol: meta.kucoinFutures }
+  });
+  if (!data || data.code !== '200000' || !data.data) {
+    throw new Error(data?.msg || 'Erro KuCoin futures');
+  }
+  const payload = data.data;
+  const contract = await getKucoinFuturesContract(meta.kucoinFutures);
+  const contractVolume = toNumber(contract?.turnoverOf24h ?? contract?.turnover ?? contract?.turnoverValue);
+  return {
+    bid: toNumber(payload.bestBidPrice),
+    ask: toNumber(payload.bestAskPrice),
+    last: toNumber(payload.price),
+    volume: Number.isFinite(contractVolume) ? contractVolume : toNumber(payload.turnover),
+    bidSize: toNumber(payload.bestBidSize),
+    askSize: toNumber(payload.bestAskSize),
+    bidNotional: computeNotional(toNumber(payload.bestBidPrice), toNumber(payload.bestBidSize)),
+    askNotional: computeNotional(toNumber(payload.bestAskPrice), toNumber(payload.bestAskSize)),
+    fundingRate: toNumber(payload.fundingRate),
+    changePct: toNumber(payload.changeRate) ? toNumber(payload.changeRate) * 100 : null
+  };
+}
+
+const KUCOIN_FUTURES_CACHE_MS = 30_000;
+let kucoinFuturesContractCache = { ts: 0, data: [] };
+
+async function loadKucoinFuturesContracts(force = false) {
+  const now = Date.now();
+  if (!force && kucoinFuturesContractCache.data.length && now - kucoinFuturesContractCache.ts < KUCOIN_FUTURES_CACHE_MS) {
+    return kucoinFuturesContractCache.data;
+  }
+  try {
+    const { data } = await monitoringHttp.get('https://api-futures.kucoin.com/api/v1/contracts/active');
+    const list = Array.isArray(data?.data) ? data.data : [];
+    kucoinFuturesContractCache = { ts: now, data: list };
+    return list;
+  } catch (err) {
+    return kucoinFuturesContractCache.data;
+  }
+}
+
+async function getKucoinFuturesContract(symbol) {
+  const list = await loadKucoinFuturesContracts();
+  return list.find((item) => item.symbol === symbol);
+}
+
+async function fetchBinanceFuturesTicker(meta) {
+  const { data } = await monitoringHttp.get('https://fapi.binance.com/fapi/v1/ticker/24hr', {
+    params: { symbol: meta.compact }
+  });
+  if (data?.code && data?.code !== 200) throw new Error(data.msg || 'Erro Binance futures');
+  if (!data?.lastPrice) throw new Error('Ticker indisponível');
+  return {
+    bid: toNumber(data.bidPrice),
+    ask: toNumber(data.askPrice),
+    last: toNumber(data.lastPrice),
+    volume: toNumber(data.quoteVolume),
+    bidSize: toNumber(data.bidQty),
+    askSize: toNumber(data.askQty),
+    bidNotional: computeNotional(toNumber(data.bidPrice), toNumber(data.bidQty)),
+    askNotional: computeNotional(toNumber(data.askPrice), toNumber(data.askQty)),
+    fundingRate: null,
+    changePct: toNumber(data.priceChangePercent)
+  };
+}
+
+async function fetchBybitFuturesTicker(meta) {
+  const { data } = await monitoringHttp.get('https://api.bybit.com/v5/market/tickers', {
+    params: { category: 'linear', symbol: meta.bybit }
+  });
+  if (data?.retCode !== 0) throw new Error(data?.retMsg || 'Erro Bybit futures');
+  const payload = data?.result?.list?.[0];
+  if (!payload) throw new Error('Ticker não encontrado');
+  return {
+    bid: toNumber(payload.bid1Price),
+    ask: toNumber(payload.ask1Price),
+    last: toNumber(payload.lastPrice),
+    volume: toNumber(payload.turnover24h),
+    bidSize: toNumber(payload.bid1Size),
+    askSize: toNumber(payload.ask1Size),
+    bidNotional: computeNotional(toNumber(payload.bid1Price), toNumber(payload.bid1Size)),
+    askNotional: computeNotional(toNumber(payload.ask1Price), toNumber(payload.ask1Size)),
+    fundingRate: toNumber(payload.fundingRate),
+    changePct: toNumber(payload.price24hPcnt) ? toNumber(payload.price24hPcnt) * 100 : null
+  };
+}
+
+async function fetchGateSpotHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).gate;
+  const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/spot/candlesticks', {
+    params: { currency_pair: meta.gateSpot, interval, limit }
+  });
+  const rows = Array.isArray(data) ? data : [];
+  const points = rows.map((row) => normalizeHistoryPoint({
+    timestamp: row?.[0],
+    open: row?.[5],
+    close: row?.[2],
+    volume: row?.[6] ?? row?.[1]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchGateFuturesHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).gate;
+  const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/candlesticks', {
+    params: { contract: meta.gateFutures, interval, limit }
+  });
+  const rows = Array.isArray(data) ? data : [];
+  const points = rows.map((row) => {
+    if (Array.isArray(row)) {
+      return normalizeHistoryPoint({ timestamp: row?.[0], open: row?.[5], close: row?.[2], volume: row?.[6] ?? row?.[1] });
+    }
+    return normalizeHistoryPoint({ timestamp: row?.t ?? row?.time, open: row?.o, close: row?.c, volume: row?.sum ?? row?.v });
+  }).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchMexcSpotHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).mexc;
+  const { data } = await monitoringHttp.get('https://api.mexc.com/api/v3/klines', {
+    params: { symbol: meta.mexcSpot, interval, limit }
+  });
+  if (!Array.isArray(data)) return [];
+  const points = data.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[4],
+    volume: entry?.[7] ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchMexcFuturesHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).mexcFutures;
+  const aggregateSize = intervalKey === '3m' ? 3 : 1;
+  const { data } = await monitoringHttp.get(`https://contract.mexc.com/api/v1/contract/kline/${meta.mexcFutures}`, {
+    params: { interval }
+  });
+  if (!data || data.code !== 0 || !data.data) return [];
+  const payload = data.data;
+  const times = Array.isArray(payload.time) ? payload.time : [];
+  const opens = Array.isArray(payload.open) ? payload.open : [];
+  const closes = Array.isArray(payload.close) ? payload.close : [];
+  const volumes = Array.isArray(payload.vol) ? payload.vol : payload.amount;
+  const startIndex = Math.max(0, times.length - limit);
+  const points = [];
+  for (let i = startIndex; i < times.length; i += 1) {
+    const point = normalizeHistoryPoint({
+      timestamp: times[i],
+      open: opens[i],
+      close: closes[i],
+      volume: volumes?.[i]
+    });
+    if (point) points.push(point);
+  }
+  const sortedPoints = sortHistoryPoints(points);
+  const aggregated = aggregateSize > 1 ? aggregateHistoryPoints(sortedPoints, aggregateSize) : sortedPoints;
+  return limitHistoryPoints(aggregated, limit);
+}
+
+async function fetchBitgetSpotHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).bitget;
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/spot/v1/market/candles', {
+    params: { symbol: meta.bitgetSpot, period: interval, limit }
+  });
+  if (!data || data.code !== '00000' || !Array.isArray(data.data)) return [];
+  const points = data.data.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.ts ?? entry?.[0],
+    open: entry?.open ?? entry?.[1],
+    close: entry?.close ?? entry?.[4],
+    volume: entry?.quoteVol ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchBitgetFuturesHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).bitgetFutures;
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/mix/market/candles', {
+    params: {
+      productType: 'umcbl',
+      symbol: `${meta.base}${meta.quote}`,
+      granularity: interval,
+      limit
+    }
+  });
+  if (!data || data.code !== '00000' || !Array.isArray(data.data)) return [];
+  const points = data.data.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[4],
+    volume: entry?.[6]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchKucoinSpotHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).kucoin;
+  const { start, end } = computeHistoryWindow(intervalKey, limit);
+  const { data } = await monitoringHttp.get('https://api.kucoin.com/api/v1/market/candles', {
+    params: { symbol: meta.dashed, type: interval, startAt: start, endAt: end }
+  });
+  if (!data || data.code !== '200000' || !Array.isArray(data.data)) return [];
+  const points = data.data.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[2],
+    volume: entry?.[6] ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchKucoinFuturesHistory(meta, intervalKey, limit) {
+  const granularity = getHistoryIntervalConfig(intervalKey).kucoinFutures;
+  const { start, end } = computeHistoryWindow(intervalKey, limit);
+  const { data } = await monitoringHttp.get('https://api-futures.kucoin.com/api/v1/kline/query', {
+    params: { symbol: meta.kucoinFutures, granularity, from: start, to: end }
+  });
+  if (!data || data.code !== '200000' || !Array.isArray(data.data)) return [];
+  const points = data.data.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[2],
+    volume: entry?.[6] ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchBinanceSpotHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).binance;
+  const { data } = await monitoringHttp.get('https://data-api.binance.vision/api/v3/klines', {
+    params: { symbol: meta.compact, interval, limit }
+  });
+  if (!Array.isArray(data)) return [];
+  const points = data.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[4],
+    volume: entry?.[7] ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchBinanceFuturesHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).binance;
+  const { data } = await monitoringHttp.get('https://fapi.binance.com/fapi/v1/klines', {
+    params: { symbol: meta.compact, interval, limit }
+  });
+  if (!Array.isArray(data)) return [];
+  const points = data.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[4],
+    volume: entry?.[7] ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchBybitSpotHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).bybit;
+  const { data } = await monitoringHttp.get('https://api.bybit.com/v5/market/kline', {
+    params: { category: 'spot', symbol: meta.bybit, interval, limit }
+  });
+  if (data?.retCode !== 0 || !Array.isArray(data?.result?.list)) return [];
+  const points = data.result.list.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[4],
+    volume: entry?.[6] ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+async function fetchBybitFuturesHistory(meta, intervalKey, limit) {
+  const interval = getHistoryIntervalConfig(intervalKey).bybit;
+  const { data } = await monitoringHttp.get('https://api.bybit.com/v5/market/kline', {
+    params: { category: 'linear', symbol: meta.bybit, interval, limit }
+  });
+  if (data?.retCode !== 0 || !Array.isArray(data?.result?.list)) return [];
+  const points = data.result.list.map((entry) => normalizeHistoryPoint({
+    timestamp: entry?.[0],
+    open: entry?.[1],
+    close: entry?.[4],
+    volume: entry?.[6] ?? entry?.[5]
+  })).filter(Boolean);
+  return limitHistoryPoints(points, limit);
+}
+
+const monitoringSpotProviders = [
+  { key: 'gate_spot', label: 'Gate.io', type: 'spot', fetch: fetchGateSpotTicker, history: fetchGateSpotHistory },
+  { key: 'mexc_spot', label: 'MEXC', type: 'spot', fetch: fetchMexcSpotTicker, history: fetchMexcSpotHistory },
+  { key: 'bitget_spot', label: 'Bitget', type: 'spot', fetch: fetchBitgetSpotTicker, history: fetchBitgetSpotHistory },
+  { key: 'kucoin_spot', label: 'KuCoin', type: 'spot', fetch: fetchKucoinSpotTicker, history: fetchKucoinSpotHistory },
+  { key: 'binance_spot', label: 'Binance', type: 'spot', fetch: fetchBinanceSpotTicker, history: fetchBinanceSpotHistory },
+  { key: 'bybit_spot', label: 'Bybit', type: 'spot', fetch: fetchBybitSpotTicker, history: fetchBybitSpotHistory }
+];
+
+const monitoringFuturesProviders = [
+  { key: 'gate_futures', label: 'Gate.io Futures', type: 'futures', fetch: fetchGateFuturesTicker, history: fetchGateFuturesHistory },
+  { key: 'mexc_futures', label: 'MEXC Futures', type: 'futures', fetch: fetchMexcFuturesTicker, history: fetchMexcFuturesHistory },
+  { key: 'bitget_futures', label: 'Bitget Futures', type: 'futures', fetch: fetchBitgetFuturesTicker, history: fetchBitgetFuturesHistory },
+  { key: 'kucoin_futures', label: 'KuCoin Futures', type: 'futures', fetch: fetchKucoinFuturesTicker, history: fetchKucoinFuturesHistory },
+  { key: 'binance_futures', label: 'Binance Futures', type: 'futures', fetch: fetchBinanceFuturesTicker, history: fetchBinanceFuturesHistory },
+  { key: 'bybit_futures', label: 'Bybit Futures', type: 'futures', fetch: fetchBybitFuturesTicker, history: fetchBybitFuturesHistory }
+];
+
+function findSpotProvider(key) {
+  return monitoringSpotProviders.find((provider) => provider.key === key);
+}
+
+function findFuturesProvider(key) {
+  return monitoringFuturesProviders.find((provider) => provider.key === key);
+}
+
+async function fetchGateTopSpotAssets() {
+  const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/spot/tickers');
+  return (Array.isArray(data) ? data : [])
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.currency_pair), volume: toNumber(item.quote_volume ?? item.base_volume) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchGateTopFuturesAssets() {
+  const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/tickers');
+  return (Array.isArray(data) ? data : [])
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.contract), volume: toNumber(item.volume_usd ?? item.volume_quote ?? item.volume) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchMexcTopSpotAssets() {
+  const { data } = await monitoringHttp.get('https://api.mexc.com/api/v3/ticker/24hr');
+  return (Array.isArray(data) ? data : [])
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.quoteVolume ?? item.volume) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchMexcTopFuturesAssets() {
+  const { data } = await monitoringHttp.get('https://contract.mexc.com/api/v1/contract/ticker');
+  const list = Array.isArray(data?.data) ? data.data : [];
+  return list
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.amount24 ?? item.volume) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchBitgetTopSpotAssets() {
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/spot/v1/market/tickers');
+  const list = Array.isArray(data?.data) ? data.data : [];
+  return list
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.usdtVolume ?? item.quoteVolume ?? item.baseVolume) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchBitgetTopFuturesAssets() {
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/mix/v1/market/tickers', { params: { productType: 'umcbl' } });
+  const list = Array.isArray(data?.data) ? data.data : [];
+  return list
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.usdtVolume ?? item.quoteVolume) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchKucoinTopSpotAssets() {
+  const { data } = await monitoringHttp.get('https://api.kucoin.com/api/v1/market/allTickers');
+  const list = Array.isArray(data?.data?.ticker) ? data.data.ticker : [];
+  return list
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.volValue || item.vol) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchKucoinTopFuturesAssets() {
+  const list = await loadKucoinFuturesContracts();
+  return list
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.turnoverOf24h ?? item.turnoverValue ?? item.turnover) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchBinanceTopSpotAssets() {
+  const { data } = await monitoringHttp.get('https://data-api.binance.vision/api/v3/ticker/24hr');
+  return (Array.isArray(data) ? data : [])
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.quoteVolume ?? item.volume) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchBinanceTopFuturesAssets() {
+  const { data } = await monitoringHttp.get('https://fapi.binance.com/fapi/v1/ticker/24hr');
+  return (Array.isArray(data) ? data : [])
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.quoteVolume ?? item.volume) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchBybitTopSpotAssets() {
+  const { data } = await monitoringHttp.get('https://api.bybit.com/v5/market/tickers', { params: { category: 'spot' } });
+  const list = Array.isArray(data?.result?.list) ? data.result.list : [];
+  return list
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.qv ?? item.qv24h ?? item.volume) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+async function fetchBybitTopFuturesAssets() {
+  const { data } = await monitoringHttp.get('https://api.bybit.com/v5/market/tickers', { params: { category: 'linear' } });
+  const list = Array.isArray(data?.result?.list) ? data.result.list : [];
+  return list
+    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.turnover24h ?? item.turnover ?? item.volume) }))
+    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+}
+
+const TOP_ASSET_LIMIT = 60;
+const TOP_ASSET_LIMIT_MAX = 200;
+const topAssetProviders = [
+  { key: 'gate_spot', label: 'Gate.io Spot', type: 'spot', list: fetchGateTopSpotAssets },
+  { key: 'mexc_spot', label: 'MEXC Spot', type: 'spot', list: fetchMexcTopSpotAssets },
+  { key: 'bitget_spot', label: 'Bitget Spot', type: 'spot', list: fetchBitgetTopSpotAssets },
+  { key: 'kucoin_spot', label: 'KuCoin Spot', type: 'spot', list: fetchKucoinTopSpotAssets },
+  { key: 'binance_spot', label: 'Binance Spot', type: 'spot', list: fetchBinanceTopSpotAssets },
+  { key: 'bybit_spot', label: 'Bybit Spot', type: 'spot', list: fetchBybitTopSpotAssets },
+  { key: 'gate_futures', label: 'Gate.io Futures', type: 'futures', list: fetchGateTopFuturesAssets },
+  { key: 'mexc_futures', label: 'MEXC Futures', type: 'futures', list: fetchMexcTopFuturesAssets },
+  { key: 'bitget_futures', label: 'Bitget Futures', type: 'futures', list: fetchBitgetTopFuturesAssets },
+  { key: 'kucoin_futures', label: 'KuCoin Futures', type: 'futures', list: fetchKucoinTopFuturesAssets },
+  { key: 'binance_futures', label: 'Binance Futures', type: 'futures', list: fetchBinanceTopFuturesAssets },
+  { key: 'bybit_futures', label: 'Bybit Futures', type: 'futures', list: fetchBybitTopFuturesAssets }
+];
+
+function findTopAssetProvider(key) {
+  return topAssetProviders.find((provider) => provider.key === key);
+}
+
+async function collectTopAssets(provider) {
+  try {
+    const assets = await provider.list();
+    return { provider, assets, error: null };
+  } catch (err) {
+    return { provider, assets: [], error: describeAxiosError(err) };
+  }
+}
+
+async function buildTopAssetsResponse(selectedKeys, limitInput) {
+  const safeLimit = (() => {
+    const raw = Number(limitInput);
+    if (!Number.isFinite(raw) || raw <= 0) return TOP_ASSET_LIMIT;
+    return Math.min(Math.max(5, Math.round(raw)), TOP_ASSET_LIMIT_MAX);
+  })();
+  const providers = selectedKeys?.length
+    ? selectedKeys.map((key) => findTopAssetProvider(key)).filter(Boolean)
+    : topAssetProviders;
+  if (!providers.length) return { assets: [], errors: [] };
+  const responses = await Promise.all(providers.map((provider) => collectTopAssets(provider)));
+  const merged = new Map();
+  for (const { provider, assets } of responses) {
+    for (const asset of assets) {
+      const meta = buildSymbolMeta(asset.symbol);
+      if (!meta || !meta.quote || meta.quote !== 'USDT') continue;
+      const current = merged.get(meta.symbol) || {
+        symbol: meta.symbol,
+        label: MONITORING_DEFAULT_LABELS?.[meta.symbol] || meta.symbol,
+        exchanges: new Set(),
+        volumes: [],
+        bestVolume: 0
+      };
+      current.exchanges.add(provider.label);
+      if (Number.isFinite(asset.volume)) {
+        current.volumes.push({ exchange: provider.label, volume: asset.volume });
+        current.bestVolume = Math.max(current.bestVolume, asset.volume);
+      }
+      merged.set(meta.symbol, current);
+    }
+  }
+  const assets = Array.from(merged.values())
+    .map((item) => ({
+      ...item,
+      exchanges: Array.from(item.exchanges).sort(),
+      volumes: item.volumes.sort((a, b) => (b.volume || 0) - (a.volume || 0))
+    }))
+    .sort((a, b) => (b.bestVolume || 0) - (a.bestVolume || 0))
+    .slice(0, safeLimit);
+  const errors = responses.filter((entry) => entry.error).map((entry) => ({
+    provider: entry.provider?.label || entry.provider?.key,
+    error: entry.error
+  }));
+  return { assets, errors, exchanges: providers.map((p) => p.key), limit: safeLimit };
+}
+
+async function fetchHistoryDataset(provider, meta, intervalKey, limit) {
+  if (!provider || typeof provider.history !== 'function') {
+    return { candles: [], error: 'Histórico não disponível para esta corretora' };
+  }
+  try {
+    const candles = await provider.history(meta, intervalKey, limit);
+    return { candles, error: null };
+  } catch (err) {
+    const human = describeAxiosError(err);
+    console.warn(
+      `[monitoring] histórico ${provider.key} falhou`,
+      `${meta.symbol} (intervalo=${intervalKey}, candles=${limit}) —`,
+      human
+    );
+    return { candles: [], error: human };
+  }
+}
+
+async function fetchMonitoringTicker(provider, meta) {
+  try {
+    const payload = await provider.fetch(meta);
+    return { key: provider.key, exchange: provider.label, type: provider.type, symbol: meta.symbol, ...payload };
+  } catch (err) {
+    return {
+      key: provider.key,
+      exchange: provider.label,
+      type: provider.type,
+      symbol: meta.symbol,
+      error: describeAxiosError(err)
+    };
+  }
+}
+
+function pickBestSpot(tickers) {
+  return tickers
+    .filter((ticker) => !ticker.error && Number.isFinite(ticker.ask) && ticker.ask > 0)
+    .reduce((best, ticker) => (!best || ticker.ask < best.ask ? ticker : best), null);
+}
+
+function pickBestFutures(tickers) {
+  return tickers
+    .filter((ticker) => !ticker.error && Number.isFinite(ticker.bid))
+    .reduce((best, ticker) => (!best || ticker.bid > best.bid ? ticker : best), null);
+}
+
+function buildMonitoringMetrics(spotTickers, futuresTickers, historyPoints) {
+  const bestSpot = pickBestSpot(spotTickers);
+  const bestFutures = pickBestFutures(futuresTickers);
+  let arbPct = null;
+  if (bestSpot && bestFutures && bestSpot.ask > 0) {
+    arbPct = ((bestFutures.bid - bestSpot.ask) / bestSpot.ask) * 100;
+  }
+  const volume24h = spotTickers.reduce((acc, ticker) => acc + (Number.isFinite(ticker.volume) ? ticker.volume : 0), 0);
+  const fundingRates = futuresTickers
+    .map((ticker) => ticker.fundingRate)
+    .filter((value) => Number.isFinite(value));
+  const fundingRate = fundingRates.length ? fundingRates.reduce((sum, value) => sum + value, 0) / fundingRates.length : null;
+  const arbValues = historyPoints.map((point) => toNumber(point.arbPct)).filter((value) => Number.isFinite(value));
+  const volatilityPct = arbValues.length ? Math.max(...arbValues) - Math.min(...arbValues) : null;
+  const stability = Number.isFinite(volatilityPct) ? (volatilityPct > 6 ? 'Volátil' : 'Estável') : 'Indefinido';
+  let riskLabel = 'Indefinido';
+  if (Number.isFinite(volatilityPct)) {
+    if (volatilityPct > 10) riskLabel = 'Alto';
+    else if (volatilityPct > 5) riskLabel = 'Médio';
+    else riskLabel = 'Baixo';
+  }
+  const depthLabel = volume24h >= 1_000_000 ? 'Alta' : volume24h >= 300_000 ? 'Média' : 'Baixa';
+  return {
+    arbPct,
+    bestSpotExchange: bestSpot?.exchange || null,
+    bestFuturesExchange: bestFutures?.exchange || null,
+    volume24h,
+    depthLabel,
+    fundingRate,
+    volatilityPct,
+    stability,
+    riskLabel
+  };
+}
+
+async function fetchArbHistory(meta) {
+  if (gateFuturesHistoryUnavailable.has(meta.symbol)) {
+    return [];
+  }
+  try {
+    const [spotResp, futuresResp] = await Promise.all([
+      monitoringHttp.get('https://api.gateio.ws/api/v4/spot/candlesticks', {
+        params: { currency_pair: meta.gateSpot, interval: '1h', limit: 24 }
+      }),
+      monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/candlesticks', {
+        params: { contract: meta.gateFutures, interval: '1h', limit: 24 }
+      })
+    ]);
+    const spotCandles = Array.isArray(spotResp.data) ? spotResp.data : [];
+    const futuresCandles = Array.isArray(futuresResp.data) ? futuresResp.data : [];
+    const futuresByTs = new Map();
+    for (const candle of futuresCandles) {
+      const ts = Number(candle?.t);
+      if (Number.isFinite(ts)) futuresByTs.set(ts, candle);
+    }
+    const points = [];
+    for (const entry of spotCandles) {
+      const ts = Number(entry?.[0]);
+      if (!Number.isFinite(ts)) continue;
+      const futuresEntry = futuresByTs.get(ts);
+      if (!futuresEntry) continue;
+      const spotOpen = toNumber(entry?.[5]);
+      const spotClose = toNumber(entry?.[2]);
+      const futuresOpen = toNumber(futuresEntry?.o);
+      const futuresClose = toNumber(futuresEntry?.c);
+      const openArbRaw = computeSpreadPct(futuresOpen, spotOpen);
+      const closeArbRaw = computeSpreadPct(spotClose, futuresClose);
+      if (!Number.isFinite(openArbRaw) && !Number.isFinite(closeArbRaw)) continue;
+      const openArbPct = formatArbValue(openArbRaw);
+      const closeArbPct = formatArbValue(closeArbRaw);
+      points.push({
+        timestamp: ts * 1000,
+        arbPct: computeMidArbValue(openArbRaw, closeArbRaw),
+        openArbPct,
+        closeArbPct,
+        spotVolume: toNumber(entry?.[6] ?? entry?.[1]),
+        futuresVolume: toNumber(futuresEntry?.sum ?? futuresEntry?.v)
+      });
+    }
+    points.sort((a, b) => a.timestamp - b.timestamp);
+    return points;
+  } catch (err) {
+    const reason = describeAxiosError(err);
+    if (reason?.includes('CONTRACT_NOT_FOUND')) {
+      gateFuturesHistoryUnavailable.add(meta.symbol);
+    }
+    console.warn(
+      '[monitoring] histórico indisponível',
+      `${meta.symbol} (Gate spot=${meta.gateSpot}, futures=${meta.gateFutures}, intervalo=1h, candles=24)`,
+      reason
+    );
+    return [];
+  }
+}
+
+async function fetchMonitoringSymbol(symbolInput) {
+  const meta = buildSymbolMeta(symbolInput);
+  if (!meta) return { symbol: null, error: 'Símbolo inválido' };
+  const [spot, futures, history] = await Promise.all([
+    Promise.all(monitoringSpotProviders.map((provider) => fetchMonitoringTicker(provider, meta))),
+    Promise.all(monitoringFuturesProviders.map((provider) => fetchMonitoringTicker(provider, meta))),
+    fetchArbHistory(meta)
+  ]);
+  return {
+    symbol: meta.symbol,
+    label: MONITORING_DEFAULT_LABELS[meta.symbol] || meta.symbol,
+    spot,
+    futures,
+    metrics: buildMonitoringMetrics(spot, futures, history),
+    history: { interval: '1h', source: 'Gate.io', points: history }
+  };
+}
+
+app.get('/api/monitoring/markets', async (req, res) => {
+  try {
+    const symbolsParam = String(req.query.symbols || '').trim();
+    const requested = symbolsParam
+      ? symbolsParam.split(',').map((s) => normalizeMonitoringSymbol(s)).filter(Boolean)
+      : listMonitoringSymbols();
+    const uniqueSymbols = Array.from(new Set(requested));
+    if (!uniqueSymbols.length) {
+      return res.json({ updatedAt: new Date().toISOString(), symbols: [] });
+    }
+    const results = await Promise.all(uniqueSymbols.map((symbol) => fetchMonitoringSymbol(symbol)));
+    res.json({ updatedAt: new Date().toISOString(), symbols: results });
+  } catch (err) {
+    console.error('[monitoring] erro ao coletar mercados', err);
+    res.status(500).json({ error: err.message || err });
+  }
+});
+
+app.get('/api/monitoring/symbols', (req, res) => {
+  res.json({ symbols: serializeMonitoringSymbols() });
+});
+
+app.post('/api/monitoring/symbols', (req, res) => {
+  const normalized = normalizeMonitoringSymbol(req.body?.symbol);
+  if (!normalized) return res.status(400).json({ error: 'Símbolo inválido' });
+  const meta = req.body?.meta && typeof req.body.meta === 'object' ? req.body.meta : {};
+  monitoringSymbolMeta.set(normalized, meta);
+  try { db.upsertMonitoringSymbol(normalized, meta); } catch (e) { console.warn('[SQLite] upsert monitoring symbol:', e?.message || e); }
+  res.json({ ok: true, symbols: serializeMonitoringSymbols() });
+});
+
+app.delete('/api/monitoring/symbols/:symbol', (req, res) => {
+  const normalized = normalizeMonitoringSymbol(req.params.symbol);
+  if (!normalized) return res.status(400).json({ error: 'Símbolo inválido' });
+  monitoringSymbolMeta.delete(normalized);
+  try { db.deleteMonitoringSymbol(normalized); } catch (e) { console.warn('[SQLite] delete monitoring symbol:', e?.message || e); }
+  res.json({ ok: true, symbols: serializeMonitoringSymbols() });
+});
+
+app.get('/api/monitoring/history', async (req, res) => {
+  try {
+    const symbolInput = req.query.symbol;
+    const meta = buildSymbolMeta(symbolInput);
+    if (!meta) {
+      return res.status(400).json({ error: 'Símbolo inválido' });
+    }
+    const intervalKeyRaw = String(req.query.interval || '').toLowerCase();
+    const intervalKey = MONITORING_HISTORY_INTERVALS[intervalKeyRaw] ? intervalKeyRaw : MONITORING_HISTORY_DEFAULT_INTERVAL;
+    const intervalConfig = getHistoryIntervalConfig(intervalKey);
+    const limit = computeHistoryLimit(intervalKey);
+    const spotKey = req.query.spot && findSpotProvider(req.query.spot) ? req.query.spot : monitoringSpotProviders[0].key;
+    const futuresKey = req.query.futures && findFuturesProvider(req.query.futures)
+      ? req.query.futures
+      : monitoringFuturesProviders[0].key;
+    const spotProvider = findSpotProvider(spotKey) || monitoringSpotProviders[0];
+    const futuresProvider = findFuturesProvider(futuresKey) || monitoringFuturesProviders[0];
+    const [spotResult, futuresResult] = await Promise.all([
+      fetchHistoryDataset(spotProvider, meta, intervalKey, limit),
+      fetchHistoryDataset(futuresProvider, meta, intervalKey, limit)
+    ]);
+    const historySeries = buildHistorySeries(spotResult.candles, futuresResult.candles, intervalConfig.minutes);
+    res.json({
+      symbol: meta.symbol,
+      label: MONITORING_DEFAULT_LABELS[meta.symbol] || meta.symbol,
+      interval: { key: intervalKey, label: intervalConfig.label, minutes: intervalConfig.minutes },
+      spot: { key: spotProvider.key, label: spotProvider.label },
+      futures: { key: futuresProvider.key, label: futuresProvider.label },
+      points: historySeries.points,
+      stats: historySeries.stats,
+      spotError: spotResult.error,
+      futuresError: futuresResult.error,
+      requestedCandles: limit,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('[monitoring] erro ao montar histórico', err);
+    res.status(500).json({ error: err.message || err });
+  }
+});
+
+app.get('/api/monitoring/top-assets', async (req, res) => {
+  try {
+    const selected = String(req.query.exchanges || '')
+      .split(',')
+      .map((key) => key.trim())
+      .filter(Boolean);
+    const limit = Number(req.query.limit);
+    const result = await buildTopAssetsResponse(selected, limit);
+    res.json({ ...result, updatedAt: new Date().toISOString() });
+  } catch (err) {
+    console.error('[monitoring] erro ao buscar ativos mais negociados', err);
+    res.status(500).json({ error: err.message || err });
+  }
+});
 
 app.get('/api/history', async (_req, res) => {
   try { await pollOpenOrders(); } catch {}
