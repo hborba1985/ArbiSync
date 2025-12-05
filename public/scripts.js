@@ -87,6 +87,7 @@ const DEFAULT_ALERT_CONFIG = {
   max: null,
   soundEnabled: false,
   telegramEnabled: false,
+  telegramMinUsdt: null,
   telegramVolumeGuard: false,
   telegramIncludeSymbol: true,
   telegramIncludeDiff: true,
@@ -155,6 +156,10 @@ function createDefaultAlertConfig(overrides) {
   if (has(overrides, 'max')) {
     const num = Number(overrides.max);
     config.max = Number.isFinite(num) ? num : null;
+  }
+  if (has(overrides, 'telegramMinUsdt')) {
+    const num = Number(overrides.telegramMinUsdt);
+    config.telegramMinUsdt = Number.isFinite(num) && num >= 0 ? num : null;
   }
   if (has(overrides, 'soundEnabled')) config.soundEnabled = !!overrides.soundEnabled;
   if (has(overrides, 'telegramEnabled')) config.telegramEnabled = !!overrides.telegramEnabled;
@@ -256,6 +261,7 @@ function getAlertElements() {
     max: document.getElementById('alertMax'),
     sound: document.getElementById('soundToggle'),
     telegram: document.getElementById('telegramToggle'),
+    telegramMinVolume: document.getElementById('telegramMinVolume'),
     volumeGuard: document.getElementById('telegramVolumeGuard'),
     includeSymbol: document.getElementById('telegramIncludeSymbol'),
     includeDiff: document.getElementById('telegramIncludeDiff'),
@@ -265,7 +271,7 @@ function getAlertElements() {
 
 function applyAlertConfigToUI(config) {
   const cfg = createDefaultAlertConfig(config);
-  const { min, max, sound, telegram, volumeGuard, includeSymbol, includeDiff, includeVolumes } = getAlertElements();
+  const { min, max, sound, telegram, telegramMinVolume, volumeGuard, includeSymbol, includeDiff, includeVolumes } = getAlertElements();
   if (min) {
     if (Number.isFinite(cfg.min)) {
       min.value = cfg.min;
@@ -280,6 +286,13 @@ function applyAlertConfigToUI(config) {
       max.value = '';
     }
   }
+  if (telegramMinVolume) {
+    if (Number.isFinite(cfg.telegramMinUsdt)) {
+      telegramMinVolume.value = cfg.telegramMinUsdt;
+    } else {
+      telegramMinVolume.value = '';
+    }
+  }
   if (sound) sound.checked = !!cfg.soundEnabled;
   if (telegram) telegram.checked = !!cfg.telegramEnabled;
   if (volumeGuard) volumeGuard.checked = !!cfg.telegramVolumeGuard;
@@ -292,7 +305,7 @@ function captureAlertControlsToState(inst) {
   if (!inst) return;
   const state = ensureInstanceState(inst);
   const cfg = createDefaultAlertConfig(state.alertConfig);
-  const { min, max, sound, telegram, volumeGuard, includeSymbol, includeDiff, includeVolumes } = getAlertElements();
+  const { min, max, sound, telegram, telegramMinVolume, volumeGuard, includeSymbol, includeDiff, includeVolumes } = getAlertElements();
   if (min) {
     const num = Number(min.value);
     cfg.min = Number.isFinite(num) ? num : null;
@@ -300,6 +313,10 @@ function captureAlertControlsToState(inst) {
   if (max) {
     const num = Number(max.value);
     cfg.max = Number.isFinite(num) ? num : null;
+  }
+  if (telegramMinVolume) {
+    const num = Number(telegramMinVolume.value);
+    cfg.telegramMinUsdt = Number.isFinite(num) && num >= 0 ? num : null;
   }
   if (sound) cfg.soundEnabled = sound.checked;
   if (telegram) cfg.telegramEnabled = telegram.checked;
@@ -1799,6 +1816,14 @@ async function notifyTelegram(diff, { quotesData = lastQuotes, meta = currentMet
     }
   }
 
+  if (Number.isFinite(cfg.telegramMinUsdt) && cfg.telegramMinUsdt > 0) {
+    const effectiveQuote = Math.min(
+      Number.isFinite(stats.gateQuote) ? stats.gateQuote : 0,
+      Number.isFinite(stats.mexcQuote) ? stats.mexcQuote : 0
+    );
+    if (!Number.isFinite(effectiveQuote) || effectiveQuote < cfg.telegramMinUsdt) return;
+  }
+
   run.lastTgSent = now;
   const sanitizeLevel = (entry) => {
     const level = Number(entry?.level);
@@ -1879,7 +1904,7 @@ function handleAlertsForInstance(inst, state, quotesData) {
   }
 }
 
-const { min: alertMinInput, max: alertMaxInput, sound: soundToggleEl, telegram: telegramToggleEl, volumeGuard: telegramVolumeGuardEl, includeSymbol: telegramIncludeSymbolEl, includeDiff: telegramIncludeDiffEl, includeVolumes: telegramIncludeVolumesEl } = getAlertElements();
+const { min: alertMinInput, max: alertMaxInput, sound: soundToggleEl, telegram: telegramToggleEl, telegramMinVolume: telegramMinVolumeEl, volumeGuard: telegramVolumeGuardEl, includeSymbol: telegramIncludeSymbolEl, includeDiff: telegramIncludeDiffEl, includeVolumes: telegramIncludeVolumesEl } = getAlertElements();
 
 alertMinInput?.addEventListener('change', (e) => {
   const num = Number(e.target.value);
@@ -1915,6 +1940,14 @@ telegramToggleEl?.addEventListener('change', (e) => {
     if (!checked && state?.alertRuntime) {
       state.alertRuntime.lastTgSent = 0;
     }
+  });
+  refreshAlertUIFromActiveInstance();
+});
+
+telegramMinVolumeEl?.addEventListener('change', (e) => {
+  const num = Number(e.target.value);
+  mutateActiveAlertConfig((cfg) => {
+    cfg.telegramMinUsdt = Number.isFinite(num) && num >= 0 ? num : null;
   });
   refreshAlertUIFromActiveInstance();
 });
