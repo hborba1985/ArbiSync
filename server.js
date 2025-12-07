@@ -32,6 +32,9 @@ const monitoringHttp = axios.create({
 const mexcFuturesDepthWarnings = new Set();
 // Skip repeated Gate futures history fetches for symbols that are not listed
 const gateFuturesHistoryUnavailable = new Set();
+// Throttle repeated monitoring history warnings per symbol/reason
+const monitoringHistoryWarned = new Map();
+const MONITORING_HISTORY_WARN_INTERVAL_MS = 5 * 60 * 1000;
 
 const SPOT_EXCHANGES = {
   gate: { key: 'gate', label: 'Gate.io' },
@@ -5175,11 +5178,16 @@ async function fetchArbHistory(meta) {
     if (reason?.includes('CONTRACT_NOT_FOUND')) {
       gateFuturesHistoryUnavailable.add(meta.symbol);
     }
-    console.warn(
-      '[monitoring] histórico indisponível',
-      `${meta.symbol} (Gate spot=${meta.gateSpot}, futures=${meta.gateFutures}, intervalo=1h, candles=24)`,
-      reason
-    );
+    const lastWarn = monitoringHistoryWarned.get(meta.symbol);
+    const now = Date.now();
+    if (!lastWarn || lastWarn.reason !== reason || now - lastWarn.ts >= MONITORING_HISTORY_WARN_INTERVAL_MS) {
+      console.warn(
+        '[monitoring] histórico indisponível',
+        `${meta.symbol} (Gate spot=${meta.gateSpot}, futures=${meta.gateFutures}, intervalo=1h, candles=24)`,
+        reason
+      );
+      monitoringHistoryWarned.set(meta.symbol, { reason, ts: now });
+    }
     return [];
   }
 }
