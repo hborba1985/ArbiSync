@@ -5271,6 +5271,8 @@ async function fetchMonitoringSymbol(symbolInput) {
   const symbolMeta = monitoringSymbolMeta.get(meta.symbol) || {};
   const spotProviders = resolveSelectedProviders(symbolMeta, 'spot');
   const futuresProviders = resolveSelectedProviders(symbolMeta, 'futures');
+  const intervalKey = MONITORING_HISTORY_DEFAULT_INTERVAL;
+  const intervalConfig = getHistoryIntervalConfig(intervalKey);
   const [spot, futures, history] = await Promise.all([
     Promise.all(spotProviders.map((provider) => fetchMonitoringTicker(provider, meta))),
     Promise.all(futuresProviders.map((provider) => fetchMonitoringTicker(provider, meta))),
@@ -5282,7 +5284,11 @@ async function fetchMonitoringSymbol(symbolInput) {
     spot,
     futures,
     metrics: buildMonitoringMetrics(spot, futures, history),
-    history: { interval: intervalKey, source: 'Gate.io', points: history }
+    history: {
+      interval: { key: intervalKey, label: intervalConfig.label, minutes: intervalConfig.minutes },
+      source: 'Gate.io',
+      points: history
+    }
   };
 }
 
