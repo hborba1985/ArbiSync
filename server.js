@@ -648,8 +648,8 @@ async function fetchSpotOrderBook(symbol, limit = 5, exchange = currentSpotExcha
   if (normalizeSpotExchange(exchange) === 'bitget') {
     const spotSymbol = toBitgetSymbol(symbol);
     if (!spotSymbol) throw new Error(`Símbolo inválido para Bitget: ${symbol}`);
-    const { data } = await axios.get(`${bitgetBaseUrl}/api/spot/v1/market/depth`, {
-      params: { symbol: spotSymbol, limit },
+    const { data } = await axios.get(`${bitgetBaseUrl}/api/v2/spot/market/orderbook`, {
+      params: { symbol: spotSymbol, depth: limit },
       timeout: 8000
     });
     const asks = Array.isArray(data?.data?.asks) ? data.data.asks : [];
@@ -696,12 +696,12 @@ function toBitgetSymbol(symbol) {
   if (!symbol) return null;
   const compact = symbol.replace(/[^A-Z0-9]/gi, '').toUpperCase();
   if (!compact) return null;
-  return `${compact}_SPBL`;
+  return compact;
 }
 
 function fromBitgetSymbol(symbol) {
   if (!symbol) return null;
-  const cleaned = symbol.replace(/_SPBL$/i, '');
+  const cleaned = symbol.replace(/[^A-Z0-9]/gi, '').toUpperCase();
   if (!cleaned) return null;
   const base = cleaned.slice(0, -4);
   const quote = cleaned.slice(-4);
@@ -778,7 +778,7 @@ async function placeBitgetOrder(symbol, side, priceStr, amountStr, extraOptions 
     if (extraOptions.clientOrderId) payload.clientOrderId = String(extraOptions.clientOrderId);
   }
   console.log('[BITGET] Enviando ordem:', payload);
-  const data = await bitgetRequest('POST', '/api/spot/v1/trade/orders', { body: payload });
+  const data = await bitgetRequest('POST', '/api/v2/spot/trade/place-order', { body: payload });
   const id = data?.data?.orderId || null;
   console.log('[BITGET] Ordem criada. ID extraído:', id);
   return { id, raw: data?.data || data };
@@ -789,7 +789,7 @@ async function cancelBitgetOrder(symbol, id) {
   if (!spotSymbol) throw new Error(`Símbolo Bitget inválido: ${symbol}`);
   console.log('[BITGET] Cancelando ordem:', id);
   const payload = { symbol: spotSymbol, orderId: String(id) };
-  const data = await bitgetRequest('POST', '/api/spot/v1/trade/cancel-order', { body: payload });
+  const data = await bitgetRequest('POST', '/api/v2/spot/trade/cancel-order', { body: payload });
   console.log('[BITGET] Cancelamento OK:', id);
   return data?.data || data;
 }
@@ -799,7 +799,7 @@ async function getBitgetOrderDetail(symbol, id) {
   if (!spotSymbol) throw new Error(`Símbolo Bitget inválido: ${symbol}`);
   try {
     const payload = { symbol: spotSymbol, orderId: String(id) };
-    const data = await bitgetRequest('POST', '/api/spot/v1/trade/orderInfo', { body: payload });
+    const data = await bitgetRequest('POST', '/api/v2/spot/trade/orderInfo', { body: payload });
     const arr = Array.isArray(data?.data) ? data.data : [];
     return arr[0] || null;
   } catch (err) {
@@ -847,8 +847,8 @@ async function fetchBitgetAggressivePrice(symbol, side) {
   try {
     const spotSymbol = toBitgetSymbol(symbol);
     if (!spotSymbol) return { price: null, source: 'invalid_symbol' };
-    const { data } = await axios.get(`${bitgetBaseUrl}/api/spot/v1/market/depth`, {
-      params: { symbol: spotSymbol, limit: 5 },
+    const { data } = await axios.get(`${bitgetBaseUrl}/api/v2/spot/market/orderbook`, {
+      params: { symbol: spotSymbol, depth: 5 },
       timeout: 8000
     });
     const levels = side === 'sell' ? data?.data?.bids : data?.data?.asks;
@@ -946,7 +946,7 @@ async function getBitgetBalances(symbol) {
   };
 
   const fetchAssets = async () => {
-    const response = await bitgetRequest('GET', '/api/spot/v1/account/assets');
+    const response = await bitgetRequest('GET', '/api/v2/spot/account/assets');
     const payload = response?.data;
     if (Array.isArray(payload)) return payload;
     if (payload) return [payload];
@@ -1304,12 +1304,12 @@ async function autoDiscoverBitgetMeta(symbol) {
   try {
     const spotSymbol = toBitgetSymbol(symbol);
     if (!spotSymbol) throw new Error('Símbolo inválido para Bitget');
-    const { data } = await axios.get(`${bitgetBaseUrl}/api/spot/v1/public/products`, { timeout: 8000 });
+    const { data } = await axios.get(`${bitgetBaseUrl}/api/v2/spot/public/symbols`, { timeout: 8000 });
     const arr = Array.isArray(data?.data) ? data.data : [];
     const target = arr.find((entry) => String(entry?.symbol || '').toUpperCase() === spotSymbol.toUpperCase());
     if (target) {
       const priceScale = finiteOr(
-        target.priceScale ?? target.price_precision ?? target.pricePrecision ?? target.quotePrecision,
+        target.priceScale ?? target.price_precision ?? target.pricePrecision ?? target.quotePrecision ?? target.pricePrecision,
         11
       );
       const qtyScale = finiteOr(
@@ -4016,8 +4016,8 @@ function buildSymbolMeta(raw) {
     gateFutures: `${baseUpper}_${quoteUpper}`,
     mexcSpot: `${baseUpper}${quoteUpper}`,
     mexcFutures: `${baseUpper}_${quoteUpper}`,
-    bitgetSpot: `${compact}_SPBL`,
-    bitgetFutures: `${compact}_UMCBL`,
+    bitgetSpot: compact,
+    bitgetFutures: compact,
     kucoinFutures: `${compact}M`,
     bybit: compact
   };
@@ -4343,23 +4343,23 @@ async function fetchMexcSpotTicker(meta) {
 }
 
 async function fetchBitgetSpotTicker(meta) {
-  const { data } = await monitoringHttp.get('https://api.bitget.com/api/spot/v1/market/ticker', {
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/spot/market/tickers', {
     params: { symbol: meta.bitgetSpot }
   });
   if (!data || data.code !== '00000' || !data.data) {
     throw new Error(data?.msg || 'Erro Bitget spot');
   }
-  const payload = data.data;
+  const payload = Array.isArray(data.data) ? data.data[0] : data.data;
   return {
-    bid: toNumber(payload.buyOne),
-    ask: toNumber(payload.sellOne),
-    last: toNumber(payload.close),
-    volume: toNumber(payload.usdtVol ?? payload.quoteVol),
+    bid: toNumber(payload.bidPr ?? payload.buyOne),
+    ask: toNumber(payload.askPr ?? payload.sellOne),
+    last: toNumber(payload.lastPr ?? payload.close),
+    volume: toNumber(payload.usdtVolume ?? payload.quoteVolume ?? payload.usdtVol ?? payload.quoteVol),
     bidSize: toNumber(payload.bidSz),
     askSize: toNumber(payload.askSz),
-    bidNotional: computeNotional(toNumber(payload.buyOne), toNumber(payload.bidSz)),
-    askNotional: computeNotional(toNumber(payload.sellOne), toNumber(payload.askSz)),
-    changePct: toNumber(payload.change ?? payload.changeUtc)
+    bidNotional: computeNotional(toNumber(payload.bidPr ?? payload.buyOne), toNumber(payload.bidSz)),
+    askNotional: computeNotional(toNumber(payload.askPr ?? payload.sellOne), toNumber(payload.askSz)),
+    changePct: toNumber(payload.changePct ?? payload.changeUtc)
   };
 }
 
@@ -4546,24 +4546,26 @@ async function fetchMexcFuturesTicker(meta) {
 }
 
 async function fetchBitgetFuturesTicker(meta) {
-  const { data } = await monitoringHttp.get('https://api.bitget.com/api/mix/v1/market/ticker', {
-    params: { symbol: meta.bitgetFutures }
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/mix/market/candles', {
+    params: { symbol: meta.bitgetFutures, productType: 'umcbl', granularity: '1m', limit: 1 }
   });
   if (!data || data.code !== '00000' || !data.data) {
     throw new Error(data?.msg || 'Erro Bitget futures');
   }
-  const payload = data.data;
+  const payload = Array.isArray(data.data) ? data.data[0] : null;
+  const last = toNumber(payload?.[4]);
+  const volume = toNumber(payload?.[5]);
   return {
-    bid: toNumber(payload.bestBid),
-    ask: toNumber(payload.bestAsk),
-    last: toNumber(payload.last),
-    volume: toNumber(payload.quoteVolume ?? payload.usdtVolume),
-    bidSize: toNumber(payload.bestBidSize ?? payload.bidSz),
-    askSize: toNumber(payload.bestAskSize ?? payload.askSz),
-    bidNotional: computeNotional(toNumber(payload.bestBid), toNumber(payload.bestBidSize ?? payload.bidSz)),
-    askNotional: computeNotional(toNumber(payload.bestAsk), toNumber(payload.bestAskSize ?? payload.askSz)),
-    fundingRate: toNumber(payload.fundingRate),
-    changePct: toNumber(payload.priceChangePercent)
+    bid: last,
+    ask: last,
+    last,
+    volume,
+    bidSize: null,
+    askSize: null,
+    bidNotional: computeNotional(last, null),
+    askNotional: computeNotional(last, null),
+    fundingRate: null,
+    changePct: null
   };
 }
 
@@ -4730,8 +4732,8 @@ async function fetchMexcFuturesHistory(meta, intervalKey, limit) {
 
 async function fetchBitgetSpotHistory(meta, intervalKey, limit) {
   const interval = getHistoryIntervalConfig(intervalKey).bitget;
-  const { data } = await monitoringHttp.get('https://api.bitget.com/api/spot/v1/market/candles', {
-    params: { symbol: meta.bitgetSpot, period: interval, limit }
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/spot/market/candles', {
+    params: { symbol: meta.bitgetSpot, granularity: interval, limit }
   });
   if (!data || data.code !== '00000' || !Array.isArray(data.data)) return [];
   const points = data.data.map((entry) => normalizeHistoryPoint({
@@ -4748,7 +4750,7 @@ async function fetchBitgetFuturesHistory(meta, intervalKey, limit) {
   const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/mix/market/candles', {
     params: {
       productType: 'umcbl',
-      symbol: `${meta.base}${meta.quote}`,
+      symbol: meta.bitgetFutures,
       granularity: interval,
       limit
     }
@@ -4949,7 +4951,7 @@ async function fetchMexcTopFuturesAssets() {
 }
 
 async function fetchBitgetTopSpotAssets() {
-  const { data } = await monitoringHttp.get('https://api.bitget.com/api/spot/v1/market/tickers');
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/spot/market/tickers');
   const list = Array.isArray(data?.data) ? data.data : [];
   return list
     .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.usdtVolume ?? item.quoteVolume ?? item.baseVolume) }))
@@ -4957,11 +4959,16 @@ async function fetchBitgetTopSpotAssets() {
 }
 
 async function fetchBitgetTopFuturesAssets() {
-  const { data } = await monitoringHttp.get('https://api.bitget.com/api/mix/v1/market/tickers', { params: { productType: 'umcbl' } });
-  const list = Array.isArray(data?.data) ? data.data : [];
-  return list
-    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.usdtVolume ?? item.quoteVolume) }))
-    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+  try {
+    const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/mix/market/tickers', { params: { productType: 'umcbl' } });
+    const list = Array.isArray(data?.data) ? data.data : [];
+    return list
+      .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.usdtVolume ?? item.quoteVolume ?? item.baseVolume) }))
+      .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+  } catch (err) {
+    console.warn('[monitoring] falha ao buscar bitget futures top assets', err?.message || err);
+    return [];
+  }
 }
 
 async function fetchKucoinTopSpotAssets() {
