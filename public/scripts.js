@@ -4359,6 +4359,24 @@ let executionToastTimer = null;
 const EXECUTION_SPOT_PROVIDERS = ['Gate.io', 'Bitget'];
 const EXECUTION_FUTURES_PROVIDERS = ['MEXC Futures'];
 
+const MONITORING_SPOT_OPTIONS = [
+  { key: 'gate_spot', label: 'Gate.io (SPOT)' },
+  { key: 'mexc_spot', label: 'MEXC (SPOT)' },
+  { key: 'bitget_spot', label: 'Bitget (SPOT)' },
+  { key: 'kucoin_spot', label: 'KuCoin (SPOT)' },
+  { key: 'binance_spot', label: 'Binance (SPOT)' },
+  { key: 'bybit_spot', label: 'Bybit (SPOT)' }
+];
+
+const MONITORING_FUTURES_OPTIONS = [
+  { key: 'gate_futures', label: 'Gate.io Futures' },
+  { key: 'mexc_futures', label: 'MEXC Futures' },
+  { key: 'bitget_futures', label: 'Bitget Futures' },
+  { key: 'kucoin_futures', label: 'KuCoin Futures' },
+  { key: 'binance_futures', label: 'Binance Futures' },
+  { key: 'bybit_futures', label: 'Bybit Futures' }
+];
+
 function getCheckedValues(selector) {
   return Array.from(document.querySelectorAll(selector))
     .filter((el) => el.checked)
@@ -4410,6 +4428,37 @@ function resolveHistoryExchangeKey(label, type) {
   if (type === 'spot') return SPOT_LABEL_TO_KEY[normalized] || null;
   if (type === 'futures') return FUTURES_LABEL_TO_KEY[normalized] || null;
   return null;
+}
+
+function resolveHistoryOptions(symbol, type) {
+  const baseOptions = type === 'spot' ? MONITORING_SPOT_OPTIONS : MONITORING_FUTURES_OPTIONS;
+  const meta = monitoringMeta.get(String(symbol || '').toUpperCase());
+  const hints = Array.isArray(meta?.[type === 'spot' ? 'spotHint' : 'futuresHint'])
+    ? meta[type === 'spot' ? 'spotHint' : 'futuresHint']
+    : [];
+  if (!hints.length) return baseOptions;
+  const allowedKeys = new Set(hints.map((hint) => resolveHistoryExchangeKey(hint, type)).filter(Boolean));
+  const filtered = baseOptions.filter((option) => allowedKeys.has(option.key));
+  return filtered.length ? filtered : baseOptions;
+}
+
+function syncHistorySelectOptions(selectEl, options, fallbackKey) {
+  if (!selectEl) return;
+  const previous = selectEl.value;
+  selectEl.innerHTML = options.map((option) => `<option value="${option.key}">${option.label}</option>`).join('');
+  const preferred = options.some((option) => option.key === previous)
+    ? previous
+    : options.some((option) => option.key === fallbackKey)
+      ? fallbackKey
+      : options[0]?.key || '';
+  if (preferred) selectEl.value = preferred;
+}
+
+function syncMonitoringHistoryExchanges(symbol) {
+  const spotOptions = resolveHistoryOptions(symbol, 'spot');
+  const futuresOptions = resolveHistoryOptions(symbol, 'futures');
+  syncHistorySelectOptions(monitoringHistorySpotSelect, spotOptions, MONITORING_HISTORY_DEFAULTS.spot);
+  syncHistorySelectOptions(monitoringHistoryFuturesSelect, futuresOptions, MONITORING_HISTORY_DEFAULTS.futures);
 }
 
 function buildOpportunityKey(coin) {
@@ -5149,6 +5198,7 @@ async function updateMonitoringChart(symbolInput) {
   const fallbackSymbol = monitoringPairSelect?.value || monitoringRows[0]?.symbol || trackedMonitoringSymbols[0];
   const symbol = String(symbolInput || fallbackSymbol || '').toUpperCase();
   if (!symbol) return;
+  syncMonitoringHistoryExchanges(symbol);
   const intervalKey = monitoringHistoryIntervalSelect?.value || MONITORING_HISTORY_DEFAULTS.interval;
   const spotKey = monitoringHistorySpotSelect?.value || MONITORING_HISTORY_DEFAULTS.spot;
   const futuresKey = monitoringHistoryFuturesSelect?.value || MONITORING_HISTORY_DEFAULTS.futures;

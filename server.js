@@ -4873,6 +4873,44 @@ const monitoringFuturesProviders = [
   { key: 'bybit_futures', label: 'Bybit Futures', type: 'futures', fetch: fetchBybitFuturesTicker, history: fetchBybitFuturesHistory }
 ];
 
+const MONITORING_EXCHANGE_ALIASES = {
+  spot: {
+    'gate.io': 'gate_spot',
+    gate: 'gate_spot',
+    'mexc': 'mexc_spot',
+    'bitget': 'bitget_spot',
+    'kucoin': 'kucoin_spot',
+    'binance': 'binance_spot',
+    'bybit': 'bybit_spot'
+  },
+  futures: {
+    'gate.io futures': 'gate_futures',
+    'gate futures': 'gate_futures',
+    'mexc futures': 'mexc_futures',
+    'bitget futures': 'bitget_futures',
+    'kucoin futures': 'kucoin_futures',
+    'binance futures': 'binance_futures',
+    'bybit futures': 'bybit_futures'
+  }
+};
+
+function normalizeExchangeHint(value, type) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized || (type !== 'spot' && type !== 'futures')) return null;
+  return MONITORING_EXCHANGE_ALIASES[type][normalized] || null;
+}
+
+function resolveSelectedProviders(symbolMeta, type) {
+  const providers = type === 'spot' ? monitoringSpotProviders : monitoringFuturesProviders;
+  const hints = Array.isArray(symbolMeta?.[type === 'spot' ? 'spotHint' : 'futuresHint'])
+    ? symbolMeta[type === 'spot' ? 'spotHint' : 'futuresHint']
+    : [];
+  if (!hints.length) return providers;
+  const allowedKeys = new Set(hints.map((hint) => normalizeExchangeHint(hint, type)).filter(Boolean));
+  const filtered = providers.filter((provider) => allowedKeys.has(provider.key));
+  return filtered.length ? filtered : providers;
+}
+
 function findSpotProvider(key) {
   return monitoringSpotProviders.find((provider) => provider.key === key);
 }
@@ -5246,9 +5284,12 @@ async function fetchArbHistory(meta) {
 async function fetchMonitoringSymbol(symbolInput) {
   const meta = buildSymbolMeta(symbolInput);
   if (!meta) return { symbol: null, error: 'Símbolo inválido' };
+  const symbolMeta = monitoringSymbolMeta.get(meta.symbol) || {};
+  const spotProviders = resolveSelectedProviders(symbolMeta, 'spot');
+  const futuresProviders = resolveSelectedProviders(symbolMeta, 'futures');
   const [spot, futures, history] = await Promise.all([
-    Promise.all(monitoringSpotProviders.map((provider) => fetchMonitoringTicker(provider, meta))),
-    Promise.all(monitoringFuturesProviders.map((provider) => fetchMonitoringTicker(provider, meta))),
+    Promise.all(spotProviders.map((provider) => fetchMonitoringTicker(provider, meta))),
+    Promise.all(futuresProviders.map((provider) => fetchMonitoringTicker(provider, meta))),
     fetchArbHistory(meta)
   ]);
   return {
