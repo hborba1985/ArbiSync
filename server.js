@@ -34,6 +34,7 @@ const mexcFuturesDepthWarnings = new Set();
 const gateFuturesHistoryUnavailable = new Set();
 // Throttle repeated monitoring history warnings per symbol/reason
 const monitoringHistoryWarned = new Map();
+const gateFuturesCatalog = { pairs: new Set(), lastFetch: 0 };
 const MONITORING_HISTORY_WARN_INTERVAL_MS = 5 * 60 * 1000;
 
 const SPOT_EXCHANGES = {
@@ -648,8 +649,8 @@ async function fetchSpotOrderBook(symbol, limit = 5, exchange = currentSpotExcha
   if (normalizeSpotExchange(exchange) === 'bitget') {
     const spotSymbol = toBitgetSymbol(symbol);
     if (!spotSymbol) throw new Error(`Símbolo inválido para Bitget: ${symbol}`);
-    const { data } = await axios.get(`${bitgetBaseUrl}/api/spot/v1/market/depth`, {
-      params: { symbol: spotSymbol, limit },
+    const { data } = await axios.get(`${bitgetBaseUrl}/api/v2/spot/market/orderbook`, {
+      params: { symbol: spotSymbol, depth: limit },
       timeout: 8000
     });
     const asks = Array.isArray(data?.data?.asks) ? data.data.asks : [];
@@ -696,12 +697,12 @@ function toBitgetSymbol(symbol) {
   if (!symbol) return null;
   const compact = symbol.replace(/[^A-Z0-9]/gi, '').toUpperCase();
   if (!compact) return null;
-  return `${compact}_SPBL`;
+  return compact;
 }
 
 function fromBitgetSymbol(symbol) {
   if (!symbol) return null;
-  const cleaned = symbol.replace(/_SPBL$/i, '');
+  const cleaned = symbol.replace(/[^A-Z0-9]/gi, '').toUpperCase();
   if (!cleaned) return null;
   const base = cleaned.slice(0, -4);
   const quote = cleaned.slice(-4);
@@ -778,7 +779,7 @@ async function placeBitgetOrder(symbol, side, priceStr, amountStr, extraOptions 
     if (extraOptions.clientOrderId) payload.clientOrderId = String(extraOptions.clientOrderId);
   }
   console.log('[BITGET] Enviando ordem:', payload);
-  const data = await bitgetRequest('POST', '/api/spot/v1/trade/orders', { body: payload });
+  const data = await bitgetRequest('POST', '/api/v2/spot/trade/place-order', { body: payload });
   const id = data?.data?.orderId || null;
   console.log('[BITGET] Ordem criada. ID extraído:', id);
   return { id, raw: data?.data || data };
@@ -789,7 +790,7 @@ async function cancelBitgetOrder(symbol, id) {
   if (!spotSymbol) throw new Error(`Símbolo Bitget inválido: ${symbol}`);
   console.log('[BITGET] Cancelando ordem:', id);
   const payload = { symbol: spotSymbol, orderId: String(id) };
-  const data = await bitgetRequest('POST', '/api/spot/v1/trade/cancel-order', { body: payload });
+  const data = await bitgetRequest('POST', '/api/v2/spot/trade/cancel-order', { body: payload });
   console.log('[BITGET] Cancelamento OK:', id);
   return data?.data || data;
 }
@@ -799,7 +800,7 @@ async function getBitgetOrderDetail(symbol, id) {
   if (!spotSymbol) throw new Error(`Símbolo Bitget inválido: ${symbol}`);
   try {
     const payload = { symbol: spotSymbol, orderId: String(id) };
-    const data = await bitgetRequest('POST', '/api/spot/v1/trade/orderInfo', { body: payload });
+    const data = await bitgetRequest('POST', '/api/v2/spot/trade/orderInfo', { body: payload });
     const arr = Array.isArray(data?.data) ? data.data : [];
     return arr[0] || null;
   } catch (err) {
@@ -847,8 +848,8 @@ async function fetchBitgetAggressivePrice(symbol, side) {
   try {
     const spotSymbol = toBitgetSymbol(symbol);
     if (!spotSymbol) return { price: null, source: 'invalid_symbol' };
-    const { data } = await axios.get(`${bitgetBaseUrl}/api/spot/v1/market/depth`, {
-      params: { symbol: spotSymbol, limit: 5 },
+    const { data } = await axios.get(`${bitgetBaseUrl}/api/v2/spot/market/orderbook`, {
+      params: { symbol: spotSymbol, depth: 5 },
       timeout: 8000
     });
     const levels = side === 'sell' ? data?.data?.bids : data?.data?.asks;
@@ -946,7 +947,7 @@ async function getBitgetBalances(symbol) {
   };
 
   const fetchAssets = async () => {
-    const response = await bitgetRequest('GET', '/api/spot/v1/account/assets');
+    const response = await bitgetRequest('GET', '/api/v2/spot/account/assets');
     const payload = response?.data;
     if (Array.isArray(payload)) return payload;
     if (payload) return [payload];
@@ -1304,12 +1305,12 @@ async function autoDiscoverBitgetMeta(symbol) {
   try {
     const spotSymbol = toBitgetSymbol(symbol);
     if (!spotSymbol) throw new Error('Símbolo inválido para Bitget');
-    const { data } = await axios.get(`${bitgetBaseUrl}/api/spot/v1/public/products`, { timeout: 8000 });
+    const { data } = await axios.get(`${bitgetBaseUrl}/api/v2/spot/public/symbols`, { timeout: 8000 });
     const arr = Array.isArray(data?.data) ? data.data : [];
     const target = arr.find((entry) => String(entry?.symbol || '').toUpperCase() === spotSymbol.toUpperCase());
     if (target) {
       const priceScale = finiteOr(
-        target.priceScale ?? target.price_precision ?? target.pricePrecision ?? target.quotePrecision,
+        target.priceScale ?? target.price_precision ?? target.pricePrecision ?? target.quotePrecision ?? target.pricePrecision,
         11
       );
       const qtyScale = finiteOr(
@@ -4016,8 +4017,8 @@ function buildSymbolMeta(raw) {
     gateFutures: `${baseUpper}_${quoteUpper}`,
     mexcSpot: `${baseUpper}${quoteUpper}`,
     mexcFutures: `${baseUpper}_${quoteUpper}`,
-    bitgetSpot: `${compact}_SPBL`,
-    bitgetFutures: `${compact}_UMCBL`,
+    bitgetSpot: compact,
+    bitgetFutures: compact,
     kucoinFutures: `${compact}M`,
     bybit: compact
   };
@@ -4109,36 +4110,10 @@ const MONITORING_HISTORY_INTERVALS = {
     kucoinFutures: 30 * 60,
     binance: '30m',
     bybit: '30'
-  },
-  '1h': {
-    label: '1 hora',
-    minutes: 60,
-    gate: '1h',
-    mexc: '1h',
-    mexcFutures: 'Min60',
-    bitget: '1hour',
-    bitgetFutures: '1h',
-    kucoin: '1hour',
-    kucoinFutures: 60 * 60,
-    binance: '1h',
-    bybit: '60'
-  },
-  '4h': {
-    label: '4 horas',
-    minutes: 240,
-    gate: '4h',
-    mexc: '4h',
-    mexcFutures: 'Hour4',
-    bitget: '4hour',
-    bitgetFutures: '4h',
-    kucoin: '4hour',
-    kucoinFutures: 240 * 60,
-    binance: '4h',
-    bybit: '240'
   }
 };
 
-const MONITORING_HISTORY_DEFAULT_INTERVAL = '1h';
+const MONITORING_HISTORY_DEFAULT_INTERVAL = '30m';
 
 function getHistoryIntervalConfig(key) {
   return MONITORING_HISTORY_INTERVALS[key] || MONITORING_HISTORY_INTERVALS[MONITORING_HISTORY_DEFAULT_INTERVAL];
@@ -4343,23 +4318,23 @@ async function fetchMexcSpotTicker(meta) {
 }
 
 async function fetchBitgetSpotTicker(meta) {
-  const { data } = await monitoringHttp.get('https://api.bitget.com/api/spot/v1/market/ticker', {
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/spot/market/tickers', {
     params: { symbol: meta.bitgetSpot }
   });
   if (!data || data.code !== '00000' || !data.data) {
     throw new Error(data?.msg || 'Erro Bitget spot');
   }
-  const payload = data.data;
+  const payload = Array.isArray(data.data) ? data.data[0] : data.data;
   return {
-    bid: toNumber(payload.buyOne),
-    ask: toNumber(payload.sellOne),
-    last: toNumber(payload.close),
-    volume: toNumber(payload.usdtVol ?? payload.quoteVol),
+    bid: toNumber(payload.bidPr ?? payload.buyOne),
+    ask: toNumber(payload.askPr ?? payload.sellOne),
+    last: toNumber(payload.lastPr ?? payload.close),
+    volume: toNumber(payload.usdtVolume ?? payload.quoteVolume ?? payload.usdtVol ?? payload.quoteVol),
     bidSize: toNumber(payload.bidSz),
     askSize: toNumber(payload.askSz),
-    bidNotional: computeNotional(toNumber(payload.buyOne), toNumber(payload.bidSz)),
-    askNotional: computeNotional(toNumber(payload.sellOne), toNumber(payload.askSz)),
-    changePct: toNumber(payload.change ?? payload.changeUtc)
+    bidNotional: computeNotional(toNumber(payload.bidPr ?? payload.buyOne), toNumber(payload.bidSz)),
+    askNotional: computeNotional(toNumber(payload.askPr ?? payload.sellOne), toNumber(payload.askSz)),
+    changePct: toNumber(payload.changePct ?? payload.changeUtc)
   };
 }
 
@@ -4424,6 +4399,10 @@ async function fetchBybitSpotTicker(meta) {
 }
 
 async function fetchGateFuturesTicker(meta) {
+  const supported = await isGateFuturesSupported(meta);
+  if (!supported) {
+    throw new Error('Contrato indisponível na Gate.io Futures');
+  }
   const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/tickers', {
     params: { contract: meta.gateFutures }
   });
@@ -4546,24 +4525,26 @@ async function fetchMexcFuturesTicker(meta) {
 }
 
 async function fetchBitgetFuturesTicker(meta) {
-  const { data } = await monitoringHttp.get('https://api.bitget.com/api/mix/v1/market/ticker', {
-    params: { symbol: meta.bitgetFutures }
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/mix/market/candles', {
+    params: { symbol: meta.bitgetFutures, productType: 'umcbl', granularity: '1m', limit: 1 }
   });
   if (!data || data.code !== '00000' || !data.data) {
     throw new Error(data?.msg || 'Erro Bitget futures');
   }
-  const payload = data.data;
+  const payload = Array.isArray(data.data) ? data.data[0] : null;
+  const last = toNumber(payload?.[4]);
+  const volume = toNumber(payload?.[5]);
   return {
-    bid: toNumber(payload.bestBid),
-    ask: toNumber(payload.bestAsk),
-    last: toNumber(payload.last),
-    volume: toNumber(payload.quoteVolume ?? payload.usdtVolume),
-    bidSize: toNumber(payload.bestBidSize ?? payload.bidSz),
-    askSize: toNumber(payload.bestAskSize ?? payload.askSz),
-    bidNotional: computeNotional(toNumber(payload.bestBid), toNumber(payload.bestBidSize ?? payload.bidSz)),
-    askNotional: computeNotional(toNumber(payload.bestAsk), toNumber(payload.bestAskSize ?? payload.askSz)),
-    fundingRate: toNumber(payload.fundingRate),
-    changePct: toNumber(payload.priceChangePercent)
+    bid: last,
+    ask: last,
+    last,
+    volume,
+    bidSize: null,
+    askSize: null,
+    bidNotional: computeNotional(last, null),
+    askNotional: computeNotional(last, null),
+    fundingRate: null,
+    changePct: null
   };
 }
 
@@ -4655,6 +4636,39 @@ async function fetchBybitFuturesTicker(meta) {
   };
 }
 
+async function ensureGateFuturesCatalog() {
+  const now = Date.now();
+  if (gateFuturesCatalog.lastFetch && now - gateFuturesCatalog.lastFetch < 15 * 60 * 1000) {
+    return gateFuturesCatalog.pairs;
+  }
+  try {
+    const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/contracts');
+    const pairs = new Set(
+      (Array.isArray(data) ? data : [])
+        .map((item) => String(item?.name || '').toUpperCase())
+        .filter(Boolean)
+    );
+    gateFuturesCatalog.pairs = pairs;
+    gateFuturesCatalog.lastFetch = now;
+  } catch (err) {
+    console.warn('[monitoring] não foi possível atualizar catálogo de contratos Gate futures', describeAxiosError(err));
+    // Keep existing cache when refresh fails
+    gateFuturesCatalog.lastFetch = now;
+  }
+  return gateFuturesCatalog.pairs;
+}
+
+async function isGateFuturesSupported(meta) {
+  try {
+    const catalog = await ensureGateFuturesCatalog();
+    if (!catalog || !catalog.size) return true; // avoid false negatives when catalog is empty
+    return catalog.has(String(meta?.gateFutures || '').toUpperCase());
+  } catch (err) {
+    console.warn('[monitoring] não foi possível validar contrato Gate futures', describeAxiosError(err));
+    return true; // degrade gracefully
+  }
+}
+
 async function fetchGateSpotHistory(meta, intervalKey, limit) {
   const interval = getHistoryIntervalConfig(intervalKey).gate;
   const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/spot/candlesticks', {
@@ -4671,6 +4685,10 @@ async function fetchGateSpotHistory(meta, intervalKey, limit) {
 }
 
 async function fetchGateFuturesHistory(meta, intervalKey, limit) {
+  const supported = await isGateFuturesSupported(meta);
+  if (!supported) {
+    throw new Error('Contrato indisponível na Gate.io Futures');
+  }
   const interval = getHistoryIntervalConfig(intervalKey).gate;
   const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/candlesticks', {
     params: { contract: meta.gateFutures, interval, limit }
@@ -4730,8 +4748,8 @@ async function fetchMexcFuturesHistory(meta, intervalKey, limit) {
 
 async function fetchBitgetSpotHistory(meta, intervalKey, limit) {
   const interval = getHistoryIntervalConfig(intervalKey).bitget;
-  const { data } = await monitoringHttp.get('https://api.bitget.com/api/spot/v1/market/candles', {
-    params: { symbol: meta.bitgetSpot, period: interval, limit }
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/spot/market/candles', {
+    params: { symbol: meta.bitgetSpot, granularity: interval, limit }
   });
   if (!data || data.code !== '00000' || !Array.isArray(data.data)) return [];
   const points = data.data.map((entry) => normalizeHistoryPoint({
@@ -4748,7 +4766,7 @@ async function fetchBitgetFuturesHistory(meta, intervalKey, limit) {
   const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/mix/market/candles', {
     params: {
       productType: 'umcbl',
-      symbol: `${meta.base}${meta.quote}`,
+      symbol: meta.bitgetFutures,
       granularity: interval,
       limit
     }
@@ -4949,7 +4967,7 @@ async function fetchMexcTopFuturesAssets() {
 }
 
 async function fetchBitgetTopSpotAssets() {
-  const { data } = await monitoringHttp.get('https://api.bitget.com/api/spot/v1/market/tickers');
+  const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/spot/market/tickers');
   const list = Array.isArray(data?.data) ? data.data : [];
   return list
     .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.usdtVolume ?? item.quoteVolume ?? item.baseVolume) }))
@@ -4957,11 +4975,16 @@ async function fetchBitgetTopSpotAssets() {
 }
 
 async function fetchBitgetTopFuturesAssets() {
-  const { data } = await monitoringHttp.get('https://api.bitget.com/api/mix/v1/market/tickers', { params: { productType: 'umcbl' } });
-  const list = Array.isArray(data?.data) ? data.data : [];
-  return list
-    .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.usdtVolume ?? item.quoteVolume) }))
-    .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+  try {
+    const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/mix/market/tickers', { params: { productType: 'umcbl' } });
+    const list = Array.isArray(data?.data) ? data.data : [];
+    return list
+      .map((item) => ({ symbol: normalizeMonitoringSymbol(item.symbol), volume: toNumber(item.usdtVolume ?? item.quoteVolume ?? item.baseVolume) }))
+      .filter((item) => item.symbol && item.symbol.endsWith('_USDT') && Number.isFinite(item.volume));
+  } catch (err) {
+    console.warn('[monitoring] falha ao buscar bitget futures top assets', err?.message || err);
+    return [];
+  }
 }
 
 async function fetchKucoinTopSpotAssets() {
@@ -5216,55 +5239,52 @@ function buildMonitoringMetrics(spotTickers, futuresTickers, historyPoints) {
   };
 }
 
-async function fetchArbHistory(meta) {
-  if (gateFuturesHistoryUnavailable.has(meta.symbol)) {
+async function fetchArbHistory(meta, symbolMeta = {}) {
+  const intervalKey = MONITORING_HISTORY_DEFAULT_INTERVAL;
+  const intervalConfig = getHistoryIntervalConfig(intervalKey);
+  const limit = computeHistoryLimit(intervalKey);
+
+  const spotProvider = resolveSelectedProviders(symbolMeta, 'spot').find((provider) => typeof provider.history === 'function');
+  const futuresProvider = resolveSelectedProviders(symbolMeta, 'futures').find((provider) => typeof provider.history === 'function');
+
+  if (!spotProvider || !futuresProvider) {
     return [];
   }
+
+  if (futuresProvider.key === 'gate_futures' && gateFuturesHistoryUnavailable.has(meta.symbol)) {
+    return [];
+  }
+
   try {
-    const [spotResp, futuresResp] = await Promise.all([
-      monitoringHttp.get('https://api.gateio.ws/api/v4/spot/candlesticks', {
-        params: { currency_pair: meta.gateSpot, interval: '1h', limit: 24 }
-      }),
-      monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/candlesticks', {
-        params: { contract: meta.gateFutures, interval: '1h', limit: 24 }
-      })
+    const [spotResult, futuresResult] = await Promise.all([
+      fetchHistoryDataset(spotProvider, meta, intervalKey, limit),
+      fetchHistoryDataset(futuresProvider, meta, intervalKey, limit)
     ]);
-    const spotCandles = Array.isArray(spotResp.data) ? spotResp.data : [];
-    const futuresCandles = Array.isArray(futuresResp.data) ? futuresResp.data : [];
-    const futuresByTs = new Map();
-    for (const candle of futuresCandles) {
-      const ts = Number(candle?.t);
-      if (Number.isFinite(ts)) futuresByTs.set(ts, candle);
+
+    if (futuresProvider.key === 'gate_futures' && futuresResult.error?.includes('Contrato')) {
+      gateFuturesHistoryUnavailable.add(meta.symbol);
     }
-    const points = [];
-    for (const entry of spotCandles) {
-      const ts = Number(entry?.[0]);
-      if (!Number.isFinite(ts)) continue;
-      const futuresEntry = futuresByTs.get(ts);
-      if (!futuresEntry) continue;
-      const spotOpen = toNumber(entry?.[5]);
-      const spotClose = toNumber(entry?.[2]);
-      const futuresOpen = toNumber(futuresEntry?.o);
-      const futuresClose = toNumber(futuresEntry?.c);
-      const openArbRaw = computeSpreadPct(futuresOpen, spotOpen);
-      const closeArbRaw = computeSpreadPct(spotClose, futuresClose);
-      if (!Number.isFinite(openArbRaw) && !Number.isFinite(closeArbRaw)) continue;
-      const openArbPct = formatArbValue(openArbRaw);
-      const closeArbPct = formatArbValue(closeArbRaw);
-      points.push({
-        timestamp: ts * 1000,
-        arbPct: computeMidArbValue(openArbRaw, closeArbRaw),
-        openArbPct,
-        closeArbPct,
-        spotVolume: toNumber(entry?.[6] ?? entry?.[1]),
-        futuresVolume: toNumber(futuresEntry?.sum ?? futuresEntry?.v)
-      });
+
+    const historySeries = buildHistorySeries(spotResult.candles, futuresResult.candles, intervalConfig.minutes);
+
+    const reason = futuresResult.error || spotResult.error;
+    if (reason) {
+      const lastWarn = monitoringHistoryWarned.get(meta.symbol);
+      const now = Date.now();
+      if (!lastWarn || lastWarn.reason !== reason || now - lastWarn.ts >= MONITORING_HISTORY_WARN_INTERVAL_MS) {
+        console.warn(
+          '[monitoring] histórico indisponível',
+          `${meta.symbol} (spot=${spotProvider.label}, futures=${futuresProvider.label}, intervalo=${intervalKey}, candles=${limit})`,
+          reason
+        );
+        monitoringHistoryWarned.set(meta.symbol, { reason, ts: now });
+      }
     }
-    points.sort((a, b) => a.timestamp - b.timestamp);
-    return points;
+
+    return historySeries.points;
   } catch (err) {
     const reason = describeAxiosError(err);
-    if (reason?.includes('CONTRACT_NOT_FOUND')) {
+    if (reason?.includes('CONTRACT_NOT_FOUND') && futuresProvider.key === 'gate_futures') {
       gateFuturesHistoryUnavailable.add(meta.symbol);
     }
     const lastWarn = monitoringHistoryWarned.get(meta.symbol);
@@ -5272,7 +5292,7 @@ async function fetchArbHistory(meta) {
     if (!lastWarn || lastWarn.reason !== reason || now - lastWarn.ts >= MONITORING_HISTORY_WARN_INTERVAL_MS) {
       console.warn(
         '[monitoring] histórico indisponível',
-        `${meta.symbol} (Gate spot=${meta.gateSpot}, futures=${meta.gateFutures}, intervalo=1h, candles=24)`,
+        `${meta.symbol} (spot=${spotProvider.label}, futures=${futuresProvider.label}, intervalo=${intervalKey}, candles=${limit})`,
         reason
       );
       monitoringHistoryWarned.set(meta.symbol, { reason, ts: now });
@@ -5287,10 +5307,12 @@ async function fetchMonitoringSymbol(symbolInput) {
   const symbolMeta = monitoringSymbolMeta.get(meta.symbol) || {};
   const spotProviders = resolveSelectedProviders(symbolMeta, 'spot');
   const futuresProviders = resolveSelectedProviders(symbolMeta, 'futures');
+  const intervalKey = MONITORING_HISTORY_DEFAULT_INTERVAL;
+  const intervalConfig = getHistoryIntervalConfig(intervalKey);
   const [spot, futures, history] = await Promise.all([
     Promise.all(spotProviders.map((provider) => fetchMonitoringTicker(provider, meta))),
     Promise.all(futuresProviders.map((provider) => fetchMonitoringTicker(provider, meta))),
-    fetchArbHistory(meta)
+    fetchArbHistory(meta, symbolMeta)
   ]);
   return {
     symbol: meta.symbol,
@@ -5298,7 +5320,11 @@ async function fetchMonitoringSymbol(symbolInput) {
     spot,
     futures,
     metrics: buildMonitoringMetrics(spot, futures, history),
-    history: { interval: '1h', source: 'Gate.io', points: history }
+    history: {
+      interval: { key: intervalKey, label: intervalConfig.label, minutes: intervalConfig.minutes },
+      source: 'Gate.io',
+      points: history
+    }
   };
 }
 
@@ -5348,16 +5374,23 @@ app.get('/api/monitoring/history', async (req, res) => {
     if (!meta) {
       return res.status(400).json({ error: 'Símbolo inválido' });
     }
+    const symbolMeta = monitoringSymbolMeta.get(meta.symbol) || {};
     const intervalKeyRaw = String(req.query.interval || '').toLowerCase();
     const intervalKey = MONITORING_HISTORY_INTERVALS[intervalKeyRaw] ? intervalKeyRaw : MONITORING_HISTORY_DEFAULT_INTERVAL;
     const intervalConfig = getHistoryIntervalConfig(intervalKey);
     const limit = computeHistoryLimit(intervalKey);
-    const spotKey = req.query.spot && findSpotProvider(req.query.spot) ? req.query.spot : monitoringSpotProviders[0].key;
+    const spotKey = req.query.spot && findSpotProvider(req.query.spot) ? req.query.spot : null;
     const futuresKey = req.query.futures && findFuturesProvider(req.query.futures)
       ? req.query.futures
-      : monitoringFuturesProviders[0].key;
-    const spotProvider = findSpotProvider(spotKey) || monitoringSpotProviders[0];
-    const futuresProvider = findFuturesProvider(futuresKey) || monitoringFuturesProviders[0];
+      : null;
+    const selectedSpotProviders = resolveSelectedProviders(symbolMeta, 'spot').filter((provider) => typeof provider.history === 'function');
+    const selectedFuturesProviders = resolveSelectedProviders(symbolMeta, 'futures').filter((provider) => typeof provider.history === 'function');
+    const spotProvider = spotKey
+      ? findSpotProvider(spotKey)
+      : selectedSpotProviders[0] || monitoringSpotProviders[0];
+    const futuresProvider = futuresKey
+      ? findFuturesProvider(futuresKey)
+      : selectedFuturesProviders[0] || monitoringFuturesProviders[0];
     const [spotResult, futuresResult] = await Promise.all([
       fetchHistoryDataset(spotProvider, meta, intervalKey, limit),
       fetchHistoryDataset(futuresProvider, meta, intervalKey, limit)
