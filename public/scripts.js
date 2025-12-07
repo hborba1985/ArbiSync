@@ -78,6 +78,12 @@ function normalizeSpotKey(value) {
   return normalized === 'bitget' ? 'bitget' : 'gate';
 }
 
+function buildSpreadCacheKey(symbol, spotKey) {
+  const normalizedSymbol = (symbol || currentSymbol || '').toUpperCase();
+  const normalizedSpot = normalizeSpotKey(spotKey || getSpotKey());
+  return `${normalizedSpot}::${normalizedSymbol || 'UNKNOWN'}`;
+}
+
 function createDefaultDatasetVisibility() {
   return { ...DEFAULT_DATASET_VISIBILITY };
 }
@@ -831,10 +837,13 @@ function setSpotExchangeState(info) {
   updateSpotLabelElements();
   document.body.dataset.spotExchange = key;
   refreshDocumentTitle();
-  let series = spreadSeriesBySpot.get(key);
+  const inst = getActiveInstance();
+  const symbolForCache = inst?.symbol || currentSymbol;
+  const cacheKey = buildSpreadCacheKey(symbolForCache, key);
+  let series = spreadSeriesBySpot.get(cacheKey);
   if (!series) {
     series = [];
-    spreadSeriesBySpot.set(key, series);
+    spreadSeriesBySpot.set(cacheKey, series);
   }
   spreadPoints = series;
   if (previousKey && previousKey !== key) {
@@ -3264,11 +3273,13 @@ async function fetchSpreadDataForInstance(inst, force = false, spotKey = null) {
   const state = ensureInstanceState(inst);
   if (!state || !inst?.symbol) return;
   const key = (spotKey || inst.spotExchange || DEFAULT_SPOT.key || '').toLowerCase();
+  const symbolKey = (inst.symbol || state.lastQuotes?.symbol || '').toUpperCase();
+  const cacheKey = buildSpreadCacheKey(symbolKey, key);
   const now = Date.now();
-  const lastFetch = state.lastSpreadFetchBySpot.get(key) || 0;
+  const lastFetch = state.lastSpreadFetchBySpot.get(cacheKey) || 0;
   if (!force && now - lastFetch < 10000) return;
-  state.lastSpreadFetchBySpot.set(key, now);
-  let activeKey = key;
+  state.lastSpreadFetchBySpot.set(cacheKey, now);
+  let activeKey = cacheKey;
   try {
     const symbol = inst.symbol || state.lastQuotes?.symbol;
     if (!symbol) return;
@@ -3283,7 +3294,7 @@ async function fetchSpreadDataForInstance(inst, force = false, spotKey = null) {
       responseKey = String(data.spotExchange.key || '').toLowerCase() || key;
     }
     const normalizedKey = responseKey || key;
-    activeKey = normalizedKey;
+    activeKey = buildSpreadCacheKey(symbol, normalizedKey);
     const pts = Array.isArray(data.points) ? data.points : [];
     const mapped = pts.map((entry) => {
       const ts = Number(entry.ts);
@@ -3314,19 +3325,29 @@ async function fetchSpreadDataForInstance(inst, force = false, spotKey = null) {
       };
     });
     mapped.sort((a, b) => Number(a.ts) - Number(b.ts));
-    state.spreadSeriesBySpot.set(normalizedKey, mapped);
-    if (inst.id === activeInstanceId && getSpotKey() === normalizedKey) {
+    state.spreadSeriesBySpot.set(activeKey, mapped);
+    const activeSymbol = (currentSymbol || '').toUpperCase();
+    const isActiveTab = inst.id === activeInstanceId
+      && activeSymbol
+      && activeSymbol === symbolKey
+      && getSpotKey() === normalizedKey;
+    if (isActiveTab) {
       state.spreadPoints = mapped;
       spreadPoints = state.spreadPoints;
       renderSpreadChart();
-    } else if (normalizedKey === key) {
+    } else if (activeKey === cacheKey) {
       state.spreadPoints = mapped;
     }
   } catch (e) {
     console.warn('Falha ao carregar spreads:', e?.message || e);
     if (force) {
       state.spreadSeriesBySpot.set(activeKey, []);
-      if (inst.id === activeInstanceId && getSpotKey() === activeKey) {
+      const activeSymbol = (currentSymbol || '').toUpperCase();
+      const isActiveTab = inst.id === activeInstanceId
+        && activeSymbol
+        && activeSymbol === symbolKey
+        && getSpotKey() === normalizeSpotKey(activeKey.split('::')[0]);
+      if (isActiveTab) {
         state.spreadPoints = [];
         spreadPoints = state.spreadPoints;
         renderSpreadChart();
@@ -3452,7 +3473,8 @@ if (clearSpreadBtn) {
         alert('Falha ao limpar dados: ' + JSON.stringify(out));
         return;
       }
-      spreadSeriesBySpot.set(spotKey, []);
+      const cacheKey = buildSpreadCacheKey(symbol, spotKey);
+      spreadSeriesBySpot.set(cacheKey, []);
       spreadPoints = [];
       updateSpreadStats(null);
       renderSpreadChart();
