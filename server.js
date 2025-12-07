@@ -5047,6 +5047,57 @@ async function buildTopAssetsResponse(selectedKeys, limitInput) {
   return { assets, errors, exchanges: providers.map((p) => p.key), limit: safeLimit };
 }
 
+async function collectProviderSymbols(provider) {
+  try {
+    const list = await provider.list();
+    const set = new Set((Array.isArray(list) ? list : []).map((item) => item.symbol).filter(Boolean));
+    return { provider, set, error: null };
+  } catch (err) {
+    return { provider, set: new Set(), error: describeAxiosError(err) };
+  }
+}
+
+async function buildClassificationMatrix(symbols) {
+  const normalizedSymbols = Array.from(new Set(symbols.map((s) => normalizeMonitoringSymbol(s)).filter(Boolean)));
+  if (!normalizedSymbols.length) {
+    return { updatedAt: new Date().toISOString(), results: [], errors: [], allSymbols: serializeMonitoringSymbols() };
+  }
+
+  const providerResults = await Promise.all(topAssetProviders.map((provider) => collectProviderSymbols(provider)));
+  const availability = new Map();
+  const errors = [];
+
+  for (const result of providerResults) {
+    availability.set(result.provider.key, result.set);
+    if (result.error) {
+      errors.push({ provider: result.provider.key, label: result.provider.label, message: result.error });
+    }
+  }
+
+  const results = normalizedSymbols.map((symbol) => {
+    const currentMeta = monitoringSymbolMeta.get(symbol) || {};
+    const spot = [];
+    const futures = [];
+    for (const provider of topAssetProviders) {
+      const set = availability.get(provider.key);
+      const available = set ? set.has(symbol) : false;
+      const target = provider.type === 'spot' ? spot : futures;
+      target.push({ key: provider.key, label: provider.label, available });
+    }
+    return {
+      symbol,
+      spot,
+      futures,
+      current: {
+        spotHint: Array.isArray(currentMeta.spotHint) ? currentMeta.spotHint : [],
+        futuresHint: Array.isArray(currentMeta.futuresHint) ? currentMeta.futuresHint : []
+      }
+    };
+  });
+
+  return { updatedAt: new Date().toISOString(), results, errors, allSymbols: serializeMonitoringSymbols() };
+}
+
 async function fetchHistoryDataset(provider, meta, intervalKey, limit) {
   if (!provider || typeof provider.history !== 'function') {
     return { candles: [], error: 'Histórico não disponível para esta corretora' };
@@ -5286,6 +5337,25 @@ app.get('/api/monitoring/history', async (req, res) => {
     });
   } catch (err) {
     console.error('[monitoring] erro ao montar histórico', err);
+    res.status(500).json({ error: err.message || err });
+  }
+});
+
+app.post('/api/monitoring/classify', async (req, res) => {
+  try {
+    const rawSymbols = Array.isArray(req.body?.symbols) ? req.body.symbols.join(',') : req.body?.symbols;
+    const normalizedInput = typeof rawSymbols === 'string' ? rawSymbols : '';
+    const symbols = normalizedInput
+      .split(/[\s,\n]+/)
+      .map((s) => normalizeMonitoringSymbol(s))
+      .filter(Boolean);
+    if (!symbols.length) {
+      return res.status(400).json({ error: 'Informe ao menos um ativo no formato BASE_USDT' });
+    }
+    const payload = await buildClassificationMatrix(symbols);
+    res.json(payload);
+  } catch (err) {
+    console.error('[monitoring] erro ao classificar ativos', err);
     res.status(500).json({ error: err.message || err });
   }
 });
