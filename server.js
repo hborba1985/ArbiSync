@@ -5239,74 +5239,52 @@ function buildMonitoringMetrics(spotTickers, futuresTickers, historyPoints) {
   };
 }
 
-async function fetchArbHistory(meta) {
-  if (gateFuturesHistoryUnavailable.has(meta.symbol)) {
-    return [];
-  }
-  const futuresSupported = await isGateFuturesSupported(meta);
-  if (!futuresSupported) {
-    gateFuturesHistoryUnavailable.add(meta.symbol);
-    const reason = 'Contrato não listado na Gate.io Futures';
-    const lastWarn = monitoringHistoryWarned.get(meta.symbol);
-    const now = Date.now();
-    if (!lastWarn || lastWarn.reason !== reason || now - lastWarn.ts >= MONITORING_HISTORY_WARN_INTERVAL_MS) {
-      console.warn(
-        '[monitoring] histórico indisponível',
-        `${meta.symbol} (Gate spot=${meta.gateSpot}, futures=${meta.gateFutures})`,
-        reason
-      );
-      monitoringHistoryWarned.set(meta.symbol, { reason, ts: now });
-    }
-    return [];
-  }
+async function fetchArbHistory(meta, symbolMeta = {}) {
   const intervalKey = MONITORING_HISTORY_DEFAULT_INTERVAL;
   const intervalConfig = getHistoryIntervalConfig(intervalKey);
   const limit = computeHistoryLimit(intervalKey);
+
+  const spotProvider = resolveSelectedProviders(symbolMeta, 'spot').find((provider) => typeof provider.history === 'function');
+  const futuresProvider = resolveSelectedProviders(symbolMeta, 'futures').find((provider) => typeof provider.history === 'function');
+
+  if (!spotProvider || !futuresProvider) {
+    return [];
+  }
+
+  if (futuresProvider.key === 'gate_futures' && gateFuturesHistoryUnavailable.has(meta.symbol)) {
+    return [];
+  }
+
   try {
-    const [spotResp, futuresResp] = await Promise.all([
-      monitoringHttp.get('https://api.gateio.ws/api/v4/spot/candlesticks', {
-        params: { currency_pair: meta.gateSpot, interval: intervalConfig.gate, limit }
-      }),
-      monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/candlesticks', {
-        params: { contract: meta.gateFutures, interval: intervalConfig.gate, limit }
-      })
+    const [spotResult, futuresResult] = await Promise.all([
+      fetchHistoryDataset(spotProvider, meta, intervalKey, limit),
+      fetchHistoryDataset(futuresProvider, meta, intervalKey, limit)
     ]);
-    const spotCandles = Array.isArray(spotResp.data) ? spotResp.data : [];
-    const futuresCandles = Array.isArray(futuresResp.data) ? futuresResp.data : [];
-    const futuresByTs = new Map();
-    for (const candle of futuresCandles) {
-      const ts = Number(candle?.t);
-      if (Number.isFinite(ts)) futuresByTs.set(ts, candle);
+
+    if (futuresProvider.key === 'gate_futures' && futuresResult.error?.includes('Contrato')) {
+      gateFuturesHistoryUnavailable.add(meta.symbol);
     }
-    const points = [];
-    for (const entry of spotCandles) {
-      const ts = Number(entry?.[0]);
-      if (!Number.isFinite(ts)) continue;
-      const futuresEntry = futuresByTs.get(ts);
-      if (!futuresEntry) continue;
-      const spotOpen = toNumber(entry?.[5]);
-      const spotClose = toNumber(entry?.[2]);
-      const futuresOpen = toNumber(futuresEntry?.o);
-      const futuresClose = toNumber(futuresEntry?.c);
-      const openArbRaw = computeSpreadPct(futuresOpen, spotOpen);
-      const closeArbRaw = computeSpreadPct(spotClose, futuresClose);
-      if (!Number.isFinite(openArbRaw) && !Number.isFinite(closeArbRaw)) continue;
-      const openArbPct = formatArbValue(openArbRaw);
-      const closeArbPct = formatArbValue(closeArbRaw);
-      points.push({
-        timestamp: ts * 1000,
-        arbPct: computeMidArbValue(openArbRaw, closeArbRaw),
-        openArbPct,
-        closeArbPct,
-        spotVolume: toNumber(entry?.[6] ?? entry?.[1]),
-        futuresVolume: toNumber(futuresEntry?.sum ?? futuresEntry?.v)
-      });
+
+    const historySeries = buildHistorySeries(spotResult.candles, futuresResult.candles, intervalConfig.minutes);
+
+    const reason = futuresResult.error || spotResult.error;
+    if (reason) {
+      const lastWarn = monitoringHistoryWarned.get(meta.symbol);
+      const now = Date.now();
+      if (!lastWarn || lastWarn.reason !== reason || now - lastWarn.ts >= MONITORING_HISTORY_WARN_INTERVAL_MS) {
+        console.warn(
+          '[monitoring] histórico indisponível',
+          `${meta.symbol} (spot=${spotProvider.label}, futures=${futuresProvider.label}, intervalo=${intervalKey}, candles=${limit})`,
+          reason
+        );
+        monitoringHistoryWarned.set(meta.symbol, { reason, ts: now });
+      }
     }
-    points.sort((a, b) => a.timestamp - b.timestamp);
-    return points;
+
+    return historySeries.points;
   } catch (err) {
     const reason = describeAxiosError(err);
-    if (reason?.includes('CONTRACT_NOT_FOUND')) {
+    if (reason?.includes('CONTRACT_NOT_FOUND') && futuresProvider.key === 'gate_futures') {
       gateFuturesHistoryUnavailable.add(meta.symbol);
     }
     const lastWarn = monitoringHistoryWarned.get(meta.symbol);
@@ -5314,7 +5292,7 @@ async function fetchArbHistory(meta) {
     if (!lastWarn || lastWarn.reason !== reason || now - lastWarn.ts >= MONITORING_HISTORY_WARN_INTERVAL_MS) {
       console.warn(
         '[monitoring] histórico indisponível',
-        `${meta.symbol} (Gate spot=${meta.gateSpot}, futures=${meta.gateFutures}, intervalo=${intervalKey}, candles=${limit})`,
+        `${meta.symbol} (spot=${spotProvider.label}, futures=${futuresProvider.label}, intervalo=${intervalKey}, candles=${limit})`,
         reason
       );
       monitoringHistoryWarned.set(meta.symbol, { reason, ts: now });
@@ -5334,7 +5312,7 @@ async function fetchMonitoringSymbol(symbolInput) {
   const [spot, futures, history] = await Promise.all([
     Promise.all(spotProviders.map((provider) => fetchMonitoringTicker(provider, meta))),
     Promise.all(futuresProviders.map((provider) => fetchMonitoringTicker(provider, meta))),
-    fetchArbHistory(meta)
+    fetchArbHistory(meta, symbolMeta)
   ]);
   return {
     symbol: meta.symbol,
@@ -5396,16 +5374,23 @@ app.get('/api/monitoring/history', async (req, res) => {
     if (!meta) {
       return res.status(400).json({ error: 'Símbolo inválido' });
     }
+    const symbolMeta = monitoringSymbolMeta.get(meta.symbol) || {};
     const intervalKeyRaw = String(req.query.interval || '').toLowerCase();
     const intervalKey = MONITORING_HISTORY_INTERVALS[intervalKeyRaw] ? intervalKeyRaw : MONITORING_HISTORY_DEFAULT_INTERVAL;
     const intervalConfig = getHistoryIntervalConfig(intervalKey);
     const limit = computeHistoryLimit(intervalKey);
-    const spotKey = req.query.spot && findSpotProvider(req.query.spot) ? req.query.spot : monitoringSpotProviders[0].key;
+    const spotKey = req.query.spot && findSpotProvider(req.query.spot) ? req.query.spot : null;
     const futuresKey = req.query.futures && findFuturesProvider(req.query.futures)
       ? req.query.futures
-      : monitoringFuturesProviders[0].key;
-    const spotProvider = findSpotProvider(spotKey) || monitoringSpotProviders[0];
-    const futuresProvider = findFuturesProvider(futuresKey) || monitoringFuturesProviders[0];
+      : null;
+    const selectedSpotProviders = resolveSelectedProviders(symbolMeta, 'spot').filter((provider) => typeof provider.history === 'function');
+    const selectedFuturesProviders = resolveSelectedProviders(symbolMeta, 'futures').filter((provider) => typeof provider.history === 'function');
+    const spotProvider = spotKey
+      ? findSpotProvider(spotKey)
+      : selectedSpotProviders[0] || monitoringSpotProviders[0];
+    const futuresProvider = futuresKey
+      ? findFuturesProvider(futuresKey)
+      : selectedFuturesProviders[0] || monitoringFuturesProviders[0];
     const [spotResult, futuresResult] = await Promise.all([
       fetchHistoryDataset(spotProvider, meta, intervalKey, limit),
       fetchHistoryDataset(futuresProvider, meta, intervalKey, limit)
