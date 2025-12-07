@@ -4280,6 +4280,8 @@ monitoringColumnVisibility = { ...MONITORING_DEFAULT_COLUMNS, ...monitoringColum
 const blacklist = new Set();
 const ADMIN_PASSWORD = 'arbisync@2024';
 let isAdmin = false;
+let classifierResultsState = [];
+const classifierSelections = new Map();
 
 const monitoringTableBody = document.getElementById('monitoringTableBody');
 const filterSearchEl = document.getElementById('filterSearch');
@@ -4309,11 +4311,21 @@ const adminStatusLabelInline = document.getElementById('adminStatusLabelInline')
 const adminLoginFeedback = document.getElementById('adminLoginFeedback');
 const adminTools = document.getElementById('adminTools');
 const adminDiscoveryTools = document.getElementById('adminDiscoveryTools');
+const assetClassifierTools = document.getElementById('assetClassifierTools');
 const adminLoginForm = document.getElementById('adminLoginForm');
 const adminPasswordInput = document.getElementById('adminPassword');
 const adminAddCoinForm = document.getElementById('adminAddCoinForm');
 const adminRemoveCoinForm = document.getElementById('adminRemoveCoinForm');
 const adminRemoveCoinSelect = document.getElementById('adminRemoveCoinSelect');
+const assetClassifierForm = document.getElementById('assetClassifierForm');
+const assetClassifierInput = document.getElementById('assetClassifierInput');
+const assetClassifierStatus = document.getElementById('assetClassifierStatus');
+const assetClassifierResults = document.getElementById('assetClassifierResults');
+const assetClassifierSaveBtn = document.getElementById('assetClassifierSave');
+const assetClassifierActions = document.getElementById('assetClassifierActions');
+const assetClassifierExistingSelect = document.getElementById('assetClassifierExistingSelect');
+const assetClassifierExistingBtn = document.getElementById('assetClassifierExistingBtn');
+const classifierTrackedList = document.getElementById('classifierTrackedList');
 const blacklistForm = document.getElementById('blacklistForm');
 const blacklistInput = document.getElementById('blacklistInput');
 const blacklistList = document.getElementById('blacklistList');
@@ -5403,6 +5415,7 @@ if (adminLoginForm) {
       if (adminStatusLabelInline) adminStatusLabelInline.textContent = 'Conectado';
       if (adminTools) adminTools.classList.remove('hidden');
       if (adminDiscoveryTools) adminDiscoveryTools.classList.remove('hidden');
+      if (assetClassifierTools) assetClassifierTools.classList.remove('hidden');
     } else {
       isAdmin = false;
       adminLoginFeedback.textContent = 'Senha incorreta';
@@ -5411,6 +5424,7 @@ if (adminLoginForm) {
       if (adminStatusLabelInline) adminStatusLabelInline.textContent = 'Visitante';
       if (adminTools) adminTools.classList.add('hidden');
       if (adminDiscoveryTools) adminDiscoveryTools.classList.add('hidden');
+      if (assetClassifierTools) assetClassifierTools.classList.add('hidden');
     }
     if (adminPasswordInput) adminPasswordInput.value = '';
   });
@@ -5424,6 +5438,184 @@ function requireAdmin() {
     adminLoginFeedback.style.color = '#ff6b9a';
   }
   return false;
+}
+
+function seedClassifierSelections(results) {
+  classifierSelections.clear();
+  results.forEach((entry) => {
+    const currentSpot = new Set(Array.isArray(entry?.current?.spotHint) ? entry.current.spotHint : []);
+    const currentFutures = new Set(Array.isArray(entry?.current?.futuresHint) ? entry.current.futuresHint : []);
+    const hasCurrent = currentSpot.size || currentFutures.size;
+    const spot = new Set();
+    const futures = new Set();
+    entry.spot?.forEach((item) => {
+      if (!item.available) return;
+      if (hasCurrent) {
+        if (currentSpot.has(item.label)) spot.add(item.label);
+      } else {
+        spot.add(item.label);
+      }
+    });
+    entry.futures?.forEach((item) => {
+      if (!item.available) return;
+      if (hasCurrent) {
+        if (currentFutures.has(item.label)) futures.add(item.label);
+      } else {
+        futures.add(item.label);
+      }
+    });
+    classifierSelections.set(entry.symbol, { spot, futures });
+  });
+}
+
+function renderClassifierResults() {
+  if (!assetClassifierResults) return;
+  assetClassifierResults.innerHTML = '';
+  if (!classifierResultsState.length) {
+    assetClassifierResults.classList.add('hidden');
+    if (assetClassifierActions) assetClassifierActions.classList.add('hidden');
+    return;
+  }
+
+  classifierResultsState.forEach((entry) => {
+    const block = document.createElement('div');
+    block.className = 'classifier-item';
+    const title = document.createElement('div');
+    title.className = 'classifier-symbol';
+    title.textContent = entry.symbol;
+    block.appendChild(title);
+
+    const exchangeList = document.createElement('div');
+    exchangeList.className = 'classifier-exchange-list';
+
+    const renderGroup = (items, label) => {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'classifier-exchange';
+      const heading = document.createElement('strong');
+      heading.textContent = label;
+      wrapper.appendChild(heading);
+      const hints = document.createElement('div');
+      hints.className = 'classifier-tags';
+      items.forEach((item) => {
+        if (item.available) {
+          const checkboxId = `${entry.symbol}-${item.key}`;
+          const labelEl = document.createElement('label');
+          const input = document.createElement('input');
+          input.type = 'checkbox';
+          input.id = checkboxId;
+          input.className = 'classifier-checkbox';
+          input.dataset.symbol = entry.symbol;
+          input.dataset.exchangeLabel = item.label;
+          input.dataset.type = label === 'SPOT' ? 'spot' : 'futures';
+          const selection = classifierSelections.get(entry.symbol);
+          const set = label === 'SPOT' ? selection?.spot : selection?.futures;
+          input.checked = set ? set.has(item.label) : false;
+          labelEl.appendChild(input);
+          const text = document.createElement('span');
+          text.textContent = item.label;
+          labelEl.appendChild(text);
+          hints.appendChild(labelEl);
+        } else {
+          const span = document.createElement('span');
+          span.className = 'muted';
+          span.textContent = `${item.label} (indisponível)`;
+          hints.appendChild(span);
+        }
+      });
+      if (!hints.children.length) {
+        const span = document.createElement('span');
+        span.className = 'muted';
+        span.textContent = 'Nenhuma corretora retornou para esta categoria.';
+        hints.appendChild(span);
+      }
+      wrapper.appendChild(hints);
+      exchangeList.appendChild(wrapper);
+    };
+
+    renderGroup(entry.spot || [], 'SPOT');
+    renderGroup(entry.futures || [], 'FUTUROS');
+
+    block.appendChild(exchangeList);
+    assetClassifierResults.appendChild(block);
+  });
+
+  assetClassifierResults.classList.remove('hidden');
+  if (assetClassifierActions) assetClassifierActions.classList.remove('hidden');
+}
+
+async function runClassifier(symbols) {
+  if (!requireAdmin()) return;
+  if (!symbols || !symbols.length) {
+    if (assetClassifierStatus) assetClassifierStatus.textContent = 'Adicione pelo menos um ativo no formato BASE_USDT.';
+    return;
+  }
+  if (assetClassifierStatus) {
+    assetClassifierStatus.textContent = 'Classificando ativos nas corretoras...';
+    assetClassifierStatus.classList.remove('error');
+  }
+  try {
+    const response = await fetch('/api/monitoring/classify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols: symbols.join(',') })
+    });
+    const data = await safeJson(response);
+    if (!response.ok) {
+      throw new Error(data?.error || 'Falha ao classificar ativos');
+    }
+    classifierResultsState = Array.isArray(data?.results) ? data.results : [];
+    seedClassifierSelections(classifierResultsState);
+    renderClassifierResults();
+    if (Array.isArray(data?.allSymbols)) {
+      applyMonitoringSymbols(data.allSymbols);
+    }
+    const errorCount = Array.isArray(data?.errors) ? data.errors.length : 0;
+    if (assetClassifierStatus) {
+      assetClassifierStatus.textContent = errorCount
+        ? `Classificação concluída (${errorCount} fontes indisponíveis).`
+        : 'Classificação concluída.';
+      assetClassifierStatus.classList.remove('error');
+    }
+  } catch (err) {
+    if (assetClassifierStatus) {
+      assetClassifierStatus.textContent = err.message || 'Não foi possível classificar os ativos';
+      assetClassifierStatus.classList.add('error');
+    }
+  }
+}
+
+async function persistClassifierSelections() {
+  if (!requireAdmin()) return;
+  const tasks = [];
+  classifierSelections.forEach((selection, symbol) => {
+    const spotHint = Array.from(selection.spot || []);
+    const futuresHint = Array.from(selection.futures || []);
+    if (!spotHint.length && !futuresHint.length) return;
+    const existingMeta = monitoringMeta.get(symbol) || {};
+    const meta = { ...existingMeta, spotHint, futuresHint };
+    if (!meta.name) meta.name = symbol;
+    if (!meta.risk) meta.risk = 'Médio';
+    tasks.push(persistMonitoringSymbol(symbol, meta));
+  });
+  if (!tasks.length) {
+    if (assetClassifierStatus) assetClassifierStatus.textContent = 'Marque ao menos uma corretora antes de salvar.';
+    return;
+  }
+  try {
+    await Promise.all(tasks);
+    classifierResultsState = [];
+    classifierSelections.clear();
+    renderClassifierResults();
+    if (assetClassifierStatus) {
+      assetClassifierStatus.textContent = 'Ativos adicionados/reclassificados com sucesso.';
+      assetClassifierStatus.classList.remove('error');
+    }
+  } catch (err) {
+    if (assetClassifierStatus) {
+      assetClassifierStatus.textContent = err.message || 'Falha ao salvar classificação';
+      assetClassifierStatus.classList.add('error');
+    }
+  }
 }
 
 function getSelectedTopExchanges() {
@@ -5499,6 +5691,50 @@ function normalizeMonitoringSymbolInput(value) {
   return str;
 }
 
+function refreshClassifierExistingOptions() {
+  if (!assetClassifierExistingSelect) return;
+  const previous = assetClassifierExistingSelect.value;
+  assetClassifierExistingSelect.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = 'Selecione um ativo';
+  assetClassifierExistingSelect.appendChild(placeholder);
+  trackedMonitoringSymbols
+    .slice()
+    .sort()
+    .forEach((symbol) => {
+      const option = document.createElement('option');
+      option.value = symbol;
+      option.textContent = symbol;
+      assetClassifierExistingSelect.appendChild(option);
+    });
+  if (previous) assetClassifierExistingSelect.value = previous;
+}
+
+function renderClassifierTrackedList() {
+  if (!classifierTrackedList) return;
+  classifierTrackedList.innerHTML = '';
+  if (!monitoringMeta.size) {
+    classifierTrackedList.textContent = 'Nenhum ativo cadastrado no momento.';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  monitoringMeta.forEach((meta, symbol) => {
+    const tag = document.createElement('span');
+    tag.className = 'classifier-tag';
+    const hints = [];
+    if (Array.isArray(meta?.spotHint) && meta.spotHint.length) {
+      hints.push(`SPOT: ${meta.spotHint.join(', ')}`);
+    }
+    if (Array.isArray(meta?.futuresHint) && meta.futuresHint.length) {
+      hints.push(`FUTUROS: ${meta.futuresHint.join(', ')}`);
+    }
+    tag.textContent = `${symbol}${hints.length ? ` — ${hints.join(' | ')}` : ''}`;
+    frag.appendChild(tag);
+  });
+  classifierTrackedList.appendChild(frag);
+}
+
 function applyMonitoringSymbols(list) {
   const entries = Array.isArray(list) ? list : [];
   monitoringMeta.clear();
@@ -5515,6 +5751,8 @@ function applyMonitoringSymbols(list) {
   trackedMonitoringSymbols = Array.from(monitoringMeta.keys());
   updateMonitoringSelectors();
   renderMonitoringTable();
+  refreshClassifierExistingOptions();
+  renderClassifierTrackedList();
 }
 
 async function hydrateMonitoringSymbolsFromServer() {
@@ -5637,6 +5875,45 @@ if (adminAddCoinForm) {
         adminLoginFeedback.style.color = '#ff6b9a';
       }
     }
+  });
+}
+
+if (assetClassifierForm) {
+  assetClassifierForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const symbols = (assetClassifierInput?.value || '')
+      .split(/[\s,\n]+/)
+      .map((s) => normalizeMonitoringSymbolInput(s))
+      .filter(Boolean);
+    runClassifier(symbols);
+  });
+}
+
+if (assetClassifierExistingBtn) {
+  assetClassifierExistingBtn.addEventListener('click', () => {
+    const symbol = normalizeMonitoringSymbolInput(assetClassifierExistingSelect?.value);
+    if (symbol) runClassifier([symbol]);
+  });
+}
+
+if (assetClassifierResults) {
+  assetClassifierResults.addEventListener('change', (event) => {
+    const input = event.target;
+    if (!input || !input.classList?.contains('classifier-checkbox')) return;
+    const symbol = input.dataset.symbol;
+    const type = input.dataset.type;
+    const exchangeLabel = input.dataset.exchangeLabel;
+    if (!symbol || !type || !exchangeLabel) return;
+    const selection = classifierSelections.get(symbol) || { spot: new Set(), futures: new Set() };
+    const targetSet = type === 'spot' ? selection.spot : selection.futures;
+    if (input.checked) targetSet.add(exchangeLabel); else targetSet.delete(exchangeLabel);
+    classifierSelections.set(symbol, selection);
+  });
+}
+
+if (assetClassifierSaveBtn) {
+  assetClassifierSaveBtn.addEventListener('click', () => {
+    persistClassifierSelections();
   });
 }
 

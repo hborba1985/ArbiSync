@@ -823,6 +823,82 @@
       gap: 8px;
     }
 
+    .classifier-results {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .classifier-item {
+      background: var(--surface);
+      border: 1px solid rgba(125, 97, 255, 0.24);
+      border-radius: 12px;
+      padding: 12px;
+      box-shadow: 0 18px 40px -28px var(--card-glow);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .classifier-symbol {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      font-size: 1.05rem;
+    }
+
+    .classifier-exchange-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px;
+    }
+
+    .classifier-exchange {
+      padding: 10px;
+      border-radius: 10px;
+      background: var(--surface-soft);
+      border: 1px solid rgba(125, 97, 255, 0.16);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .classifier-exchange.unavailable {
+      opacity: 0.6;
+    }
+
+    .classifier-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .classifier-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 10px;
+      background: rgba(125, 97, 255, 0.18);
+      border: 1px solid rgba(125, 97, 255, 0.35);
+      font-size: 12px;
+    }
+
+    .classifier-actions {
+      margin-top: 10px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .classifier-tracked {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
     h1 {
       font-family: 'Rajdhani', 'Inter', sans-serif;
       font-weight: 700;
@@ -2530,6 +2606,35 @@
                   <button type="submit">Adicionar</button>
                   <div class="blacklist-list" id="blacklistList"></div>
                 </form>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" id="assetClassifierCard">
+            <h3>Classificador de ativos</h3>
+            <div class="card-body admin-tools hidden" id="assetClassifierTools">
+              <p class="muted">Cole uma lista de pares (BASE_USDT) separados por vírgula e teste em quais corretoras SPOT e FUTUROS eles existem.</p>
+              <form id="assetClassifierForm" class="admin-form">
+                <label for="assetClassifierInput">Ativos para classificar</label>
+                <textarea id="assetClassifierInput" rows="3" placeholder="ADA_USDT, MANA_USDT" spellcheck="false"></textarea>
+                <div class="monitoring-actions">
+                  <button type="submit">Classificar</button>
+                  <button type="button" id="assetClassifierExistingBtn">Reclassificar selecionado</button>
+                  <label class="inline-input">Ativo cadastrado
+                    <select id="assetClassifierExistingSelect"></select>
+                  </label>
+                  <span id="assetClassifierStatus" class="muted"></span>
+                </div>
+              </form>
+
+              <div id="assetClassifierResults" class="classifier-results hidden"></div>
+              <div class="classifier-actions hidden" id="assetClassifierActions">
+                <button type="button" id="assetClassifierSave">Adicionar/Reclassificar selecionados</button>
+              </div>
+
+              <div class="admin-form">
+                <h4>Ativos cadastrados</h4>
+                <div class="classifier-tracked" id="classifierTrackedList"></div>
               </div>
             </div>
           </div>
