@@ -4109,36 +4109,10 @@ const MONITORING_HISTORY_INTERVALS = {
     kucoinFutures: 30 * 60,
     binance: '30m',
     bybit: '30'
-  },
-  '1h': {
-    label: '1 hora',
-    minutes: 60,
-    gate: '1h',
-    mexc: '1h',
-    mexcFutures: 'Min60',
-    bitget: '1hour',
-    bitgetFutures: '1h',
-    kucoin: '1hour',
-    kucoinFutures: 60 * 60,
-    binance: '1h',
-    bybit: '60'
-  },
-  '4h': {
-    label: '4 horas',
-    minutes: 240,
-    gate: '4h',
-    mexc: '4h',
-    mexcFutures: 'Hour4',
-    bitget: '4hour',
-    bitgetFutures: '4h',
-    kucoin: '4hour',
-    kucoinFutures: 240 * 60,
-    binance: '4h',
-    bybit: '240'
   }
 };
 
-const MONITORING_HISTORY_DEFAULT_INTERVAL = '1h';
+const MONITORING_HISTORY_DEFAULT_INTERVAL = '30m';
 
 function getHistoryIntervalConfig(key) {
   return MONITORING_HISTORY_INTERVALS[key] || MONITORING_HISTORY_INTERVALS[MONITORING_HISTORY_DEFAULT_INTERVAL];
@@ -5227,13 +5201,16 @@ async function fetchArbHistory(meta) {
   if (gateFuturesHistoryUnavailable.has(meta.symbol)) {
     return [];
   }
+  const intervalKey = MONITORING_HISTORY_DEFAULT_INTERVAL;
+  const intervalConfig = getHistoryIntervalConfig(intervalKey);
+  const limit = computeHistoryLimit(intervalKey);
   try {
     const [spotResp, futuresResp] = await Promise.all([
       monitoringHttp.get('https://api.gateio.ws/api/v4/spot/candlesticks', {
-        params: { currency_pair: meta.gateSpot, interval: '1h', limit: 24 }
+        params: { currency_pair: meta.gateSpot, interval: intervalConfig.gate, limit }
       }),
       monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/candlesticks', {
-        params: { contract: meta.gateFutures, interval: '1h', limit: 24 }
+        params: { contract: meta.gateFutures, interval: intervalConfig.gate, limit }
       })
     ]);
     const spotCandles = Array.isArray(spotResp.data) ? spotResp.data : [];
@@ -5279,7 +5256,7 @@ async function fetchArbHistory(meta) {
     if (!lastWarn || lastWarn.reason !== reason || now - lastWarn.ts >= MONITORING_HISTORY_WARN_INTERVAL_MS) {
       console.warn(
         '[monitoring] histórico indisponível',
-        `${meta.symbol} (Gate spot=${meta.gateSpot}, futures=${meta.gateFutures}, intervalo=1h, candles=24)`,
+        `${meta.symbol} (Gate spot=${meta.gateSpot}, futures=${meta.gateFutures}, intervalo=${intervalKey}, candles=${limit})`,
         reason
       );
       monitoringHistoryWarned.set(meta.symbol, { reason, ts: now });
@@ -5305,7 +5282,7 @@ async function fetchMonitoringSymbol(symbolInput) {
     spot,
     futures,
     metrics: buildMonitoringMetrics(spot, futures, history),
-    history: { interval: '1h', source: 'Gate.io', points: history }
+    history: { interval: intervalKey, source: 'Gate.io', points: history }
   };
 }
 
