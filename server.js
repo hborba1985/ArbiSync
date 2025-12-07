@@ -34,6 +34,7 @@ const mexcFuturesDepthWarnings = new Set();
 const gateFuturesHistoryUnavailable = new Set();
 // Throttle repeated monitoring history warnings per symbol/reason
 const monitoringHistoryWarned = new Map();
+const gateFuturesCatalog = { pairs: new Set(), lastFetch: 0 };
 const MONITORING_HISTORY_WARN_INTERVAL_MS = 5 * 60 * 1000;
 
 const SPOT_EXCHANGES = {
@@ -4398,6 +4399,10 @@ async function fetchBybitSpotTicker(meta) {
 }
 
 async function fetchGateFuturesTicker(meta) {
+  const supported = await isGateFuturesSupported(meta);
+  if (!supported) {
+    throw new Error('Contrato indisponível na Gate.io Futures');
+  }
   const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/tickers', {
     params: { contract: meta.gateFutures }
   });
@@ -4631,6 +4636,39 @@ async function fetchBybitFuturesTicker(meta) {
   };
 }
 
+async function ensureGateFuturesCatalog() {
+  const now = Date.now();
+  if (gateFuturesCatalog.lastFetch && now - gateFuturesCatalog.lastFetch < 15 * 60 * 1000) {
+    return gateFuturesCatalog.pairs;
+  }
+  try {
+    const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/contracts');
+    const pairs = new Set(
+      (Array.isArray(data) ? data : [])
+        .map((item) => String(item?.name || '').toUpperCase())
+        .filter(Boolean)
+    );
+    gateFuturesCatalog.pairs = pairs;
+    gateFuturesCatalog.lastFetch = now;
+  } catch (err) {
+    console.warn('[monitoring] não foi possível atualizar catálogo de contratos Gate futures', describeAxiosError(err));
+    // Keep existing cache when refresh fails
+    gateFuturesCatalog.lastFetch = now;
+  }
+  return gateFuturesCatalog.pairs;
+}
+
+async function isGateFuturesSupported(meta) {
+  try {
+    const catalog = await ensureGateFuturesCatalog();
+    if (!catalog || !catalog.size) return true; // avoid false negatives when catalog is empty
+    return catalog.has(String(meta?.gateFutures || '').toUpperCase());
+  } catch (err) {
+    console.warn('[monitoring] não foi possível validar contrato Gate futures', describeAxiosError(err));
+    return true; // degrade gracefully
+  }
+}
+
 async function fetchGateSpotHistory(meta, intervalKey, limit) {
   const interval = getHistoryIntervalConfig(intervalKey).gate;
   const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/spot/candlesticks', {
@@ -4647,6 +4685,10 @@ async function fetchGateSpotHistory(meta, intervalKey, limit) {
 }
 
 async function fetchGateFuturesHistory(meta, intervalKey, limit) {
+  const supported = await isGateFuturesSupported(meta);
+  if (!supported) {
+    throw new Error('Contrato indisponível na Gate.io Futures');
+  }
   const interval = getHistoryIntervalConfig(intervalKey).gate;
   const { data } = await monitoringHttp.get('https://api.gateio.ws/api/v4/futures/usdt/candlesticks', {
     params: { contract: meta.gateFutures, interval, limit }
@@ -5199,6 +5241,22 @@ function buildMonitoringMetrics(spotTickers, futuresTickers, historyPoints) {
 
 async function fetchArbHistory(meta) {
   if (gateFuturesHistoryUnavailable.has(meta.symbol)) {
+    return [];
+  }
+  const futuresSupported = await isGateFuturesSupported(meta);
+  if (!futuresSupported) {
+    gateFuturesHistoryUnavailable.add(meta.symbol);
+    const reason = 'Contrato não listado na Gate.io Futures';
+    const lastWarn = monitoringHistoryWarned.get(meta.symbol);
+    const now = Date.now();
+    if (!lastWarn || lastWarn.reason !== reason || now - lastWarn.ts >= MONITORING_HISTORY_WARN_INTERVAL_MS) {
+      console.warn(
+        '[monitoring] histórico indisponível',
+        `${meta.symbol} (Gate spot=${meta.gateSpot}, futures=${meta.gateFutures})`,
+        reason
+      );
+      monitoringHistoryWarned.set(meta.symbol, { reason, ts: now });
+    }
     return [];
   }
   const intervalKey = MONITORING_HISTORY_DEFAULT_INTERVAL;
