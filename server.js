@@ -4525,15 +4525,31 @@ async function fetchMexcFuturesTicker(meta) {
 }
 
 async function fetchBitgetFuturesTicker(meta) {
-  const { data } = await monitoringHttp.get('https://api.bitget.com/api/v2/mix/market/candles', {
-    params: { symbol: meta.bitgetFutures, productType: 'umcbl', granularity: '1m', limit: 1 }
-  });
-  if (!data || data.code !== '00000' || !data.data) {
-    throw new Error(data?.msg || 'Erro Bitget futures');
+  const [lastResp, dayResp] = await Promise.all([
+    monitoringHttp.get('https://api.bitget.com/api/v2/mix/market/candles', {
+      params: { symbol: meta.bitgetFutures, productType: 'umcbl', granularity: '1m', limit: 1 }
+    }),
+    monitoringHttp
+      .get('https://api.bitget.com/api/v2/mix/market/candles', {
+        params: { symbol: meta.bitgetFutures, productType: 'umcbl', granularity: '1D', limit: 1 }
+      })
+      .catch((err) => ({ data: null, error: err }))
+  ]);
+
+  if (!lastResp?.data || lastResp.data.code !== '00000' || !lastResp.data.data) {
+    throw new Error(lastResp?.data?.msg || 'Erro Bitget futures');
   }
-  const payload = Array.isArray(data.data) ? data.data[0] : null;
-  const last = toNumber(payload?.[4]);
-  const volume = toNumber(payload?.[5]);
+
+  const latest = Array.isArray(lastResp.data.data) ? lastResp.data.data[0] : null;
+  const last = toNumber(latest?.[4]);
+
+  let volume = toNumber(latest?.[6]) ?? toNumber(latest?.[5]);
+  if (dayResp?.data?.code === '00000' && Array.isArray(dayResp.data.data) && dayResp.data.data[0]) {
+    const dailyCandle = dayResp.data.data[0];
+    const dailyVolume = toNumber(dailyCandle?.[6]) ?? toNumber(dailyCandle?.[5]);
+    if (Number.isFinite(dailyVolume)) volume = dailyVolume;
+  }
+
   return {
     bid: last,
     ask: last,
