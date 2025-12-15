@@ -4525,13 +4525,18 @@ async function fetchMexcFuturesTicker(meta) {
 }
 
 async function fetchBitgetFuturesTicker(meta) {
-  const [lastResp, dayResp] = await Promise.all([
+  const [lastResp, dayResp, bookResp] = await Promise.all([
     monitoringHttp.get('https://api.bitget.com/api/v2/mix/market/candles', {
       params: { symbol: meta.bitgetFutures, productType: 'umcbl', granularity: '1m', limit: 1 }
     }),
     monitoringHttp
       .get('https://api.bitget.com/api/v2/mix/market/candles', {
         params: { symbol: meta.bitgetFutures, productType: 'umcbl', granularity: '1D', limit: 1 }
+      })
+      .catch((err) => ({ data: null, error: err })),
+    monitoringHttp
+      .get('https://api.bitget.com/api/v2/mix/market/orderbook', {
+        params: { symbol: meta.bitgetFutures, productType: 'umcbl', limit: 1 }
       })
       .catch((err) => ({ data: null, error: err }))
   ]);
@@ -4550,15 +4555,22 @@ async function fetchBitgetFuturesTicker(meta) {
     if (Number.isFinite(dailyVolume)) volume = dailyVolume;
   }
 
+  const bidEntry = Array.isArray(bookResp?.data?.data?.bids) ? bookResp.data.data.bids[0] : null;
+  const askEntry = Array.isArray(bookResp?.data?.data?.asks) ? bookResp.data.data.asks[0] : null;
+  const bid = toNumber(bidEntry?.[0]) ?? last;
+  const ask = toNumber(askEntry?.[0]) ?? last;
+  const bidSize = toNumber(bidEntry?.[1]);
+  const askSize = toNumber(askEntry?.[1]);
+
   return {
-    bid: last,
-    ask: last,
+    bid,
+    ask,
     last,
     volume,
-    bidSize: null,
-    askSize: null,
-    bidNotional: computeNotional(last, null),
-    askNotional: computeNotional(last, null),
+    bidSize,
+    askSize,
+    bidNotional: computeNotional(bid, bidSize),
+    askNotional: computeNotional(ask, askSize),
     fundingRate: null,
     changePct: null
   };
